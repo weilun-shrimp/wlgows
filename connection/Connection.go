@@ -20,8 +20,12 @@ type Conn struct {
 
 func (this *Conn) HandShake() error {
 	client_header, err := decodeClientHandShakeHeader(this.TCP_connection)
+	// fmt.Printf("%+v\n", client_header)
+	// for i, v := range client_header {
+	// 	fmt.Printf("%+v => %+v\n", i, v)
+	// }
 	if err != nil {
-		fmt.Printf("%+v\n", "Error decode Client HandShake Header"+err.Error())
+		fmt.Printf("%+v\n", "Error decode Client HandShake Header "+err.Error())
 		return err
 	}
 	this.Client_header = client_header
