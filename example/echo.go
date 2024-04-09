@@ -51,7 +51,7 @@ func handleClient(c *connection.Conn) {
 			fmt.Printf("%+v\n", err.Error())
 			break
 		}
-		if msg.Frames[0].Opcode == 8 { // disconnect by cleint
+		if msg.Frames[0].Opcode == 8 { // disconnect by client
 			fmt.Printf("%+v\n", "Disconnect by cleint")
 			fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg.Frames)))
 			fmt.Printf("%+v\n", *msg.Frames[0])
