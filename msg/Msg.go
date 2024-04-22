@@ -60,9 +60,9 @@ func GenUnMaskedTextMsg(data []byte) (*Msg, error) {
 			dataLength -= uint64(18446744073709551612)
 
 			f.PayloadData = data[:9223372036854775806]
-			data = append(data[:9223372036854775806], data[9223372036854775807:]...)
+			data = data[9223372036854775806:]
 			f.PayloadData = append(f.PayloadData, data[:9223372036854775806]...)
-			data = append(data[:9223372036854775806], data[9223372036854775807:]...)
+			data = data[9223372036854775806:]
 		} else {
 			f.FIN = true
 			f.PayloadData = data
