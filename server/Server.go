@@ -26,13 +26,13 @@ type Server struct {
 	TCPListener *net.TCPListener
 }
 
-func (this *Server) Close() {
-	this.TCPListener.Close()
+func (server *Server) Close() {
+	server.TCPListener.Close()
 }
 
-func (this *Server) Accept() (*connection.Conn, error) {
+func (server *Server) Accept() (*connection.Conn, error) {
 	conn := new(connection.Conn)
-	TCPConn, err := this.TCPListener.Accept()
+	TCPConn, err := server.TCPListener.Accept()
 	if err != nil {
 		return conn, err
 	}
