@@ -2,7 +2,6 @@ package frame
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net"
 )
@@ -42,7 +41,7 @@ func GetFrameFromTCPConn(conn net.Conn) (*Frame, error) {
 	frame := new(Frame)
 	firstSec, err := readTCPConn(conn, 2)
 	if err != nil {
-		fmt.Printf("%+v\n", "Error GetFrameFromTCPConn first")
+		// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn first")
 		return frame, err
 	}
 	frame.FIN = firstSec[0]>>7 == 1
@@ -58,35 +57,35 @@ func GetFrameFromTCPConn(conn net.Conn) (*Frame, error) {
 	if frame.PayloadLength == 127 {
 		extendedPayloadLength, err := readTCPConn(conn, 8)
 		if err != nil {
-			fmt.Printf("%+v\n", "Error GetFrameFromTCPConn PayloadLength 127")
+			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn PayloadLength 127")
 			return frame, err
 		}
 		frame.ExtendedPayloadLength = uint64(binary.BigEndian.Uint64(extendedPayloadLength))
 	} else if frame.PayloadLength == 126 {
 		extendedPayloadLength, err := readTCPConn(conn, 2)
 		if err != nil {
-			fmt.Printf("%+v\n", "Error GetFrameFromTCPConn PayloadLength 126")
+			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn PayloadLength 126")
 			return frame, err
 		}
 		frame.ExtendedPayloadLength = uint64(binary.BigEndian.Uint16(extendedPayloadLength))
 	}
 
-	if frame.Mask == true {
+	if frame.Mask {
 		frame.MaskingKey, err = readTCPConn(conn, 4)
 		if err != nil {
-			fmt.Printf("%+v\n", "Error GetFrameFromTCPConn maskingKeyByte")
+			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn maskingKeyByte")
 			return frame, err
 		}
 	}
 
 	frame.PayloadData, err = readTCPConn(conn, frame.GetMaxPayloadLength())
 	if err != nil {
-		fmt.Printf("%+v\n", "Error GetFrameFromTCPConn payloadByte")
+		// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn payloadByte")
 		return frame, err
 	}
 
-	for i := uint64(0); i < frame.GetMaxPayloadLength(); i++ {
-		if frame.Mask == true {
+	if frame.Mask { // need to unmask payload
+		for i := uint64(0); i < frame.GetMaxPayloadLength(); i++ {
 			frame.PayloadData[i] = frame.PayloadData[i] ^ frame.MaskingKey[i%4]
 		}
 	}

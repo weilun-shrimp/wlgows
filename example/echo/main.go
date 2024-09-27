@@ -31,19 +31,22 @@ func main() {
 	}
 }
 
-func handleClient(c *connection.Conn) {
-	// tcpConn := c.TCP_connection.(*net.TCPConn)
-	// tcpConn.SetReadDeadline(time.Now().Add(10 * time.Second)) // set 2 minutes timeout
-	// tcpConn.SetKeepAlive(true)
-	// tcpConn.SetKeepAlivePeriod(5 * time.Second)
-	// tcpConn.SetLinger(3)
+func handleClient(c *connection.ServerConn) {
+	// c.SetReadDeadline(time.Now().Add(10 * time.Second)) // set 2 minutes timeout
+	// c.SetKeepAlive(true)
+	// c.SetKeepAlivePeriod(5 * time.Second)
+	// c.SetLinger(3)
 	defer c.Close() // close connection before exit
 
-	err := c.HandShake()
+	_, err := c.HandShake()
 	if err != nil {
+		fmt.Println("Error on handshake")
+		fmt.Println(err)
 		return
 	}
-	// fmt.Printf("%+v\n", c.Client_header)
+	fmt.Printf("%+v\n", c.Conn.ClientRequest)
+	fmt.Printf("\n")
+	fmt.Printf("%+v\n", c.Conn.ServerResponse)
 
 	for {
 		msg, err := c.GetNextMsg()
@@ -61,6 +64,6 @@ func handleClient(c *connection.Conn) {
 		fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg.Frames)))
 		fmt.Printf("%+v\n", "str len:"+strconv.Itoa(len(str)))
 		fmt.Printf("%+v\n", "utf-8 len:"+strconv.Itoa(utf8.RuneCountInString(str)))
-		c.SendUnMaskedTextMsg(str)
+		c.SendText([]byte(str))
 	}
 }

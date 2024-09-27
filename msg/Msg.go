@@ -14,15 +14,33 @@ type Msg struct {
 
 /*
 Reference: https://studygolang.com/articles/12796
-用傳統的string([]byte)方法可能會發生字串符段連接問題, 因為一個UTF-8中文是3bytes，如果剛好在下一個frame就完了
+用傳統的string([]byte)方法可能會發生字串符段連接問題, 因為一個UTF-8中文是3bytes，如果剛好切一半在下一個frame就完了
 而且很可能會有超大量字串，所以要用效能最好的strings.Builder底層自動分配資料至內部slice再組成string
 */
-func (this *Msg) GetStr() string {
+func (msg *Msg) GetStr() string {
 	var builder strings.Builder
-	for _, f := range this.Frames {
+	for _, f := range msg.Frames {
 		builder.Write(f.PayloadData)
 	}
 	return builder.String()
+}
+
+func (msg *Msg) IsIncludedMaskedFrame() bool {
+	for _, f := range msg.Frames {
+		if f.Mask {
+			return true
+		}
+	}
+	return false
+}
+
+func (msg *Msg) IsIncludedUnMaskedFrame() bool {
+	for _, f := range msg.Frames {
+		if !f.Mask {
+			return true
+		}
+	}
+	return false
 }
 
 func GetMsgFromTCPConn(conn net.Conn) (Msg, error) {
@@ -33,25 +51,27 @@ func GetMsgFromTCPConn(conn net.Conn) (Msg, error) {
 			return msg, err
 		}
 		msg.Frames = append(msg.Frames, f)
-		if f.FIN == true {
+		if f.FIN {
 			break
 		}
 	}
 	return msg, nil
 }
 
-func GenUnMaskedTextMsg(data []byte) (*Msg, error) {
+func NewMsg(data []byte, opcode uint8, need_mask bool) (*Msg, error) {
 	msg := new(Msg)
 	dataLength := uint64(len(data))
 	for dataLength > uint64(0) {
 		f := new(frame.Frame)
-		f.Opcode = 2
-		f.Mask = false
-		// var err error
-		// f.MaskingKey, err = generateMaskingKey()
-		// if err != nil {
-		// 	return msg, err
-		// }
+		f.Opcode = opcode
+		if need_mask {
+			f.Mask = true
+			var err error
+			f.MaskingKey, err = generateMaskingKey()
+			if err != nil {
+				return msg, err
+			}
+		}
 
 		if dataLength > uint64(18446744073709551612) {
 			f.FIN = false
