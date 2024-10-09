@@ -9,25 +9,18 @@ import (
 )
 
 type Conn struct {
-	TCP_connection net.Conn
-	ClientHeader   map[string]string // hand shake header from the other site
-	ServerHeader   map[string]string
-}
-
-func (c *Conn) Close() {
-	c.TCP_connection.Close()
+	net.Conn
+	ClientInfo *ClientInfo
+	ServerInfo *ServerInfo
 }
 
 func (c *Conn) GetNextFrame() (*frame.Frame, error) {
-	frame, err := frame.GetFrameFromTCPConn(c.TCP_connection)
+	frame, err := frame.GetFrameFromTCPConn(c.Conn)
 	return frame, err
 }
 
 func (c *Conn) GetNextMsg() (msg.Msg, error) {
-	msg, err := msg.GetMsgFromTCPConn(c.TCP_connection)
-	if err != nil {
-		fmt.Printf("%+v\n", "GetNextMsg Error")
-	}
+	msg, err := msg.GetMsgFromTCPConn(c.Conn)
 	return msg, err
 }
 
@@ -38,7 +31,7 @@ func (c *Conn) SendUnMaskedTextMsg(text string) error {
 	}
 	for _, f := range msg.Frames {
 		// net TCP conn 方法
-		_, err := c.TCP_connection.Write(f.Seal())
+		_, err := c.Conn.Write(f.Seal())
 		if err != nil {
 			fmt.Println("Error writing:", err.Error())
 			return err
