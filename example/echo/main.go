@@ -39,7 +39,7 @@ func handleClient(c *connection.Conn) {
 	// tcpConn.SetLinger(3)
 	defer c.Close() // close connection before exit
 
-	err := c.ServerHandShake(map[string]string{})
+	err := c.ServerHandShake()
 	if err != nil {
 		return
 	}

@@ -1,19 +1,19 @@
 package http_msg
 
-import "net/url"
+import (
+	"net/http"
+	"strconv"
+)
 
 type Request struct {
-	Method   string  `json:"method"`
-	Url      url.URL `json:"url"`
-	Protocol string  `json:"protocal"`
-	Version  string  `json:"version"`
-	Header   Header  `json:"header"`
-	Body     string  `json:"body"`
+	http.Request
+	// to know this request whether has recieved the response from server
+	Response *Response
 }
 
 // return like "GET / HTTP/1.1"
 func (rq *Request) EncodeTop() string {
-	return rq.Method + " " + rq.Url.String() + " " + rq.Protocol + "/" + rq.Version
+	return rq.Method + " " + rq.URL.String() + " " + rq.Protocol + "/" + rq.Version
 }
 
 /*
@@ -24,6 +24,8 @@ Content-Type: application/json\r\n
 Body......
 */
 func (rq *Request) Encode() string {
-	// if rq.Header
+	if rq.Header.Get("Content-Length") == "" {
+		rq.Header.Set("Content-Length", strconv.Itoa(len(rq.Body)))
+	}
 	return rq.EncodeTop() + "\r\n" + rq.Header.Encode() + "\r\n" + rq.Body
 }

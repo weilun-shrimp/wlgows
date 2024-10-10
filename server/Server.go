@@ -7,18 +7,18 @@ import (
 )
 
 func Run(service string) (*Server, error) {
-	s := new(Server)
 	tcpAddr, err := net.ResolveTCPAddr("tcp4", service)
 	if err != nil {
-		return s, err
+		return nil, err
 	}
 	listener, err := net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
-		return s, err
+		return nil, err
 	}
-	s.TCPAddr = tcpAddr
-	s.TCPListener = listener
-	return s, nil
+	return &Server{
+		TCPAddr:     tcpAddr,
+		TCPListener: listener,
+	}, nil
 }
 
 type Server struct {
@@ -30,12 +30,10 @@ func (server *Server) Close() {
 	server.TCPListener.Close()
 }
 
-func (server *Server) Accept() (*connection.Conn, error) {
-	conn := new(connection.Conn)
+func (server *Server) Accept() (*connection.ServerConn, error) {
 	TCPConn, err := server.TCPListener.Accept()
 	if err != nil {
-		return conn, err
+		return nil, err
 	}
-	conn.TCP_connection = TCPConn
-	return conn, nil
+	return &connection.ServerConn{Conn: connection.Conn{Conn: TCPConn}}, nil
 }

@@ -3,6 +3,7 @@ package connection
 import (
 	"fmt"
 	"net"
+	"net/http"
 
 	"github.com/weilun-shrimp/wlgows/frame"
 	"github.com/weilun-shrimp/wlgows/msg"
@@ -10,8 +11,7 @@ import (
 
 type Conn struct {
 	net.Conn
-	ClientInfo *ClientInfo
-	ServerInfo *ServerInfo
+	ClientRequest *http.Request
 }
 
 func (c *Conn) GetNextFrame() (*frame.Frame, error) {
