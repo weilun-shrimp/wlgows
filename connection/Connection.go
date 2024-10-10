@@ -11,7 +11,8 @@ import (
 
 type Conn struct {
 	net.Conn
-	ClientRequest *http.Request
+	ClientRequest  *http.Request
+	ServerResponse *http.Response
 }
 
 func (c *Conn) GetNextFrame() (*frame.Frame, error) {

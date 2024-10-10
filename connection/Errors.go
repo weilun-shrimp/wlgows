@@ -1,5 +1,7 @@
 package connection
 
+import "net/http"
+
 type Error struct {
 	Type string
 	Msg  string
@@ -11,18 +13,9 @@ func (e *Error) Error() string {
 
 // type list
 
-// Base errors
-const (
-	ConnectionReadFail    = "ConnectionReadFail"
-	ConnectionReadEmpty   = "ConnectionReadEmpty"
-	EmptyClientRequest    = "EmptyClientRequest"
-	ExistingClientRequest = "ExistingClientRequest"
-	FailSendHand          = "FailSendHand"
-)
-
 // http
 const (
-	InvalidHttpMsgFormation = "InvalidHttpMsgFormation"
+	HttpMsgFormationInvalid = "HttpMsgFormationInvalid"
 	// attribute errors
 	HttpMethodNotAllowed            = "MethodNotAllowed"
 	HttpProtocolOrVersionNotAllowed = "HttpProtocolOrVersionNotAllowed"
@@ -34,7 +27,25 @@ const (
 	HttpRequestHasResponse = "HttpRequestHasResponse"
 )
 
-// Server errors
-const (
-// FailSendHand = "Fail Send Hand"
-)
+/*
+Set the ResponseWriter appropriate status code and body by error_type
+
+empty error type means valid request, will put 101 for websocket
+*/
+func SetResponseWriterByErrprType(w http.ResponseWriter, error_type string) {
+	switch error_type {
+	case "": // valid type, set to 101 for websocket
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	case HttpMsgFormationInvalid:
+		w.WriteHeader(http.StatusBadRequest)
+	case HttpMethodNotAllowed:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	case HttpProtocolOrVersionNotAllowed:
+		w.WriteHeader(http.StatusHTTPVersionNotSupported)
+	case HttpSecWebSocketKeyHeaderNotSet, HttpConnectionHeaderNotUpgrade, HttpUpgradeHeaderNotWebsocket:
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(string(error_type)))
+	default: // other ondefined type value
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+}

@@ -8,37 +8,28 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/weilun-shrimp/wlgows/http_msg"
 )
 
 type ServerConn struct {
 	Conn
 }
 
-func (c *Conn) HandShake() *Error {
-	if c.ClientRequest == nil {
-		return &Error{
-			Type: EmptyClientRequest,
-			Msg:  "Server handshake detect the client request empty.",
+func (sc *ServerConn) HandShake() error {
+	if sc.Conn.ClientRequest == nil { // fetch client request if needed.
+		rq, err := sc.ReadRequest()
+		if err != nil {
+
 		}
+		sc.Conn.ClientRequest = rq
 	}
-	if c.ServerInfo == nil {
-		c.ServerInfo = &http_msg.Response{
-			Protocal: "HTTP",
-			Version:  "1.1",
-			Header:   http_msg.Header{},
-			Body:     "",
-		}
-		c.ServerInfo.SetStatus(http.StatusSwitchingProtocols)
-	}
+
 	for k, v := range map[string]string{
 		"Upgrade":               "websocket",
 		"Connection":            "Upgrade",
 		"Sec-WebSocket-Version": "13",
 		"Sec-WebSocket-Accept":  generateSecWebsocketAccept(c.ClientInfo.Headers["Sec-WebSocket-Key"]),
 	} {
-		c.ServerInfo.Header.Add(k, v)
+		sc.Header.Add(k, v)
 	}
 	// if val, ok := c.ClientInfo.Headers["Sec-WebSocket-Protocol"]; ok && val != "" { // Protocol 可以自己定義，自己做溝通用
 	// 	c.ServerInfo.Header.Add("Sec-WebSocket-Protocol", val)
@@ -55,36 +46,30 @@ func (c *Conn) HandShake() *Error {
 	return nil
 }
 
-func (sc *ServerConn) AcceptClientHand() {
-}
-
-func (sc *ServerConn) RejectClientHand() {
-
-}
-
-func (sc *ServerConn) SendHand(w *http_msg.ResponseWriter, r *http.Request) (*http.Response, *Error) {
-	if r.Response != nil {
-		return nil, &Error{
-			Type: HttpRequestHasResponse,
-			Msg:  "Server Action SendHand detect the client request has response.",
-		}
+func (sc *ServerConn) SendHand(w *ResponseWriter) error {
+	res := w.GenerateResponse()
+	plain_http_msg, err := responseToPlainHTTPMsg(res)
+	if err != nil {
+		return err
 	}
+	sc.Write([]byte(plain_http_msg))
+	return nil
 }
 
 // Read and decode the Client http request msg
-func (sc *ServerConn) ReadClientHandShakeRequest() (*http.Request, *Error) {
+func (sc *ServerConn) ReadRequest() (*http.Request, *Error) {
 	req, err := http.ReadRequest(bufio.NewReader(sc))
 	if err != nil {
 		fmt.Println("Error reading request:", err)
 		return nil, &Error{
-			Type: InvalidHttpMsgFormation,
+			Type: HttpMsgFormationInvalid,
 			Msg:  "Server Action ReadClientHandShakeRequest detect the client passed the InvalidHttpMsgFormation. raw error msg => " + err.Error(),
 		}
 	}
 	return req, nil
 }
 
-func ValidateClientHandShakeRequest(client_request *http.Request) *Error {
+func ValidateHandShakeRequest(client_request *http.Request) *Error {
 	// top validation
 	if client_request.Method != "GET" {
 		return &Error{

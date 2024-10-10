@@ -1,4 +1,4 @@
-package http_msg
+package connection
 
 import (
 	"bytes"
@@ -8,11 +8,11 @@ import (
 
 type ResponseWriter struct {
 	statusCode int
-	header     Header
+	header     *http.Header
 	body       []byte
 }
 
-func (w *ResponseWriter) Header() Header {
+func (w *ResponseWriter) Header() *http.Header {
 	return w.header
 }
 
@@ -27,7 +27,7 @@ func (w *ResponseWriter) WriteHeader(statusCode int) {
 func (w *ResponseWriter) GenerateResponse() *http.Response {
 	response := &http.Response{
 		StatusCode: w.statusCode,
-		Header:     make(http.Header),
+		Header:     *w.header,
 		Body:       io.NopCloser(bytes.NewReader(w.body)),
 	}
 	return response
