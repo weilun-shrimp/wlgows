@@ -25,24 +25,6 @@ func (msg *Msg) GetStr() string {
 	return builder.String()
 }
 
-func (msg *Msg) IsIncludedMaskedFrame() bool {
-	for _, f := range msg.Frames {
-		if f.Mask {
-			return true
-		}
-	}
-	return false
-}
-
-func (msg *Msg) IsIncludedUnMaskedFrame() bool {
-	for _, f := range msg.Frames {
-		if !f.Mask {
-			return true
-		}
-	}
-	return false
-}
-
 func GetMsgFromTCPConn(conn net.Conn) (Msg, error) {
 	msg := Msg{}
 	for {
