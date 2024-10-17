@@ -64,6 +64,7 @@ func handleClient(c *connection.ServerConn) {
 		fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg.Frames)))
 		fmt.Printf("%+v\n", "str len:"+strconv.Itoa(len(str)))
 		fmt.Printf("%+v\n", "utf-8 len:"+strconv.Itoa(utf8.RuneCountInString(str)))
+		fmt.Printf("%+v\n", "msg: "+msg.GetStr())
 		c.SendText([]byte(str))
 	}
 }

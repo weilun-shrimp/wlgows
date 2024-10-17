@@ -5,19 +5,29 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/weilun-shrimp/wlgows/client"
 )
 
 func main() {
-
-	conn, err := client.Dial("ws://localhost:8001", nil)
+	fmt.Print("Please input the url (eg. ws://localhost:8001) :")
+	url, err := readUserInput()
 	if err != nil {
+		fmt.Println("Error reading input from start: ", err)
+		return
+	}
+
+	conn, err := client.Dial(url, nil)
+	if err != nil {
+		fmt.Println("error of dial")
 		fmt.Printf("%+v\n", err)
 		return
 	}
+
 	defer conn.Close()
 	if err := conn.HandShake(); err != nil {
+		fmt.Println("error of handshake")
 		fmt.Printf("%+v\n", err)
 		return
 	}
@@ -60,16 +70,13 @@ func main() {
 			default:
 			}
 
-			// Create a new reader that reads from standard input
-			reader := bufio.NewReader(os.Stdin)
-
 			// Read the input until a newline
-			input, err := reader.ReadString('\n')
+			input, err := readUserInput()
 			if err != nil {
 				fmt.Println("Error reading input: ", err)
 				continue
 			}
-			if input == "exit\n" {
+			if input == "exit" {
 				fmt.Println("Client reader bye.")
 				stopChan <- true
 				return
@@ -83,7 +90,6 @@ innerLoop:
 		select {
 		case <-stopChan:
 			fmt.Println("main process detect the stop sign. Bye.")
-			// stopChan <- true
 			break innerLoop
 		default:
 			continue
@@ -91,4 +97,15 @@ innerLoop:
 	}
 
 	close(stopChan)
+}
+
+func readUserInput() (string, error) {
+	// Create a new reader that reads from standard input
+	reader := bufio.NewReader(os.Stdin)
+	// Read the input until a newline
+	result, err := reader.ReadString('\n')
+	if err != nil {
+		return result, err
+	}
+	return strings.ReplaceAll(result, "\n", ""), nil
 }

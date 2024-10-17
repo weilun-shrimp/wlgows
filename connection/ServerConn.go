@@ -36,6 +36,9 @@ func (sc *ServerConn) HandShake() (*http.Response, error) {
 	}
 
 	res, err := sc.SendHand(writer)
+	if err == nil && invalid != nil {
+		err = invalid
+	}
 	return res, err
 }
 

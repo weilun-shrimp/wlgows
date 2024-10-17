@@ -125,15 +125,18 @@ func generateWebSocketKey() string {
 }
 
 // Function to convert http.Request to a plain HTTP message
-func requestToPlainHTTPMsg(resp *http.Request) (string, error) {
+func requestToPlainHTTPMsg(req *http.Request) (string, error) {
 	// Create a buffer to hold the entire HTTP message
 	var buf bytes.Buffer
 
 	// Write the top line (e.g., "GET / HTTP/1.1")
-	fmt.Fprintf(&buf, "%s %s %s\r\n", resp.Method, resp.URL, resp.Proto)
+	fmt.Fprintf(&buf, "%s %s %s\r\n", req.Method, req.URL, req.Proto)
 
 	// Write the headers
-	for key, values := range resp.Header {
+	if req.Header.Get("Host") == "" { // put Host header if not exists
+		req.Header.Set("Host", req.URL.Host)
+	}
+	for key, values := range req.Header {
 		for _, value := range values {
 			fmt.Fprintf(&buf, "%s: %s\r\n", key, value)
 		}
@@ -143,15 +146,15 @@ func requestToPlainHTTPMsg(resp *http.Request) (string, error) {
 	buf.WriteString("\r\n")
 
 	// Write the body if it's not nil
-	if resp.Body != nil {
-		bodyBytes, err := io.ReadAll(resp.Body)
+	if req.Body != nil {
+		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
 			return "", err
 		}
 		// Write the body
 		buf.Write(bodyBytes)
 		// Close the body
-		resp.Body.Close() // Important to close the body after reading
+		req.Body.Close() // Important to close the body after reading
 	}
 
 	return buf.String(), nil
