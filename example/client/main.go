@@ -1,24 +1,36 @@
 package main
 
 import (
-	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/weilun-shrimp/wlgows/client"
+	"github.com/weilun-shrimp/wlgows/example_helpers"
 )
 
 func main() {
 	fmt.Print("Please input the url (eg. ws://localhost:8001) :")
-	url, err := readUserInput()
+	url, err := example_helpers.ReadUserInput()
 	if err != nil {
-		fmt.Println("Error reading input from start: ", err)
+		fmt.Println("Error reading input url from start: ", err)
 		return
 	}
 
-	conn, err := client.Dial(url, nil)
+	fmt.Print("Please input the trust ca.crt path (eg. ./ca.crt), empty means no need :")
+	ca_path, err := example_helpers.ReadUserInput()
+	if err != nil {
+		fmt.Println("Error reading input ca path from start: ", err)
+		return
+	}
+	var tls_config *tls.Config
+	if ca_path != "" {
+		tls_config = loadCA(ca_path)
+	}
+
+	conn, err := client.Dial(url, tls_config)
 	if err != nil {
 		fmt.Println("error of dial")
 		fmt.Printf("%+v\n", err)
@@ -71,7 +83,7 @@ func main() {
 			}
 
 			// Read the input until a newline
-			input, err := readUserInput()
+			input, err := example_helpers.ReadUserInput()
 			if err != nil {
 				fmt.Println("Error reading input: ", err)
 				continue
@@ -99,13 +111,20 @@ innerLoop:
 	close(stopChan)
 }
 
-func readUserInput() (string, error) {
-	// Create a new reader that reads from standard input
-	reader := bufio.NewReader(os.Stdin)
-	// Read the input until a newline
-	result, err := reader.ReadString('\n')
+func loadCA(ca_path string) *tls.Config {
+	// Load the CA certificate
+	caCert, err := os.ReadFile(ca_path)
 	if err != nil {
-		return result, err
+		panic(err)
 	}
-	return strings.ReplaceAll(result, "\n", ""), nil
+
+	// Create a new CertPool and add the CA certificate
+	caCertPool := x509.NewCertPool()
+	if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+		panic("failed to append CA certificate")
+	}
+
+	return &tls.Config{
+		RootCAs: caCertPool,
+	}
 }

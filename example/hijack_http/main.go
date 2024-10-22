@@ -7,13 +7,26 @@ import (
 	"unicode/utf8"
 
 	"github.com/weilun-shrimp/wlgows/connection"
+	"github.com/weilun-shrimp/wlgows/example_helpers"
 )
 
 func main() {
+	server_crt_path, server_key_path, err := example_helpers.LoadServerTlsInfo()
+	if err != nil {
+		fmt.Println("error in load server tls info")
+		panic(err)
+	}
+
 	http.HandleFunc("/", handler) // Register the handler for the root path
 
-	fmt.Println("Starting server on :8080")
-	err := http.ListenAndServe(":8080", nil) // Start the server on port 8080
+	fmt.Println("Starting server on :8001")
+	if server_crt_path != "" && server_key_path != "" {
+		fmt.Println("Run on tls mode")
+		err = http.ListenAndServeTLS(":8001", server_crt_path, server_key_path, nil)
+	} else {
+		fmt.Println("Run on general mode")
+		err = http.ListenAndServe(":8001", nil) // Start the server on port 8080
+	}
 	if err != nil {
 		fmt.Println("Error starting server:", err)
 	}
