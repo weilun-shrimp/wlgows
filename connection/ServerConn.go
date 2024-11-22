@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/weilun-shrimp/wlgows/msg"
 )
@@ -107,14 +108,14 @@ func ValidateHandShakeRequest(client_request *http.Request) *Error {
 				"Header Sec-WebSocket-Key is not set correctly for websocket.",
 		}
 	}
-	if val := client_request.Header.Get("Connection"); val != "Upgrade" {
+	if val := strings.ToLower(client_request.Header.Get("Connection")); val != "upgrade" {
 		return &Error{
 			Type: HttpConnectionHeaderNotUpgrade,
 			Msg: "Server Action validate Client handshake fail. " +
 				"Header Connection is not set 'Upgrade' for websocket.",
 		}
 	}
-	if val := client_request.Header.Get("Upgrade"); val != "websocket" {
+	if val := strings.ToLower(client_request.Header.Get("Upgrade")); val != "websocket" {
 		return &Error{
 			Type: HttpUpgradeHeaderNotWebsocket,
 			Msg: "Server Action validate Client handshake fail. " +

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/weilun-shrimp/wlgows/msg"
 )
@@ -89,13 +90,13 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 	if res.Proto != "HTTP/1.1" {
 		return errors.New("invalid handshake response proto " + res.Proto + ". The valid proto is HTTP/1.1")
 	}
-	if res.Header.Get("Connection") != "Upgrade" {
+	if strings.ToLower(res.Header.Get("Connection")) != "upgrade" {
 		return fmt.Errorf(
 			"invalid handshake response header Connection %s. The valid value should be Upgrade",
 			res.Header.Get("Connection"),
 		)
 	}
-	if res.Header.Get("Upgrade") != "websocket" {
+	if strings.ToLower(res.Header.Get("Upgrade")) != "websocket" {
 		return fmt.Errorf(
 			"invalid handshake response header Upgrade %s. The valid value should be websocket",
 			res.Header.Get("Upgrade"),
