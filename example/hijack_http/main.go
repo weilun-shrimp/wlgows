@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/connection"
-	"github.com/weilun-shrimp/wlgows/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v2/example_helpers"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	serverConn, err := connection.HijackFromHttp(w, r)
+	serverConn, err := wlgows.HijackFromHttp(w, r)
 	if err != nil {
 		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
 		return

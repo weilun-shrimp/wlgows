@@ -1,0 +1,162 @@
+package wlgows
+
+import (
+	"errors"
+	"net"
+	"net/http"
+	"testing"
+)
+
+func TestRun(t *testing.T) {
+	t.Run("resolves, listens, and builds the server", func(t *testing.T) {
+		wantAddr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8001}
+		wantListener := &net.TCPListener{}
+		var gotNetwork, gotService string
+
+		s, err := run("127.0.0.1:8001", runDI{
+			netResolveTCPAddr: func(network, address string) (*net.TCPAddr, error) {
+				gotNetwork, gotService = network, address
+				return wantAddr, nil
+			},
+			netListenTCP: func(network string, laddr *net.TCPAddr) (*net.TCPListener, error) {
+				if network != "tcp" {
+					t.Errorf("listen network = %q, want tcp", network)
+				}
+				if laddr != wantAddr {
+					t.Error("the resolved address should be handed to netListenTCP")
+				}
+				return wantListener, nil
+			},
+			newServer: newServer,
+		})
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if gotNetwork != "tcp4" || gotService != "127.0.0.1:8001" {
+			t.Errorf("resolve(%q, %q), want (tcp4, 127.0.0.1:8001)", gotNetwork, gotService)
+		}
+		if s.TCPAddr != wantAddr || s.TCPListener != wantListener {
+			t.Error("the server should carry the resolved address and listener")
+		}
+		if s.di.newServerConn == nil {
+			t.Error("run must build the Server through its constructor")
+		}
+	})
+
+	t.Run("propagates a resolve error", func(t *testing.T) {
+		want := errors.New("cannot resolve")
+		_, err := run("nonsense", runDI{
+			netResolveTCPAddr: func(string, string) (*net.TCPAddr, error) { return nil, want },
+			netListenTCP: func(string, *net.TCPAddr) (*net.TCPListener, error) {
+				t.Fatal("must not listen when resolution failed")
+				return nil, nil
+			},
+			newServer: newServer,
+		})
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
+		}
+	})
+
+	t.Run("propagates a listen error", func(t *testing.T) {
+		want := errors.New("address in use")
+		_, err := run("127.0.0.1:8001", runDI{
+			netResolveTCPAddr: func(string, string) (*net.TCPAddr, error) {
+				return &net.TCPAddr{}, nil
+			},
+			netListenTCP: func(string, *net.TCPAddr) (*net.TCPListener, error) { return nil, want },
+			newServer:    newServer,
+		})
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
+		}
+	})
+}
+
+func TestNewServer(t *testing.T) {
+	addr := &net.TCPAddr{Port: 8001}
+	listener := &net.TCPListener{}
+
+	s := newServer(addr, listener)
+
+	if s.TCPAddr != addr || s.TCPListener != listener {
+		t.Error("fields were not set")
+	}
+	if s.di.newServerConn == nil {
+		t.Error("newServer must populate di")
+	}
+}
+
+func TestServerAcceptBuildsAServerConn(t *testing.T) {
+	s, err := Run("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer s.Close()
+
+	// Route Accept's result through a recording constructor.
+	var gotRequest *http.Request
+	called := false
+	s.di.newServerConn = func(c net.Conn, req *http.Request) *ServerConn {
+		called = true
+		gotRequest = req
+		return NewServerConn(c, req)
+	}
+
+	go func() {
+		c, err := net.Dial("tcp", s.TCPListener.Addr().String())
+		if err == nil {
+			defer c.Close()
+		}
+	}()
+
+	sc, err := s.Accept()
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer sc.Close()
+
+	if !called {
+		t.Error("Accept must build the connection through di.newServerConn")
+	}
+	if gotRequest != nil {
+		t.Error("Accept has no request yet, it should pass nil")
+	}
+	if sc.di.readRequest == nil {
+		t.Error("the accepted ServerConn must have its di populated")
+	}
+}
+
+func TestServerAcceptAfterClose(t *testing.T) {
+	s, err := Run("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s.Close()
+
+	if _, err := s.Accept(); err == nil {
+		t.Error("Accept should fail once the listener is closed")
+	}
+}
+
+func TestRunRejectsABadService(t *testing.T) {
+	if _, err := Run("not-a-valid-address"); err == nil {
+		t.Error("Run should reject an unresolvable service string")
+	}
+}
+
+func TestRunBindsAndReportsItsAddress(t *testing.T) {
+	s, err := Run("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer s.Close()
+
+	if s.TCPAddr == nil || s.TCPListener == nil {
+		t.Fatal("Run should populate both the address and the listener")
+	}
+	// Port 0 asks the OS to choose, so the listener knows the real port.
+	if addr, ok := s.TCPListener.Addr().(*net.TCPAddr); !ok || addr.Port == 0 {
+		t.Errorf("listener address = %v, want a bound port", s.TCPListener.Addr())
+	}
+}

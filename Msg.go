@@ -1,15 +1,13 @@
-package msg
+package wlgows
 
 import (
 	"crypto/rand"
 	"net"
 	"strings"
-
-	"github.com/weilun-shrimp/wlgows/frame"
 )
 
 type Msg struct {
-	Frames []*frame.Frame
+	Frames []*Frame
 }
 
 /*
@@ -17,41 +15,61 @@ Reference: https://studygolang.com/articles/12796
 用傳統的string([]byte)方法可能會發生字串符段連接問題, 因為一個UTF-8中文是3bytes，如果剛好切一半在下一個frame就完了
 而且很可能會有超大量字串，所以要用效能最好的strings.Builder底層自動分配資料至內部slice再組成string
 */
-func (msg *Msg) GetStr() string {
+func (m *Msg) GetStr() string {
 	var builder strings.Builder
-	for _, f := range msg.Frames {
+	for _, f := range m.Frames {
 		builder.Write(f.PayloadData)
 	}
 	return builder.String()
 }
 
 func GetMsgFromTCPConn(conn net.Conn) (Msg, error) {
-	msg := Msg{}
+	return getMsgFromTCPConn(conn, getMsgFromTCPConnDI{
+		getFrameFromTCPConn: GetFrameFromTCPConn,
+	})
+}
+
+type getMsgFromTCPConnDI struct {
+	getFrameFromTCPConn func(conn net.Conn) (*Frame, error)
+}
+
+func getMsgFromTCPConn(conn net.Conn, di getMsgFromTCPConnDI) (Msg, error) {
+	m := Msg{}
 	for {
-		f, err := frame.GetFrameFromTCPConn(conn)
+		f, err := di.getFrameFromTCPConn(conn)
 		if err != nil {
-			return msg, err
+			return m, err
 		}
-		msg.Frames = append(msg.Frames, f)
+		m.Frames = append(m.Frames, f)
 		if f.FIN {
 			break
 		}
 	}
-	return msg, nil
+	return m, nil
 }
 
 func NewMsg(data []byte, opcode uint8, need_mask bool) (*Msg, error) {
-	msg := new(Msg)
+	return newMsg(data, opcode, need_mask, newMsgDI{
+		generateMaskingKey: GenerateMaskingKey,
+	})
+}
+
+type newMsgDI struct {
+	generateMaskingKey func() ([]byte, error)
+}
+
+func newMsg(data []byte, opcode uint8, need_mask bool, di newMsgDI) (*Msg, error) {
+	m := new(Msg)
 	dataLength := uint64(len(data))
 	for dataLength > uint64(0) {
-		f := new(frame.Frame)
+		f := new(Frame)
 		f.Opcode = opcode
 		if need_mask {
 			f.Mask = true
 			var err error
-			f.MaskingKey, err = generateMaskingKey()
+			f.MaskingKey, err = di.generateMaskingKey()
 			if err != nil {
-				return msg, err
+				return m, err
 			}
 		}
 
@@ -79,15 +97,25 @@ func NewMsg(data []byte, opcode uint8, need_mask bool) (*Msg, error) {
 			}
 			dataLength = 0
 		}
-		msg.Frames = append(msg.Frames, f)
+		m.Frames = append(m.Frames, f)
 	}
-	return msg, nil
+	return m, nil
 }
 
 // 生成WebSocket的掩码密钥
-func generateMaskingKey() ([]byte, error) {
+func GenerateMaskingKey() ([]byte, error) {
+	return generateMaskingKey(generateMaskingKeyDI{
+		randRead: rand.Read,
+	})
+}
+
+type generateMaskingKeyDI struct {
+	randRead func(b []byte) (n int, err error)
+}
+
+func generateMaskingKey(di generateMaskingKeyDI) ([]byte, error) {
 	key := make([]byte, 4) // WebSocket规范要求4个字节的掩码密钥
-	_, err := rand.Read(key)
+	_, err := di.randRead(key)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-package connection
+package wlgows
 
 import (
 	"bufio"
@@ -6,14 +6,42 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
-
-	"github.com/weilun-shrimp/wlgows/msg"
 )
 
 type ServerConn struct {
 	Conn
+	di serverConnDI
+}
+
+type serverConnDI struct {
+	readRequest              func() (*http.Request, *Error)
+	validateHandShakeRequest func(client_request *http.Request) *Error
+	newResponseWriter        func() *ResponseWriter
+	sendHand                 func(w *ResponseWriter) (*http.Response, error)
+	responseToPlainHTTPMsg   func(resp *http.Response) (string, error)
+	bufioNewReader           func(rd io.Reader) *bufio.Reader
+	httpReadRequest          func(b *bufio.Reader) (*http.Request, error)
+	newMsg                   func(data []byte, opcode uint8, need_mask bool) (*Msg, error)
+	fmtPrintln               func(a ...any) (n int, err error)
+}
+
+func NewServerConn(c net.Conn, req *http.Request) *ServerConn {
+	sc := &ServerConn{Conn: *NewConn(c, req, nil)}
+	sc.di = serverConnDI{
+		readRequest:              sc.ReadRequest,
+		validateHandShakeRequest: ValidateHandShakeRequest,
+		newResponseWriter:        NewResponseWriter,
+		sendHand:                 sc.SendHand,
+		responseToPlainHTTPMsg:   responseToPlainHTTPMsg,
+		bufioNewReader:           bufio.NewReader,
+		httpReadRequest:          http.ReadRequest,
+		newMsg:                   NewMsg,
+		fmtPrintln:               fmt.Println,
+	}
+	return sc
 }
 
 func (sc *ServerConn) HandShake() (*http.Response, error) {
@@ -23,20 +51,20 @@ func (sc *ServerConn) HandShake() (*http.Response, error) {
 	// find invalid error
 	var invalid *Error
 	if sc.Conn.ClientRequest == nil { // fetch client request if needed.
-		_, invalid = sc.ReadRequest()
+		_, invalid = sc.di.readRequest()
 	}
 	if invalid == nil {
-		invalid = ValidateHandShakeRequest(sc.Conn.ClientRequest)
+		invalid = sc.di.validateHandShakeRequest(sc.Conn.ClientRequest)
 	}
 
-	writer := NewResponseWriter()
+	writer := sc.di.newResponseWriter()
 	if invalid != nil {
 		writer.DeclineByErrorType(invalid.Type)
 	} else {
 		writer.UpgradeForWebsocket(sc.Conn.ClientRequest.Header.Get("Sec-Websocket-Key"))
 	}
 
-	res, err := sc.SendHand(writer)
+	res, err := sc.di.sendHand(writer)
 	if err == nil && invalid != nil {
 		err = invalid
 	}
@@ -46,7 +74,7 @@ func (sc *ServerConn) HandShake() (*http.Response, error) {
 // Generate the http.Response and send back to client and put into sc.Conn.ServerResponse if error not occured
 func (sc *ServerConn) SendHand(w *ResponseWriter) (*http.Response, error) {
 	res := w.GenerateResponse()
-	plain_http_msg, err := responseToPlainHTTPMsg(res)
+	plain_http_msg, err := sc.di.responseToPlainHTTPMsg(res)
 	if err != nil {
 		return res, err
 	}
@@ -70,9 +98,9 @@ func (sc *ServerConn) ReadRequest() (*http.Request, *Error) {
 		}
 	}
 
-	req, err := http.ReadRequest(bufio.NewReader(sc))
+	req, err := sc.di.httpReadRequest(sc.di.bufioNewReader(sc))
 	if err != nil {
-		fmt.Println("Error reading request:", err)
+		sc.di.fmtPrintln("Error reading request:", err)
 		return nil, &Error{
 			Type: HttpMsgFormationInvalid,
 			Msg:  "Server Action ReadRequest detect the client passed the InvalidHttpMsgFormation. raw error msg => " + err.Error(),
@@ -131,11 +159,23 @@ func ValidateHandShakeRequest(client_request *http.Request) *Error {
 
 // Function to convert http.Response to a plain HTTP message
 func responseToPlainHTTPMsg(resp *http.Response) (string, error) {
+	return responseToPlainHTTPMsgInner(resp, responseToPlainHTTPMsgDI{
+		ioReadAll:      io.ReadAll,
+		httpStatusText: http.StatusText,
+	})
+}
+
+type responseToPlainHTTPMsgDI struct {
+	ioReadAll      func(r io.Reader) ([]byte, error)
+	httpStatusText func(code int) string
+}
+
+func responseToPlainHTTPMsgInner(resp *http.Response, di responseToPlainHTTPMsgDI) (string, error) {
 	// Create a buffer to hold the entire HTTP message
 	var buf bytes.Buffer
 
 	// Write the status line
-	fmt.Fprintf(&buf, "%s %d %s\r\n", resp.Proto, resp.StatusCode, http.StatusText(resp.StatusCode))
+	fmt.Fprintf(&buf, "%s %d %s\r\n", resp.Proto, resp.StatusCode, di.httpStatusText(resp.StatusCode))
 
 	// Write the headers
 	for key, values := range resp.Header {
@@ -149,7 +189,7 @@ func responseToPlainHTTPMsg(resp *http.Response) (string, error) {
 
 	// Write the body if it's not nil
 	if resp.Body != nil {
-		bodyBytes, err := io.ReadAll(resp.Body)
+		bodyBytes, err := di.ioReadAll(resp.Body)
 		if err != nil {
 			return "", err
 		}
@@ -164,7 +204,7 @@ func responseToPlainHTTPMsg(resp *http.Response) (string, error) {
 
 // server side be allowed not to mask the payload
 func (sc *ServerConn) SendText(text []byte) error {
-	send_msg, err := msg.NewMsg(text, 1, false)
+	send_msg, err := sc.di.newMsg(text, 1, false)
 	if err != nil {
 		return err
 	}
@@ -173,7 +213,7 @@ func (sc *ServerConn) SendText(text []byte) error {
 
 // server side is allowed not to mask the payload
 func (sc *ServerConn) SendByte(byte_data []byte) error {
-	send_msg, err := msg.NewMsg(byte_data, 2, false)
+	send_msg, err := sc.di.newMsg(byte_data, 2, false)
 	if err != nil {
 		return err
 	}

@@ -9,8 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/weilun-shrimp/wlgows/connection"
-	"github.com/weilun-shrimp/wlgows/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v2/example_helpers"
 )
 
 func main() {
@@ -42,7 +42,7 @@ func main() {
 }
 
 func handler(c *gin.Context) {
-	serverConn, err := connection.HijackFromGin(c)
+	serverConn, err := wlgows.HijackFromGin(c)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, errors.New("could not hijack connection"))
 		return
