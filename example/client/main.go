@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/weilun-shrimp/wlgows/client"
-	"github.com/weilun-shrimp/wlgows/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v2/example_helpers"
 )
 
 func main() {
@@ -30,7 +30,7 @@ func main() {
 		tls_config = loadCA(ca_path)
 	}
 
-	conn, err := client.Dial(url, tls_config)
+	conn, err := wlgows.Dial(url, tls_config)
 	if err != nil {
 		fmt.Println("error of dial")
 		fmt.Printf("%+v\n", err)
@@ -59,12 +59,13 @@ func main() {
 			}
 			msg, err := conn.GetNextMsg()
 			if err != nil {
-				fmt.Println("Error reading server msg:", err)
 				if err == io.EOF {
 					fmt.Println("read from server detect the server closed error")
-					stopChan <- true
-					break serverReaderLoop
+				} else {
+					fmt.Println("Error reading server msg:", err)
 				}
+				stopChan <- true
+				break serverReaderLoop
 			}
 			str_msg := msg.GetStr()
 			fmt.Println("echo server return: ", str_msg)
@@ -97,18 +98,10 @@ func main() {
 		}
 	}()
 
-innerLoop:
-	for {
-		select {
-		case <-stopChan:
-			fmt.Println("main process detect the stop sign. Bye.")
-			break innerLoop
-		default:
-			continue
-		}
-	}
-
-	close(stopChan)
+	// Block until either reader signals. A select with a default branch here
+	// would spin a whole core doing nothing.
+	<-stopChan
+	fmt.Println("main process detect the stop sign. Bye.")
 }
 
 func loadCA(ca_path string) *tls.Config {

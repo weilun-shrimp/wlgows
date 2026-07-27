@@ -13,8 +13,36 @@ A lightweight, low-level WebSocket implementation library for Go. Provides both 
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows
+go get github.com/weilun-shrimp/wlgows/v2
 ```
+
+The import path carries the `/v2` suffix that Go requires for major version 2
+and above, but the package name is still `wlgows` — call sites read
+`wlgows.Dial(...)` as usual.
+
+## Design
+
+**Single package.** Everything lives in the root `wlgows` package:
+
+```go
+import "github.com/weilun-shrimp/wlgows/v2"
+
+conn, _ := wlgows.Dial(url, nil)
+s, _    := wlgows.Run(":8001")
+sc, _   := wlgows.HijackFromHttp(w, r)
+```
+
+**Connections must be built by their constructors.** `Conn`, `ClientConn`, `ServerConn`, and `Server` carry unexported dependency fields, so a hand-written struct literal will panic on first use. `Dial`, `Run`, `Accept`, and `HijackFrom*` already do the right thing; only direct construction needs care:
+
+```go
+cc := wlgows.NewClientConn(netConn, req)
+sc := wlgows.NewServerConn(netConn, req)
+c  := wlgows.NewConn(netConn, req, res)
+```
+
+Exported fields (`ClientRequest`, `ServerResponse`, `TCPAddr`, `TCPListener`) are readable and settable.
+
+`wlgows.UpgradeRequest(req *http.Request)` is package-level rather than a method on `ClientConn`, since it only decorates the request headers and never touches the socket.
 
 ## Quick Start
 
@@ -25,12 +53,12 @@ package main
 
 import (
 	"fmt"
-	"github.com/weilun-shrimp/wlgows/server"
+	"github.com/weilun-shrimp/wlgows/v2"
 )
 
 func main() {
 	// Start WebSocket server on port 8001
-	s, err := server.Run(":8001")
+	s, err := wlgows.Run(":8001")
 	if err != nil {
 		panic(err)
 	}
@@ -80,12 +108,12 @@ package main
 
 import (
 	"fmt"
-	"github.com/weilun-shrimp/wlgows/client"
+	"github.com/weilun-shrimp/wlgows/v2"
 )
 
 func main() {
 	// Connect to WebSocket server
-	conn, err := client.Dial("ws://localhost:8001", nil)
+	conn, err := wlgows.Dial("ws://localhost:8001", nil)
 	if err != nil {
 		panic(err)
 	}
@@ -117,7 +145,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"os"
-	"github.com/weilun-shrimp/wlgows/client"
+	"github.com/weilun-shrimp/wlgows/v2"
 )
 
 // Load CA certificate
@@ -129,7 +157,7 @@ tlsConfig := &tls.Config{
 	RootCAs: caCertPool,
 }
 
-conn, err := client.Dial("wss://localhost:8001", tlsConfig)
+conn, err := wlgows.Dial("wss://localhost:8001", tlsConfig)
 ```
 
 ### HTTP Hijacking (with http.Server)
@@ -137,11 +165,11 @@ conn, err := client.Dial("wss://localhost:8001", tlsConfig)
 ```go
 import (
 	"net/http"
-	"github.com/weilun-shrimp/wlgows/connection"
+	"github.com/weilun-shrimp/wlgows/v2"
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	conn, err := connection.HijackFromHttp(w, r)
+	conn, err := wlgows.HijackFromHttp(w, r)
 	if err != nil {
 		return
 	}
@@ -162,11 +190,11 @@ func main() {
 ```go
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/weilun-shrimp/wlgows/connection"
+	"github.com/weilun-shrimp/wlgows/v2"
 )
 
 func handler(c *gin.Context) {
-	conn, err := connection.HijackFromGin(c)
+	conn, err := wlgows.HijackFromGin(c)
 	if err != nil {
 		return
 	}
@@ -203,6 +231,76 @@ go run ./example/echo
 # In another terminal, run the client
 go run ./example/client
 ```
+
+## Testing
+
+```bash
+go test ./...           # full suite
+go test -race ./...     # the integration tests spawn goroutines
+go test -cover .        # 97.7% of statements
+```
+
+One `_test.go` per source file, all in package `wlgows` so the `di` seams are
+reachable. Two files have no source counterpart:
+
+| File | Contents |
+|------|----------|
+| [`Fakes_test.go`](./Fakes_test.go) | Shared doubles — `fakeConn` (in-memory `net.Conn`), `fixedRandRead`, `scriptedReadTCPConn` |
+| [`Integration_test.go`](./Integration_test.go) | Five tests over real sockets with **no** `di` substitution: raw TCP echo, a 70000 byte payload forcing the 64 bit length path, a non-websocket request rejected with 400, and both hijack paths against live servers |
+
+The integration tests are what catch wiring mistakes the unit tests structurally
+cannot — a constructor that forgets a `di` field, or a default pointing at the
+wrong function.
+
+### Substituting a dependency
+
+Every function that performs I/O or uses randomness is a thin exported wrapper
+over an implementation taking a `di` struct of function values; types hold their
+dependencies in a `di` field populated by the constructor. All of it is
+unexported, so only in-package tests can reach it. Deterministic functions
+(`Frame.Seal`, `Msg.GetStr`, `ValidateHandShakeRequest`, …) have no seam and are
+tested directly.
+
+```go
+// package-level func: pass a di struct
+cc, err := dial("ws://localhost:8001", nil, dialDI{
+    httpNewRequest: http.NewRequest,
+    validateWebsocketUrl: ValidateWebsocketUrl,
+    netDial: func(string, string) (net.Conn, error) { return fakeConn, nil },
+    tlsDial: tls.Dial,
+    newClientConn: NewClientConn,
+})
+
+// method: overwrite the field the constructor set
+sc := NewServerConn(conn, req)
+sc.di.newMsg = func(data []byte, opcode uint8, need_mask bool) (*Msg, error) { ... }
+```
+
+Fixing the random source is what makes masked output assertable — a masked
+frame's bytes cannot be pinned otherwise:
+
+```go
+m, _ := newMsg([]byte("hi"), 1, true, newMsgDI{
+    generateMaskingKey: func() ([]byte, error) { return []byte{1, 2, 3, 4}, nil },
+})
+// m.Frames[0].Seal() == []byte{0x81, 0x82, 1, 2, 3, 4, 'h'^1, 'i'^2}
+```
+
+Two tests deliberately assert current behaviour rather than correct behaviour,
+and say so in their names and comments:
+
+- `TestResponseWriterWrittenBodyIsLostWithoutFlush` — `Write` fills a
+  `bufio.Writer` that is never flushed, while `GenerateResponse` reads the
+  underlying buffer, so a short body never reaches the response and
+  `Content-Length` stays 0. Bodies over 4096 bytes bypass the buffer and do
+  survive. When this is fixed, the test fails and tells you to update it.
+- `TestDial/an_unknown_scheme_yields_a_connection_with_no_socket` — the scheme
+  switch in `dial` has no default branch. Unreachable in production because
+  `ValidateWebsocketUrl` gates it; only a permissive fake exposes it.
+
+`newMsg` is the one function below 100% coverage: its
+`dataLength > 18446744073709551612` branch would need an 18 exabyte slice to
+enter.
 
 ## License
 

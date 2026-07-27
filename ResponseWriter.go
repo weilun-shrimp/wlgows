@@ -1,10 +1,11 @@
-package connection
+package wlgows
 
 import (
 	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"hash"
 	"io"
 	"net/http"
 	"strconv"
@@ -16,6 +17,11 @@ type ResponseWriter struct {
 	header      http.Header
 	body_buff   *bytes.Buffer
 	body_writer bufio.Writer
+	di          responseWriterDI
+}
+
+type responseWriterDI struct {
+	generateSecWebsocketAccept func(sec_websocket_key string) string
 }
 
 func NewResponseWriter() *ResponseWriter {
@@ -24,6 +30,9 @@ func NewResponseWriter() *ResponseWriter {
 		header:      http.Header{},
 		body_buff:   buf,
 		body_writer: *bufio.NewWriter(buf),
+		di: responseWriterDI{
+			generateSecWebsocketAccept: GenerateSecWebsocketAccept,
+		},
 	}
 }
 
@@ -89,7 +98,7 @@ func (w *ResponseWriter) UpgradeForWebsocket(sec_websocket_key string) {
 		"Upgrade":               "websocket",
 		"Connection":            "Upgrade",
 		"Sec-WebSocket-Version": "13",
-		"Sec-WebSocket-Accept":  generateSecWebsocketAccept(sec_websocket_key),
+		"Sec-WebSocket-Accept":  w.di.generateSecWebsocketAccept(sec_websocket_key),
 	} {
 		w.Header().Add(k, v)
 	}
@@ -98,8 +107,20 @@ func (w *ResponseWriter) UpgradeForWebsocket(sec_websocket_key string) {
 	// }
 }
 
-func generateSecWebsocketAccept(sec_websocket_key string) string {
-	hasher := sha1.New()
-	io.WriteString(hasher, sec_websocket_key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+func GenerateSecWebsocketAccept(sec_websocket_key string) string {
+	return generateSecWebsocketAccept(sec_websocket_key, generateSecWebsocketAcceptDI{
+		sha1New:       sha1.New,
+		ioWriteString: io.WriteString,
+	})
+}
+
+type generateSecWebsocketAcceptDI struct {
+	sha1New       func() hash.Hash
+	ioWriteString func(w io.Writer, s string) (n int, err error)
+}
+
+func generateSecWebsocketAccept(sec_websocket_key string, di generateSecWebsocketAcceptDI) string {
+	hasher := di.sha1New()
+	di.ioWriteString(hasher, sec_websocket_key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 	return base64.StdEncoding.EncodeToString((hasher.Sum(nil)))
 }

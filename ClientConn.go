@@ -1,4 +1,4 @@
-package connection
+package wlgows
 
 import (
 	"bufio"
@@ -8,45 +8,81 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/weilun-shrimp/wlgows/msg"
 )
 
 type ClientConn struct {
 	Conn
+	di clientConnDI
+}
+
+type clientConnDI struct {
+	upgradeRequest            func(req *http.Request) error
+	sendHand                  func() error
+	readResponse              func() error
+	validateHandShakeResponse func(res *http.Response, sec_websocket_key string) error
+	requestToPlainHTTPMsg     func(req *http.Request) (string, error)
+	bufioNewReader            func(rd io.Reader) *bufio.Reader
+	httpReadResponse          func(r *bufio.Reader, req *http.Request) (*http.Response, error)
+	newMsg                    func(data []byte, opcode uint8, need_mask bool) (*Msg, error)
+}
+
+func NewClientConn(c net.Conn, req *http.Request) *ClientConn {
+	cc := &ClientConn{Conn: *NewConn(c, req, nil)}
+	cc.di = clientConnDI{
+		upgradeRequest:            UpgradeRequest,
+		sendHand:                  cc.SendHand,
+		readResponse:              cc.ReadResponse,
+		validateHandShakeResponse: ValidateHandShakeResponse,
+		requestToPlainHTTPMsg:     RequestToPlainHTTPMsg,
+		bufioNewReader:            bufio.NewReader,
+		httpReadResponse:          http.ReadResponse,
+		newMsg:                    NewMsg,
+	}
+	return cc
 }
 
 func (cc *ClientConn) HandShake() error {
-	if err := cc.UpgradeRequest(); err != nil {
+	if err := cc.di.upgradeRequest(cc.ClientRequest); err != nil {
 		return err
 	}
-	if err := cc.SendHand(); err != nil {
+	if err := cc.di.sendHand(); err != nil {
 		return err
 	}
-	if err := cc.ReadResponse(); err != nil {
+	if err := cc.di.readResponse(); err != nil {
 		return err
 	}
-	if err := ValidateHandShakeResponse(cc.ServerResponse, cc.ClientRequest.Header.Get("Sec-WebSocket-Key")); err != nil {
+	if err := cc.di.validateHandShakeResponse(cc.ServerResponse, cc.ClientRequest.Header.Get("Sec-WebSocket-Key")); err != nil {
 		return err
 	}
 	return nil
 }
 
 // upgrade request for websocket
-func (cc *ClientConn) UpgradeRequest() error {
-	if cc.ClientRequest == nil {
+func UpgradeRequest(req *http.Request) error {
+	return upgradeRequest(req, upgradeRequestDI{
+		generateWebSocketKey: GenerateWebSocketKey,
+	})
+}
+
+type upgradeRequestDI struct {
+	generateWebSocketKey func() string
+}
+
+func upgradeRequest(req *http.Request, di upgradeRequestDI) error {
+	if req == nil {
 		return errors.New(" ClientConn detect the ClientRequest is nil on UpgradeRequest process")
 	}
 	for k, v := range map[string]string{
 		"Upgrade":               "websocket",
 		"Connection":            "Upgrade",
-		"Sec-WebSocket-Key":     generateWebSocketKey(),
+		"Sec-WebSocket-Key":     di.generateWebSocketKey(),
 		"Sec-WebSocket-Version": "13",
 	} {
-		cc.ClientRequest.Header.Set(k, v)
+		req.Header.Set(k, v)
 	}
 	return nil
 }
@@ -56,7 +92,7 @@ func (cc *ClientConn) SendHand() error {
 	if cc.ClientRequest == nil {
 		return errors.New(" ClientConn detect the ClientRequest is nil on handshake process")
 	}
-	plainHttpRequestMsg, err := requestToPlainHTTPMsg(cc.ClientRequest)
+	plainHttpRequestMsg, err := cc.di.requestToPlainHTTPMsg(cc.ClientRequest)
 	if err != nil {
 		return err
 	}
@@ -75,7 +111,7 @@ func (cc *ClientConn) ReadResponse() error {
 	if cc.ClientRequest == nil {
 		return errors.New(" ClientConn detect the ClientRequest is nil on handshake process ReadResponse()")
 	}
-	res, err := http.ReadResponse(bufio.NewReader(cc), cc.ClientRequest)
+	res, err := cc.di.httpReadResponse(cc.di.bufioNewReader(cc), cc.ClientRequest)
 	if err != nil {
 		return err
 	}
@@ -105,7 +141,7 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 	if res.Header.Get("Sec-WebSocket-Accept") == "" {
 		return errors.New("invalid handshake response header Sec-WebSocket-Accept. The Sec-WebSocket-Accept header is required")
 	}
-	sec_ws_accept := generateSecWebsocketAccept(sec_websocket_key)
+	sec_ws_accept := GenerateSecWebsocketAccept(sec_websocket_key)
 	if res.Header.Get("Sec-WebSocket-Accept") != sec_ws_accept {
 		return fmt.Errorf(`invalid handshake response header Sec-WebSocket-Accept %s.
 			The valid value should be %s.
@@ -119,19 +155,43 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 	return nil
 }
 
-func generateWebSocketKey() string {
+func GenerateWebSocketKey() string {
+	return generateWebSocketKey(generateWebSocketKeyDI{
+		randRead: rand.Read,
+	})
+}
+
+type generateWebSocketKeyDI struct {
+	randRead func(b []byte) (n int, err error)
+}
+
+func generateWebSocketKey(di generateWebSocketKeyDI) string {
 	key := make([]byte, 16)
-	rand.Read(key)
+	di.randRead(key)
 	return base64.StdEncoding.EncodeToString(key)
 }
 
 // Function to convert http.Request to a plain HTTP message
-func requestToPlainHTTPMsg(req *http.Request) (string, error) {
+func RequestToPlainHTTPMsg(req *http.Request) (string, error) {
+	return requestToPlainHTTPMsg(req, requestToPlainHTTPMsgDI{
+		ioReadAll: io.ReadAll,
+	})
+}
+
+type requestToPlainHTTPMsgDI struct {
+	ioReadAll func(r io.Reader) ([]byte, error)
+}
+
+func requestToPlainHTTPMsg(req *http.Request, di requestToPlainHTTPMsgDI) (string, error) {
 	// Create a buffer to hold the entire HTTP message
 	var buf bytes.Buffer
 
 	// Write the top line (e.g., "GET / HTTP/1.1")
-	fmt.Fprintf(&buf, "%s %s %s\r\n", req.Method, req.URL, req.Proto)
+	// RequestURI() gives the origin form (path + query, "/" when the path is
+	// empty). Writing req.URL instead would emit the absolute form
+	// "GET ws://host:port HTTP/1.1", which servers read as a proxy request and
+	// routers answer with a 301 redirect.
+	fmt.Fprintf(&buf, "%s %s %s\r\n", req.Method, req.URL.RequestURI(), req.Proto)
 
 	// Write the headers
 	if req.Header.Get("Host") == "" { // put Host header if not exists
@@ -148,7 +208,7 @@ func requestToPlainHTTPMsg(req *http.Request) (string, error) {
 
 	// Write the body if it's not nil
 	if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
+		bodyBytes, err := di.ioReadAll(req.Body)
 		if err != nil {
 			return "", err
 		}
@@ -163,7 +223,7 @@ func requestToPlainHTTPMsg(req *http.Request) (string, error) {
 
 // client side is not allowed not to mask the payload
 func (cc *ClientConn) SendText(text []byte) error {
-	send_msg, err := msg.NewMsg(text, 1, true)
+	send_msg, err := cc.di.newMsg(text, 1, true)
 	if err != nil {
 		return err
 	}
@@ -172,7 +232,7 @@ func (cc *ClientConn) SendText(text []byte) error {
 
 // client side is not allowed not to mask the payload
 func (cc *ClientConn) SendByte(byte_data []byte) error {
-	send_msg, err := msg.NewMsg(byte_data, 2, true)
+	send_msg, err := cc.di.newMsg(byte_data, 2, true)
 	if err != nil {
 		return err
 	}

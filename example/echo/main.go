@@ -5,13 +5,12 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/connection"
-	"github.com/weilun-shrimp/wlgows/server"
+	"github.com/weilun-shrimp/wlgows/v2"
 )
 
 func main() {
 	service := ":8001"
-	s, err := server.Run(service)
+	s, err := wlgows.Run(service)
 	if err != nil {
 		fmt.Println("Error server run : " + err.Error())
 		return
@@ -31,7 +30,7 @@ func main() {
 	}
 }
 
-func handleClient(c *connection.ServerConn) {
+func handleClient(c *wlgows.ServerConn) {
 	// c.SetReadDeadline(time.Now().Add(10 * time.Second)) // set 2 minutes timeout
 	// c.SetKeepAlive(true)
 	// c.SetKeepAlivePeriod(5 * time.Second)
@@ -44,9 +43,9 @@ func handleClient(c *connection.ServerConn) {
 		fmt.Println(err)
 		return
 	}
-	fmt.Printf("%+v\n", c.Conn.ClientRequest)
+	fmt.Printf("%+v\n", c.ClientRequest)
 	fmt.Printf("\n")
-	fmt.Printf("%+v\n", c.Conn.ServerResponse)
+	fmt.Printf("%+v\n", c.ServerResponse)
 
 	for {
 		msg, err := c.GetNextMsg()

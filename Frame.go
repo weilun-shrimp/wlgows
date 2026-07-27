@@ -1,4 +1,4 @@
-package frame
+package wlgows
 
 import (
 	"encoding/binary"
@@ -37,15 +37,21 @@ func boolToInt(data bool) uint8 {
  */
 func (f *Frame) Seal() []byte {
 	result := []byte{
-		boolToInt(f.FIN)<<7 + boolToInt(f.RSV1)<<6 + boolToInt(f.RSV2)<<5 + boolToInt(f.RSV3)<<4 + f.Opcode&15,
-		boolToInt(f.Mask)<<7 + f.PayloadLength,
+		boolToInt(f.FIN)<<7 +
+			boolToInt(f.RSV1)<<6 +
+			boolToInt(f.RSV2)<<5 +
+			boolToInt(f.RSV3)<<4 +
+			f.Opcode&15,
+		boolToInt(f.Mask)<<7 +
+			f.PayloadLength,
 	}
 
 	var ExtendedPayloadByte []byte
-	if f.PayloadLength == 126 {
+	switch f.PayloadLength {
+	case 126:
 		ExtendedPayloadByte = make([]byte, 2)
 		binary.BigEndian.PutUint16(ExtendedPayloadByte, uint16(f.ExtendedPayloadLength))
-	} else if f.PayloadLength == 127 {
+	case 127:
 		ExtendedPayloadByte = make([]byte, 8)
 		binary.BigEndian.PutUint64(ExtendedPayloadByte, f.ExtendedPayloadLength)
 	}

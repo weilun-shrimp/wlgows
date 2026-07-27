@@ -1,4 +1,4 @@
-package connection
+package wlgows
 
 type Error struct {
 	Type string
