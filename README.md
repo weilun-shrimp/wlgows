@@ -9,6 +9,7 @@ A lightweight, low-level WebSocket implementation library for Go. Provides both 
 - **TLS/SSL Support** - Secure WebSocket connections for both server and client
 - **HTTP Hijacking** - Integrate with standard `http.Server` or Gin framework
 - **Frame-Level Control** - Low-level frame manipulation and multi-frame message handling
+- **Concurrent Sending** - Writes are mutex-guarded, so many goroutines can send on one connection
 
 ## Installation
 
@@ -43,6 +44,23 @@ c  := wlgows.NewConn(netConn, req, res)
 Exported fields (`ClientRequest`, `ServerResponse`, `TCPAddr`, `TCPListener`) are readable and settable.
 
 `wlgows.UpgradeRequest(req *http.Request)` is package-level rather than a method on `ClientConn`, since it only decorates the request headers and never touches the socket.
+
+## Concurrency
+
+`Conn` carries two `sync.Locker` values in its `di` field, both defaulting to a `*sync.Mutex`. Every method that touches the socket takes one:
+
+| Locker | Methods |
+|--------|---------|
+| `writeLocker` | `SendMsg`, `SendText`, `SendByte`, `SendHand` |
+| `readLocker` | `GetNextMsg`, `GetNextFrame`, `ReadRequest`, `ReadResponse` |
+
+**Sending from many goroutines is safe.** `writeLocker` spans the whole frame loop, so frames from different messages never interleave.
+
+**Use one reader goroutine.** `readLocker` stops readers stealing each other's bytes, but two readers would still each get an arbitrary subset of messages.
+
+**`conn.Write` / `conn.Read` bypass the locks** — they are promoted from the embedded `net.Conn`. Send through `SendText` / `SendByte` / `SendMsg`.
+
+`Close` takes neither lock on purpose: closing the fd is what unblocks a read or write parked on a dead peer.
 
 ## Quick Start
 

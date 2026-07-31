@@ -11,37 +11,37 @@ import (
 
 func validClientHandShakeRequest(t *testing.T) *http.Request {
 	t.Helper()
-	req := httptestRequest(t)
-	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	return req
+	request := httptestRequest(t)
+	request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	return request
 }
 
 func TestNewServerConn(t *testing.T) {
-	fc := newFakeConn(nil)
-	req := validClientHandShakeRequest(t)
+	netConn := newFakeConn(nil)
+	request := validClientHandShakeRequest(t)
 
-	sc := NewServerConn(fc, req)
+	serverConn := NewServerConn(netConn, request)
 
-	if sc.ClientRequest != req {
+	if serverConn.ClientRequest != request {
 		t.Error("ClientRequest was not set on the embedded Conn")
 	}
-	if sc.Conn.di.getMsgFromTCPConn == nil {
+	if serverConn.Conn.di.getMsgFromTCPConn == nil {
 		t.Error("the embedded Conn must get its own di")
 	}
-	for name, fn := range map[string]any{
-		"readRequest":              sc.di.readRequest,
-		"validateHandShakeRequest": sc.di.validateHandShakeRequest,
-		"newResponseWriter":        sc.di.newResponseWriter,
-		"sendHand":                 sc.di.sendHand,
-		"responseToPlainHTTPMsg":   sc.di.responseToPlainHTTPMsg,
-		"bufioNewReader":           sc.di.bufioNewReader,
-		"httpReadRequest":          sc.di.httpReadRequest,
-		"newMsg":                   sc.di.newMsg,
-		"fmtPrintln":               sc.di.fmtPrintln,
+	for name, constructor := range map[string]any{
+		"readRequest":              serverConn.di.readRequest,
+		"validateHandShakeRequest": serverConn.di.validateHandShakeRequest,
+		"newResponseWriter":        serverConn.di.newResponseWriter,
+		"sendHand":                 serverConn.di.sendHand,
+		"responseToPlainHTTPMsg":   serverConn.di.responseToPlainHTTPMsg,
+		"bufioNewReader":           serverConn.di.bufioNewReader,
+		"httpReadRequest":          serverConn.di.httpReadRequest,
+		"newMsg":                   serverConn.di.newMsg,
+		"fmtPrintln":               serverConn.di.fmtPrintln,
 	} {
-		if fn == nil {
+		if constructor == nil {
 			t.Errorf("NewServerConn left di.%s nil", name)
 		}
 	}
@@ -49,40 +49,40 @@ func TestNewServerConn(t *testing.T) {
 
 func TestServerConnHandShake(t *testing.T) {
 	t.Run("refuses when a response was already sent", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), validClientHandShakeRequest(t))
-		sc.ServerResponse = &http.Response{StatusCode: 101}
-		res, err := sc.HandShake()
+		serverConn := NewServerConn(newFakeConn(nil), validClientHandShakeRequest(t))
+		serverConn.ServerResponse = &http.Response{StatusCode: 101}
+		response, err := serverConn.HandShake()
 		if err == nil || !strings.Contains(err.Error(), "Server Response has been set") {
 			t.Errorf("err = %v, want an already-sent error", err)
 		}
-		if res != nil {
+		if response != nil {
 			t.Error("no response should be produced")
 		}
 	})
 
 	t.Run("upgrades a valid request", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), validClientHandShakeRequest(t))
+		serverConn := NewServerConn(newFakeConn(nil), validClientHandShakeRequest(t))
 		var writer *ResponseWriter
-		sc.di.newResponseWriter = func() *ResponseWriter {
+		serverConn.di.newResponseWriter = func() *ResponseWriter {
 			writer = NewResponseWriter()
 			return writer
 		}
-		sc.di.readRequest = func() (*http.Request, *Error) {
+		serverConn.di.readRequest = func() (*http.Request, *Error) {
 			t.Fatal("readRequest must not run when ClientRequest is already set")
 			return nil, nil
 		}
 		var sentWriter *ResponseWriter
-		sc.di.sendHand = func(w *ResponseWriter) (*http.Response, error) {
-			sentWriter = w
-			return &http.Response{StatusCode: w.statusCode}, nil
+		serverConn.di.sendHand = func(writer *ResponseWriter) (*http.Response, error) {
+			sentWriter = writer
+			return &http.Response{StatusCode: writer.statusCode}, nil
 		}
 
-		res, err := sc.HandShake()
+		response, err := serverConn.HandShake()
 		if err != nil {
 			t.Fatalf("HandShake: %v", err)
 		}
-		if res.StatusCode != 101 {
-			t.Errorf("StatusCode = %d, want 101", res.StatusCode)
+		if response.StatusCode != 101 {
+			t.Errorf("StatusCode = %d, want 101", response.StatusCode)
 		}
 		if sentWriter != writer {
 			t.Error("the writer built by di must be the one handed to sendHand")
@@ -93,17 +93,17 @@ func TestServerConnHandShake(t *testing.T) {
 	})
 
 	t.Run("reads the request when none is set yet", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), nil)
+		serverConn := NewServerConn(newFakeConn(nil), nil)
 		called := false
-		sc.di.readRequest = func() (*http.Request, *Error) {
+		serverConn.di.readRequest = func() (*http.Request, *Error) {
 			called = true
-			sc.ClientRequest = validClientHandShakeRequest(t)
-			return sc.ClientRequest, nil
+			serverConn.ClientRequest = validClientHandShakeRequest(t)
+			return serverConn.ClientRequest, nil
 		}
-		sc.di.sendHand = func(w *ResponseWriter) (*http.Response, error) {
-			return &http.Response{StatusCode: w.statusCode}, nil
+		serverConn.di.sendHand = func(writer *ResponseWriter) (*http.Response, error) {
+			return &http.Response{StatusCode: writer.statusCode}, nil
 		}
-		if _, err := sc.HandShake(); err != nil {
+		if _, err := serverConn.HandShake(); err != nil {
 			t.Fatalf("HandShake: %v", err)
 		}
 		if !called {
@@ -112,25 +112,25 @@ func TestServerConnHandShake(t *testing.T) {
 	})
 
 	t.Run("declines when reading the request fails", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), nil)
+		serverConn := NewServerConn(newFakeConn(nil), nil)
 		invalid := &Error{Type: HttpMsgFormationInvalid, Msg: "bad http"}
-		sc.di.readRequest = func() (*http.Request, *Error) { return nil, invalid }
-		sc.di.validateHandShakeRequest = func(*http.Request) *Error {
+		serverConn.di.readRequest = func() (*http.Request, *Error) { return nil, invalid }
+		serverConn.di.validateHandShakeRequest = func(*http.Request) *Error {
 			t.Fatal("validation must be skipped when the read already failed")
 			return nil
 		}
 		var writer *ResponseWriter
-		sc.di.newResponseWriter = func() *ResponseWriter {
+		serverConn.di.newResponseWriter = func() *ResponseWriter {
 			writer = NewResponseWriter()
 			return writer
 		}
-		sc.di.sendHand = func(w *ResponseWriter) (*http.Response, error) {
-			return &http.Response{StatusCode: w.statusCode}, nil
+		serverConn.di.sendHand = func(writer *ResponseWriter) (*http.Response, error) {
+			return &http.Response{StatusCode: writer.statusCode}, nil
 		}
 
-		res, err := sc.HandShake()
+		response, err := serverConn.HandShake()
 		// The decline response is still returned alongside the error.
-		if res == nil {
+		if response == nil {
 			t.Fatal("a decline response should still be produced")
 		}
 		if !errors.Is(err, error(invalid)) {
@@ -142,17 +142,17 @@ func TestServerConnHandShake(t *testing.T) {
 	})
 
 	t.Run("declines an invalid handshake request", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), httptestRequest(t)) // no websocket headers
+		serverConn := NewServerConn(newFakeConn(nil), httptestRequest(t)) // no websocket headers
 		var writer *ResponseWriter
-		sc.di.newResponseWriter = func() *ResponseWriter {
+		serverConn.di.newResponseWriter = func() *ResponseWriter {
 			writer = NewResponseWriter()
 			return writer
 		}
-		sc.di.sendHand = func(w *ResponseWriter) (*http.Response, error) {
-			return &http.Response{StatusCode: w.statusCode}, nil
+		serverConn.di.sendHand = func(writer *ResponseWriter) (*http.Response, error) {
+			return &http.Response{StatusCode: writer.statusCode}, nil
 		}
 
-		_, err := sc.HandShake()
+		_, err := serverConn.HandShake()
 		if err == nil {
 			t.Fatal("expected the validation error to surface")
 		}
@@ -166,11 +166,11 @@ func TestServerConnHandShake(t *testing.T) {
 
 	t.Run("a send failure wins over the validation error", func(t *testing.T) {
 		sendErr := errors.New("write failed")
-		sc := NewServerConn(newFakeConn(nil), httptestRequest(t))
-		sc.di.sendHand = func(*ResponseWriter) (*http.Response, error) {
+		serverConn := NewServerConn(newFakeConn(nil), httptestRequest(t))
+		serverConn.di.sendHand = func(*ResponseWriter) (*http.Response, error) {
 			return nil, sendErr
 		}
-		if _, err := sc.HandShake(); !errors.Is(err, sendErr) {
+		if _, err := serverConn.HandShake(); !errors.Is(err, sendErr) {
 			t.Errorf("err = %v, want %v", err, sendErr)
 		}
 	})
@@ -178,56 +178,56 @@ func TestServerConnHandShake(t *testing.T) {
 
 func TestServerConnSendHand(t *testing.T) {
 	t.Run("writes the response and cross links it with the request", func(t *testing.T) {
-		fc := newFakeConn(nil)
-		req := validClientHandShakeRequest(t)
-		sc := NewServerConn(fc, req)
-		w := NewResponseWriter()
-		w.UpgradeForWebsocket("dGhlIHNhbXBsZSBub25jZQ==")
+		netConn := newFakeConn(nil)
+		request := validClientHandShakeRequest(t)
+		serverConn := NewServerConn(netConn, request)
+		writer := NewResponseWriter()
+		writer.UpgradeForWebsocket("dGhlIHNhbXBsZSBub25jZQ==")
 
-		res, err := sc.SendHand(w)
+		response, err := serverConn.SendHand(writer)
 		if err != nil {
 			t.Fatalf("SendHand: %v", err)
 		}
-		if sc.ServerResponse != res {
+		if serverConn.ServerResponse != response {
 			t.Error("ServerResponse was not stored")
 		}
-		if req.Response != res || res.Request != req {
+		if request.Response != response || response.Request != request {
 			t.Error("request and response should reference each other")
 		}
-		if !strings.HasPrefix(string(fc.written()), "HTTP/1.1 101 Switching Protocols\r\n") {
-			t.Errorf("status line wrong: %q", fc.written())
+		if !strings.HasPrefix(string(netConn.written()), "HTTP/1.1 101 Switching Protocols\r\n") {
+			t.Errorf("status line wrong: %q", netConn.written())
 		}
 	})
 
 	t.Run("tolerates a nil client request", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), nil)
-		res, err := sc.SendHand(NewResponseWriter())
+		serverConn := NewServerConn(newFakeConn(nil), nil)
+		response, err := serverConn.SendHand(NewResponseWriter())
 		if err != nil {
 			t.Fatalf("SendHand: %v", err)
 		}
-		if sc.ServerResponse != res {
+		if serverConn.ServerResponse != response {
 			t.Error("ServerResponse should still be stored")
 		}
 	})
 
 	t.Run("propagates a serialisation error", func(t *testing.T) {
 		want := errors.New("cannot serialise")
-		sc := NewServerConn(newFakeConn(nil), nil)
-		sc.di.responseToPlainHTTPMsg = func(*http.Response) (string, error) { return "", want }
-		if _, err := sc.SendHand(NewResponseWriter()); !errors.Is(err, want) {
+		serverConn := NewServerConn(newFakeConn(nil), nil)
+		serverConn.di.responseToPlainHTTPMsg = func(*http.Response) (string, error) { return "", want }
+		if _, err := serverConn.SendHand(NewResponseWriter()); !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
 		}
 	})
 
 	t.Run("does not store the response when the write fails", func(t *testing.T) {
 		want := errors.New("broken pipe")
-		fc := newFakeConn(nil)
-		fc.writeErr = want
-		sc := NewServerConn(fc, nil)
-		if _, err := sc.SendHand(NewResponseWriter()); !errors.Is(err, want) {
+		netConn := newFakeConn(nil)
+		netConn.writeErr = want
+		serverConn := NewServerConn(netConn, nil)
+		if _, err := serverConn.SendHand(NewResponseWriter()); !errors.Is(err, want) {
 			t.Fatalf("err = %v, want %v", err, want)
 		}
-		if sc.ServerResponse != nil {
+		if serverConn.ServerResponse != nil {
 			t.Error("ServerResponse must stay nil after a failed write")
 		}
 	})
@@ -236,27 +236,27 @@ func TestServerConnSendHand(t *testing.T) {
 func TestServerConnReadRequest(t *testing.T) {
 	t.Run("stores the parsed request", func(t *testing.T) {
 		want := validClientHandShakeRequest(t)
-		sc := NewServerConn(newFakeConn(nil), nil)
-		sc.di.httpReadRequest = func(*bufio.Reader) (*http.Request, error) { return want, nil }
+		serverConn := NewServerConn(newFakeConn(nil), nil)
+		serverConn.di.httpReadRequest = func(*bufio.Reader) (*http.Request, error) { return want, nil }
 
-		got, invalid := sc.ReadRequest()
+		got, invalid := serverConn.ReadRequest()
 		if invalid != nil {
 			t.Fatalf("unexpected error: %v", invalid)
 		}
-		if got != want || sc.ClientRequest != want {
+		if got != want || serverConn.ClientRequest != want {
 			t.Error("the parsed request should be returned and stored")
 		}
 	})
 
 	t.Run("refuses to read twice", func(t *testing.T) {
 		existing := validClientHandShakeRequest(t)
-		sc := NewServerConn(newFakeConn(nil), existing)
-		sc.di.httpReadRequest = func(*bufio.Reader) (*http.Request, error) {
+		serverConn := NewServerConn(newFakeConn(nil), existing)
+		serverConn.di.httpReadRequest = func(*bufio.Reader) (*http.Request, error) {
 			t.Fatal("must not read when a request is already set")
 			return nil, nil
 		}
 
-		got, invalid := sc.ReadRequest()
+		got, invalid := serverConn.ReadRequest()
 		if invalid == nil || invalid.Type != ClientRequestHasSet {
 			t.Fatalf("invalid = %v, want ClientRequestHasSet", invalid)
 		}
@@ -267,14 +267,14 @@ func TestServerConnReadRequest(t *testing.T) {
 	})
 
 	t.Run("maps a parse failure to HttpMsgFormationInvalid", func(t *testing.T) {
-		sc := NewServerConn(newFakeConn(nil), nil)
-		sc.di.httpReadRequest = func(*bufio.Reader) (*http.Request, error) {
+		serverConn := NewServerConn(newFakeConn(nil), nil)
+		serverConn.di.httpReadRequest = func(*bufio.Reader) (*http.Request, error) {
 			return nil, errors.New("garbage on the wire")
 		}
 		var logged bool
-		sc.di.fmtPrintln = func(...any) (int, error) { logged = true; return 0, nil }
+		serverConn.di.fmtPrintln = func(...any) (int, error) { logged = true; return 0, nil }
 
-		got, invalid := sc.ReadRequest()
+		got, invalid := serverConn.ReadRequest()
 		if got != nil {
 			t.Error("no request should be returned")
 		}
@@ -287,7 +287,7 @@ func TestServerConnReadRequest(t *testing.T) {
 		if !logged {
 			t.Error("the parse failure should go through di.fmtPrintln")
 		}
-		if sc.ClientRequest != nil {
+		if serverConn.ClientRequest != nil {
 			t.Error("ClientRequest must stay nil after a failed read")
 		}
 	})
@@ -298,13 +298,13 @@ func TestServerConnReadRequest(t *testing.T) {
 			"Upgrade: websocket\r\n" +
 			"Connection: Upgrade\r\n" +
 			"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
-		sc := NewServerConn(newFakeConn([]byte(raw)), nil)
-		req, invalid := sc.ReadRequest()
+		serverConn := NewServerConn(newFakeConn([]byte(raw)), nil)
+		request, invalid := serverConn.ReadRequest()
 		if invalid != nil {
 			t.Fatalf("unexpected error: %v", invalid)
 		}
-		if req.Method != "GET" || req.Header.Get("Upgrade") != "websocket" {
-			t.Errorf("parsed request wrong: %+v", req)
+		if request.Method != "GET" || request.Header.Get("Upgrade") != "websocket" {
+			t.Errorf("parsed request wrong: %+v", request)
 		}
 	})
 }
@@ -317,10 +317,10 @@ func TestValidateHandShakeRequest(t *testing.T) {
 	})
 
 	t.Run("header comparison is case insensitive", func(t *testing.T) {
-		req := validClientHandShakeRequest(t)
-		req.Header.Set("Connection", "UPGRADE")
-		req.Header.Set("Upgrade", "WEBSOCKET")
-		if err := ValidateHandShakeRequest(req); err != nil {
+		request := validClientHandShakeRequest(t)
+		request.Header.Set("Connection", "UPGRADE")
+		request.Header.Set("Upgrade", "WEBSOCKET")
+		if err := ValidateHandShakeRequest(request); err != nil {
 			t.Errorf("ValidateHandShakeRequest: %v", err)
 		}
 	})
@@ -356,16 +356,16 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			wantType: HttpUpgradeHeaderNotWebsocket,
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := validClientHandShakeRequest(t)
-			tt.mutate(req)
-			got := ValidateHandShakeRequest(req)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := validClientHandShakeRequest(t)
+			testCase.mutate(request)
+			got := ValidateHandShakeRequest(request)
 			if got == nil {
 				t.Fatal("expected an error")
 			}
-			if got.Type != tt.wantType {
-				t.Errorf("Type = %q, want %q", got.Type, tt.wantType)
+			if got.Type != testCase.wantType {
+				t.Errorf("Type = %q, want %q", got.Type, testCase.wantType)
 			}
 			if got.Msg == "" {
 				t.Error("Msg should explain the failure")
@@ -375,9 +375,9 @@ func TestValidateHandShakeRequest(t *testing.T) {
 
 	// Method is checked before the headers.
 	t.Run("reports the first failure it finds", func(t *testing.T) {
-		req := httptestRequest(t)
-		req.Method = "DELETE"
-		if got := ValidateHandShakeRequest(req); got.Type != HttpMethodNotAllowed {
+		request := httptestRequest(t)
+		request.Method = "DELETE"
+		if got := ValidateHandShakeRequest(request); got.Type != HttpMethodNotAllowed {
 			t.Errorf("Type = %q, want the method error first", got.Type)
 		}
 	})
@@ -385,13 +385,13 @@ func TestValidateHandShakeRequest(t *testing.T) {
 
 func TestResponseToPlainHTTPMsg(t *testing.T) {
 	newResponse := func() *http.Response {
-		res := &http.Response{
+		response := &http.Response{
 			Proto:      "HTTP/1.1",
 			StatusCode: 101,
 			Header:     http.Header{},
 		}
-		res.Header.Set("Upgrade", "websocket")
-		return res
+		response.Header.Set("Upgrade", "websocket")
+		return response
 	}
 
 	t.Run("writes the status line and headers", func(t *testing.T) {
@@ -427,9 +427,9 @@ func TestResponseToPlainHTTPMsg(t *testing.T) {
 	})
 
 	t.Run("appends the body", func(t *testing.T) {
-		res := newResponse()
-		res.Body = io.NopCloser(strings.NewReader("the body"))
-		got, err := responseToPlainHTTPMsgInner(res, responseToPlainHTTPMsgDI{
+		response := newResponse()
+		response.Body = io.NopCloser(strings.NewReader("the body"))
+		got, err := responseToPlainHTTPMsgInner(response, responseToPlainHTTPMsgDI{
 			ioReadAll:      io.ReadAll,
 			httpStatusText: http.StatusText,
 		})
@@ -443,9 +443,9 @@ func TestResponseToPlainHTTPMsg(t *testing.T) {
 
 	t.Run("propagates a body read error", func(t *testing.T) {
 		want := errors.New("body exploded")
-		res := newResponse()
-		res.Body = io.NopCloser(strings.NewReader("x"))
-		got, err := responseToPlainHTTPMsgInner(res, responseToPlainHTTPMsgDI{
+		response := newResponse()
+		response.Body = io.NopCloser(strings.NewReader("x"))
+		got, err := responseToPlainHTTPMsgInner(response, responseToPlainHTTPMsgDI{
 			ioReadAll:      func(io.Reader) ([]byte, error) { return nil, want },
 			httpStatusText: http.StatusText,
 		})
@@ -468,21 +468,21 @@ func TestServerConnSendTextAndSendByteNeverMask(t *testing.T) {
 		{"SendText uses opcode 1", (*ServerConn).SendText, 1},
 		{"SendByte uses opcode 2", (*ServerConn).SendByte, 2},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sc := NewServerConn(newFakeConn(nil), nil)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			serverConn := NewServerConn(newFakeConn(nil), nil)
 			var gotOpcode uint8
 			var gotMask bool
-			sc.di.newMsg = func(_ []byte, opcode uint8, need_mask bool) (*Msg, error) {
+			serverConn.di.newMsg = func(_ []byte, opcode uint8, need_mask bool) (*Msg, error) {
 				gotOpcode, gotMask = opcode, need_mask
 				return &Msg{}, nil
 			}
 
-			if err := tt.send(sc, []byte("payload")); err != nil {
+			if err := testCase.send(serverConn, []byte("payload")); err != nil {
 				t.Fatalf("send: %v", err)
 			}
-			if gotOpcode != tt.wantOpcode {
-				t.Errorf("opcode = %d, want %d", gotOpcode, tt.wantOpcode)
+			if gotOpcode != testCase.wantOpcode {
+				t.Errorf("opcode = %d, want %d", gotOpcode, testCase.wantOpcode)
 			}
 			if gotMask {
 				t.Error("server frames must NOT be masked")
@@ -492,13 +492,13 @@ func TestServerConnSendTextAndSendByteNeverMask(t *testing.T) {
 }
 
 func TestServerConnSendTextWritesUnmaskedBytes(t *testing.T) {
-	fc := newFakeConn(nil)
-	sc := NewServerConn(fc, nil)
-	if err := sc.SendText([]byte("hi")); err != nil {
+	netConn := newFakeConn(nil)
+	serverConn := NewServerConn(netConn, nil)
+	if err := serverConn.SendText([]byte("hi")); err != nil {
 		t.Fatalf("SendText: %v", err)
 	}
 	want := []byte{0x81, 0x02, 'h', 'i'}
-	got := fc.written()
+	got := netConn.written()
 	if string(got) != string(want) {
 		t.Errorf("written = % x, want % x", got, want)
 	}
@@ -515,9 +515,9 @@ func TestServerConnSendPropagatesNewMsgError(t *testing.T) {
 	for name, send := range sends {
 		t.Run(name, func(t *testing.T) {
 			want := errors.New("cannot build message")
-			sc := NewServerConn(newFakeConn(nil), nil)
-			sc.di.newMsg = func([]byte, uint8, bool) (*Msg, error) { return nil, want }
-			if err := send(sc, []byte("x")); !errors.Is(err, want) {
+			serverConn := NewServerConn(newFakeConn(nil), nil)
+			serverConn.di.newMsg = func([]byte, uint8, bool) (*Msg, error) { return nil, want }
+			if err := send(serverConn, []byte("x")); !errors.Is(err, want) {
 				t.Errorf("err = %v, want %v", err, want)
 			}
 		})

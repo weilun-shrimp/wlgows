@@ -19,8 +19,8 @@ type fakeHijackWriter struct {
 	err  error
 }
 
-func (w *fakeHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return w.conn, nil, w.err
+func (writer *fakeHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return writer.conn, nil, writer.err
 }
 
 // fakeGinWriter satisfies gin.ResponseWriter by embedding it; only Hijack is real.
@@ -30,30 +30,30 @@ type fakeGinWriter struct {
 	err  error
 }
 
-func (w *fakeGinWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return w.conn, nil, w.err
+func (writer *fakeGinWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return writer.conn, nil, writer.err
 }
 
 func TestHijackFromHttp(t *testing.T) {
 	t.Run("wraps the hijacked conn and the request", func(t *testing.T) {
-		fc := newFakeConn(nil)
-		req := validClientHandShakeRequest(t)
+		netConn := newFakeConn(nil)
+		request := validClientHandShakeRequest(t)
 		var gotConn net.Conn
 		var gotReq *http.Request
 
-		sc, err := hijackFromHttp(&fakeHijackWriter{conn: fc}, req, hijackFromHttpDI{
-			newServerConn: func(c net.Conn, r *http.Request) *ServerConn {
-				gotConn, gotReq = c, r
-				return NewServerConn(c, r)
+		sc, err := hijackFromHttp(&fakeHijackWriter{conn: netConn}, request, hijackFromHttpDI{
+			newServerConn: func(ginCtx net.Conn, r *http.Request) *ServerConn {
+				gotConn, gotReq = ginCtx, r
+				return NewServerConn(ginCtx, r)
 			},
 		})
 		if err != nil {
 			t.Fatalf("hijackFromHttp: %v", err)
 		}
-		if gotConn != net.Conn(fc) || gotReq != req {
+		if gotConn != net.Conn(netConn) || gotReq != request {
 			t.Error("the hijacked conn and the request should reach the constructor")
 		}
-		if sc.ClientRequest != req {
+		if sc.ClientRequest != request {
 			t.Error("ClientRequest was not set")
 		}
 		if sc.di.readRequest == nil {
@@ -99,19 +99,19 @@ already covered by TestHijackFromHttp.
 */
 func TestHijackFromGin(t *testing.T) {
 	t.Run("forwards gin's writer and request to the http path", func(t *testing.T) {
-		fc := newFakeConn(nil)
-		req := validClientHandShakeRequest(t)
-		c := &gin.Context{Request: req}
-		c.Writer = &fakeGinWriter{conn: fc}
+		netConn := newFakeConn(nil)
+		request := validClientHandShakeRequest(t)
+		ginCtx := &gin.Context{Request: request}
+		ginCtx.Writer = &fakeGinWriter{conn: netConn}
 
-		sc, err := HijackFromGin(c)
+		sc, err := HijackFromGin(ginCtx)
 		if err != nil {
 			t.Fatalf("HijackFromGin: %v", err)
 		}
-		if sc.Conn.Conn != net.Conn(fc) {
+		if sc.Conn.Conn != net.Conn(netConn) {
 			t.Error("the hijacked conn should be embedded in the ServerConn")
 		}
-		if sc.ClientRequest != req {
+		if sc.ClientRequest != request {
 			t.Error("gin's request should become ClientRequest")
 		}
 		if sc.di.readRequest == nil {
@@ -121,9 +121,9 @@ func TestHijackFromGin(t *testing.T) {
 
 	t.Run("propagates a Hijack error", func(t *testing.T) {
 		want := errors.New("cannot hijack")
-		c := &gin.Context{Request: validClientHandShakeRequest(t)}
-		c.Writer = &fakeGinWriter{err: want}
-		if _, err := HijackFromGin(c); !errors.Is(err, want) {
+		ginCtx := &gin.Context{Request: validClientHandShakeRequest(t)}
+		ginCtx.Writer = &fakeGinWriter{err: want}
+		if _, err := HijackFromGin(ginCtx); !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
 		}
 	})
@@ -131,8 +131,8 @@ func TestHijackFromGin(t *testing.T) {
 	// Only reachable with a nil Writer: gin.ResponseWriter always embeds
 	// http.Hijacker, so a real gin writer can never fail the assertion.
 	t.Run("rejects a nil writer", func(t *testing.T) {
-		c := &gin.Context{Request: validClientHandShakeRequest(t)}
-		_, err := HijackFromGin(c)
+		ginCtx := &gin.Context{Request: validClientHandShakeRequest(t)}
+		_, err := HijackFromGin(ginCtx)
 		if err == nil {
 			t.Fatal("expected an error")
 		}

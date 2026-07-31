@@ -3,13 +3,13 @@ package wlgows
 import "testing"
 
 func TestErrorError(t *testing.T) {
-	e := &Error{Type: HttpMethodNotAllowed, Msg: "method not allowed"}
-	if got := e.Error(); got != "method not allowed" {
+	wsError := &Error{Type: HttpMethodNotAllowed, Msg: "method not allowed"}
+	if got := wsError.Error(); got != "method not allowed" {
 		t.Errorf("Error() = %q, want %q", got, "method not allowed")
 	}
 	// Error() reports Msg only; Type is a separate machine-readable tag.
-	if e.Type != "MethodNotAllowed" {
-		t.Errorf("Type = %q", e.Type)
+	if wsError.Type != "MethodNotAllowed" {
+		t.Errorf("Type = %q", wsError.Type)
 	}
 }
 
@@ -39,9 +39,9 @@ func TestErrorTypeConstants(t *testing.T) {
 		{HttpUpgradeHeaderNotWebsocket, "HttpSecUpgradeNotWebsocket"},
 		{HttpRequestHasResponse, "HttpRequestHasResponse"},
 	}
-	for _, tt := range tests {
-		if tt.constant != tt.want {
-			t.Errorf("constant = %q, want %q", tt.constant, tt.want)
+	for _, testCase := range tests {
+		if testCase.constant != testCase.want {
+			t.Errorf("constant = %q, want %q", testCase.constant, testCase.want)
 		}
 	}
 }

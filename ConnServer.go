@@ -73,6 +73,8 @@ func (sc *ServerConn) HandShake() (*http.Response, error) {
 
 // Generate the http.Response and send back to client and put into sc.Conn.ServerResponse if error not occured
 func (sc *ServerConn) SendHand(w *ResponseWriter) (*http.Response, error) {
+	sc.Conn.di.writeLocker.Lock()
+	defer sc.Conn.di.writeLocker.Unlock()
 	res := w.GenerateResponse()
 	plain_http_msg, err := sc.di.responseToPlainHTTPMsg(res)
 	if err != nil {
@@ -91,6 +93,8 @@ func (sc *ServerConn) SendHand(w *ResponseWriter) (*http.Response, error) {
 
 // Read and decode the Client http request msg and set to server connection's client request
 func (sc *ServerConn) ReadRequest() (*http.Request, *Error) {
+	sc.Conn.di.readLocker.Lock()
+	defer sc.Conn.di.readLocker.Unlock()
 	if sc.Conn.ClientRequest != nil { // fetch client request if needed.
 		return sc.Conn.ClientRequest, &Error{
 			Type: ClientRequestHasSet,

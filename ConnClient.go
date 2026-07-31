@@ -89,6 +89,8 @@ func upgradeRequest(req *http.Request, di upgradeRequestDI) error {
 
 // send plain http msg to server
 func (cc *ClientConn) SendHand() error {
+	cc.Conn.di.writeLocker.Lock()
+	defer cc.Conn.di.writeLocker.Unlock()
 	if cc.ClientRequest == nil {
 		return errors.New(" ClientConn detect the ClientRequest is nil on handshake process")
 	}
@@ -105,6 +107,8 @@ func (cc *ClientConn) SendHand() error {
 
 // read response from server
 func (cc *ClientConn) ReadResponse() error {
+	cc.Conn.di.readLocker.Lock()
+	defer cc.Conn.di.readLocker.Unlock()
 	if cc.ServerResponse != nil {
 		return errors.New(" ClientConn detect the ServerResponse has been set before ReadResponse()")
 	}

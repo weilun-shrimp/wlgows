@@ -26,12 +26,12 @@ func TestDial(t *testing.T) {
 	t.Run("ws and http schemes go through netDial", func(t *testing.T) {
 		for _, scheme := range []string{"ws", "http"} {
 			t.Run(scheme, func(t *testing.T) {
-				fc := newFakeConn(nil)
-				di := baseDialDI(fc)
+				netConn := newFakeConn(nil)
+				di := baseDialDI(netConn)
 				var gotNetwork, gotAddress string
 				di.netDial = func(network, address string) (net.Conn, error) {
 					gotNetwork, gotAddress = network, address
-					return fc, nil
+					return netConn, nil
 				}
 				di.tlsDial = func(string, string, *tls.Config) (*tls.Conn, error) {
 					t.Fatal("tlsDial must not run for a plaintext scheme")
@@ -45,7 +45,7 @@ func TestDial(t *testing.T) {
 				if gotNetwork != "tcp" || gotAddress != "localhost:8001" {
 					t.Errorf("netDial(%q, %q), want (tcp, localhost:8001)", gotNetwork, gotAddress)
 				}
-				if cc.Conn.Conn != net.Conn(fc) {
+				if cc.Conn.Conn != net.Conn(netConn) {
 					t.Error("the dialled conn should be embedded in the ClientConn")
 				}
 				if cc.ClientRequest == nil || cc.ClientRequest.URL.Scheme != scheme {

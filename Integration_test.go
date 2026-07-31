@@ -194,17 +194,17 @@ func TestIntegrationHijackFromHttp(t *testing.T) {
 	done := make(chan string, 1)
 	fail := make(chan error, 1)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sc, err := HijackFromHttp(w, r)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, ginEngine *http.Request) {
+		sc, err := HijackFromHttp(w, ginEngine)
 		if err != nil {
 			fail <- err
 			return
 		}
 		echoOnce(t, sc, done, fail)
 	}))
-	defer srv.Close()
+	defer server.Close()
 
-	cc, err := Dial(srv.URL, nil) // httptest serves http://, which Dial accepts
+	cc, err := Dial(server.URL, nil) // httptest serves http://, which Dial accepts
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
@@ -241,8 +241,8 @@ func TestIntegrationHijackFromGin(t *testing.T) {
 	done := make(chan string, 1)
 	fail := make(chan error, 1)
 
-	r := gin.New()
-	r.GET("/", func(c *gin.Context) {
+	ginEngine := gin.New()
+	ginEngine.GET("/", func(c *gin.Context) {
 		sc, err := HijackFromGin(c)
 		if err != nil {
 			fail <- err
@@ -251,12 +251,12 @@ func TestIntegrationHijackFromGin(t *testing.T) {
 		echoOnce(t, sc, done, fail)
 	})
 
-	srv := httptest.NewServer(r)
-	defer srv.Close()
+	server := httptest.NewServer(ginEngine)
+	defer server.Close()
 
 	// No trailing slash: the request line must still go out as "GET / ..."
 	// or gin answers with a 301 instead of upgrading.
-	cc, err := Dial(srv.URL, nil)
+	cc, err := Dial(server.URL, nil)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}

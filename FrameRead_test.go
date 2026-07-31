@@ -144,13 +144,13 @@ func TestGetFrameFromTCPConnParsesWireBytes(t *testing.T) {
 			},
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f, err := GetFrameFromTCPConn(newFakeConn(tt.wire))
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			f, err := GetFrameFromTCPConn(newFakeConn(testCase.wire))
 			if err != nil {
 				t.Fatalf("GetFrameFromTCPConn: %v", err)
 			}
-			tt.check(t, f)
+			testCase.check(t, f)
 		})
 	}
 }
@@ -184,10 +184,10 @@ func TestGetFrameFromTCPConnReadErrors(t *testing.T) {
 		{"masking key read fails", [][]byte{{0x81, 0x82}}},
 		{"payload read fails", [][]byte{{0x81, 0x02}}},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
 			_, err := getFrameFromTCPConn(newFakeConn(nil), getFrameFromTCPConnDI{
-				readTCPConn: scriptedReadTCPConn(tt.chunks...),
+				readTCPConn: scriptedReadTCPConn(testCase.chunks...),
 			})
 			if !errors.Is(err, io.EOF) {
 				t.Errorf("err = %v, want io.EOF", err)

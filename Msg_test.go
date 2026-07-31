@@ -10,19 +10,19 @@ import (
 
 func TestMsgGetStr(t *testing.T) {
 	t.Run("empty message", func(t *testing.T) {
-		m := Msg{}
-		if got := m.GetStr(); got != "" {
+		msg := Msg{}
+		if got := msg.GetStr(); got != "" {
 			t.Errorf("GetStr() = %q, want empty", got)
 		}
 	})
 
 	t.Run("concatenates every frame payload", func(t *testing.T) {
-		m := Msg{Frames: []*Frame{
+		msg := Msg{Frames: []*Frame{
 			{PayloadData: []byte("hello ")},
 			{PayloadData: []byte("wl")},
 			{PayloadData: []byte("gows")},
 		}}
-		if got := m.GetStr(); got != "hello wlgows" {
+		if got := msg.GetStr(); got != "hello wlgows" {
 			t.Errorf("GetStr() = %q, want %q", got, "hello wlgows")
 		}
 	})
@@ -30,11 +30,11 @@ func TestMsgGetStr(t *testing.T) {
 	// The whole reason GetStr uses strings.Builder over string([]byte) per
 	// frame: a multi-byte rune may straddle a frame boundary.
 	t.Run("rejoins a utf-8 rune split across frames", func(t *testing.T) {
-		m := Msg{Frames: []*Frame{
+		msg := Msg{Frames: []*Frame{
 			{PayloadData: []byte{0xE4, 0xB8}}, // first 2 bytes of 中
 			{PayloadData: []byte{0xAD}},       // last byte of 中
 		}}
-		if got := m.GetStr(); got != "中" {
+		if got := msg.GetStr(); got != "中" {
 			t.Errorf("GetStr() = %q, want %q", got, "中")
 		}
 	})
@@ -49,26 +49,26 @@ func TestGetMsgFromTCPConn(t *testing.T) {
 			{FIN: true, PayloadData: []byte("NOT READ")},
 		}
 		i := 0
-		m, err := getMsgFromTCPConn(newFakeConn(nil), getMsgFromTCPConnDI{
+		msg, err := getMsgFromTCPConn(newFakeConn(nil), getMsgFromTCPConnDI{
 			getFrameFromTCPConn: func(net.Conn) (*Frame, error) {
-				f := frames[i]
+				frame := frames[i]
 				i++
-				return f, nil
+				return frame, nil
 			},
 		})
 		if err != nil {
 			t.Fatalf("getMsgFromTCPConn: %v", err)
 		}
-		if len(m.Frames) != 3 {
-			t.Fatalf("len(Frames) = %d, want 3", len(m.Frames))
+		if len(msg.Frames) != 3 {
+			t.Fatalf("len(Frames) = %d, want 3", len(msg.Frames))
 		}
-		if m.GetStr() != "abc" {
-			t.Errorf("GetStr() = %q, want %q", m.GetStr(), "abc")
+		if msg.GetStr() != "abc" {
+			t.Errorf("GetStr() = %q, want %q", msg.GetStr(), "abc")
 		}
 	})
 
 	t.Run("single final frame", func(t *testing.T) {
-		m, err := getMsgFromTCPConn(newFakeConn(nil), getMsgFromTCPConnDI{
+		msg, err := getMsgFromTCPConn(newFakeConn(nil), getMsgFromTCPConnDI{
 			getFrameFromTCPConn: func(net.Conn) (*Frame, error) {
 				return &Frame{FIN: true, PayloadData: []byte("solo")}, nil
 			},
@@ -76,8 +76,8 @@ func TestGetMsgFromTCPConn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("getMsgFromTCPConn: %v", err)
 		}
-		if len(m.Frames) != 1 || m.GetStr() != "solo" {
-			t.Errorf("Frames=%d GetStr=%q", len(m.Frames), m.GetStr())
+		if len(msg.Frames) != 1 || msg.GetStr() != "solo" {
+			t.Errorf("Frames=%d GetStr=%q", len(msg.Frames), msg.GetStr())
 		}
 	})
 
@@ -94,12 +94,12 @@ func TestGetMsgFromTCPConn(t *testing.T) {
 	t.Run("real wiring parses two frames off the wire", func(t *testing.T) {
 		first := (&Frame{FIN: false, Opcode: 1, PayloadLength: 2, PayloadData: []byte("wl")}).Seal()
 		last := (&Frame{FIN: true, Opcode: 0, PayloadLength: 4, PayloadData: []byte("gows")}).Seal()
-		m, err := GetMsgFromTCPConn(newFakeConn(append(first, last...)))
+		msg, err := GetMsgFromTCPConn(newFakeConn(append(first, last...)))
 		if err != nil {
 			t.Fatalf("GetMsgFromTCPConn: %v", err)
 		}
-		if m.GetStr() != "wlgows" {
-			t.Errorf("GetStr() = %q, want %q", m.GetStr(), "wlgows")
+		if msg.GetStr() != "wlgows" {
+			t.Errorf("GetStr() = %q, want %q", msg.GetStr(), "wlgows")
 		}
 	})
 }
@@ -117,29 +117,29 @@ func TestNewMsgLengthEncoding(t *testing.T) {
 		{"65536 bytes switches to the 64 bit length", 65536, 127, 65536},
 		{"1 byte", 1, 1, 0},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m, err := newMsg(bytes.Repeat([]byte{'x'}, tt.size), 1, false, newMsgDI{
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			msg, err := newMsg(bytes.Repeat([]byte{'x'}, testCase.size), 1, false, newMsgDI{
 				generateMaskingKey: func() ([]byte, error) { return nil, nil },
 			})
 			if err != nil {
 				t.Fatalf("newMsg: %v", err)
 			}
-			if len(m.Frames) != 1 {
-				t.Fatalf("len(Frames) = %d, want 1", len(m.Frames))
+			if len(msg.Frames) != 1 {
+				t.Fatalf("len(Frames) = %d, want 1", len(msg.Frames))
 			}
-			f := m.Frames[0]
-			if !f.FIN {
+			frame := msg.Frames[0]
+			if !frame.FIN {
 				t.Error("FIN should be true for a single frame message")
 			}
-			if f.PayloadLength != tt.wantLen {
-				t.Errorf("PayloadLength = %d, want %d", f.PayloadLength, tt.wantLen)
+			if frame.PayloadLength != testCase.wantLen {
+				t.Errorf("PayloadLength = %d, want %d", frame.PayloadLength, testCase.wantLen)
 			}
-			if f.ExtendedPayloadLength != tt.wantExtended {
-				t.Errorf("ExtendedPayloadLength = %d, want %d", f.ExtendedPayloadLength, tt.wantExtended)
+			if frame.ExtendedPayloadLength != testCase.wantExtended {
+				t.Errorf("ExtendedPayloadLength = %d, want %d", frame.ExtendedPayloadLength, testCase.wantExtended)
 			}
-			if uint64(len(f.PayloadData)) != uint64(tt.size) {
-				t.Errorf("len(PayloadData) = %d, want %d", len(f.PayloadData), tt.size)
+			if uint64(len(frame.PayloadData)) != uint64(testCase.size) {
+				t.Errorf("len(PayloadData) = %d, want %d", len(frame.PayloadData), testCase.size)
 			}
 		})
 	}
@@ -147,44 +147,44 @@ func TestNewMsgLengthEncoding(t *testing.T) {
 
 // Empty data never enters the loop, so no frame is produced at all.
 func TestNewMsgEmptyDataProducesNoFrames(t *testing.T) {
-	m, err := newMsg(nil, 1, false, newMsgDI{
+	msg, err := newMsg(nil, 1, false, newMsgDI{
 		generateMaskingKey: func() ([]byte, error) { return nil, nil },
 	})
 	if err != nil {
 		t.Fatalf("newMsg: %v", err)
 	}
-	if len(m.Frames) != 0 {
-		t.Errorf("len(Frames) = %d, want 0", len(m.Frames))
+	if len(msg.Frames) != 0 {
+		t.Errorf("len(Frames) = %d, want 0", len(msg.Frames))
 	}
-	if m.GetStr() != "" {
-		t.Errorf("GetStr() = %q, want empty", m.GetStr())
+	if msg.GetStr() != "" {
+		t.Errorf("GetStr() = %q, want empty", msg.GetStr())
 	}
 }
 
 func TestNewMsgMasking(t *testing.T) {
 	t.Run("masks with the injected key", func(t *testing.T) {
-		m, err := newMsg([]byte("hi"), 1, true, newMsgDI{
+		msg, err := newMsg([]byte("hi"), 1, true, newMsgDI{
 			generateMaskingKey: func() ([]byte, error) { return []byte{1, 2, 3, 4}, nil },
 		})
 		if err != nil {
 			t.Fatalf("newMsg: %v", err)
 		}
-		f := m.Frames[0]
-		if !f.Mask {
+		frame := msg.Frames[0]
+		if !frame.Mask {
 			t.Error("Mask should be true")
 		}
-		if !bytes.Equal(f.MaskingKey, []byte{1, 2, 3, 4}) {
-			t.Errorf("MaskingKey = % x", f.MaskingKey)
+		if !bytes.Equal(frame.MaskingKey, []byte{1, 2, 3, 4}) {
+			t.Errorf("MaskingKey = % x", frame.MaskingKey)
 		}
 		// A fixed key makes the sealed bytes fully assertable.
 		want := []byte{0x81, 0x82, 1, 2, 3, 4, 'h' ^ 1, 'i' ^ 2}
-		if got := f.Seal(); !bytes.Equal(got, want) {
+		if got := frame.Seal(); !bytes.Equal(got, want) {
 			t.Errorf("Seal() = % x, want % x", got, want)
 		}
 	})
 
 	t.Run("leaves the frame unmasked when not requested", func(t *testing.T) {
-		m, err := newMsg([]byte("hi"), 1, false, newMsgDI{
+		msg, err := newMsg([]byte("hi"), 1, false, newMsgDI{
 			generateMaskingKey: func() ([]byte, error) {
 				t.Fatal("generateMaskingKey must not be called when need_mask is false")
 				return nil, nil
@@ -193,7 +193,7 @@ func TestNewMsgMasking(t *testing.T) {
 		if err != nil {
 			t.Fatalf("newMsg: %v", err)
 		}
-		if m.Frames[0].Mask || m.Frames[0].MaskingKey != nil {
+		if msg.Frames[0].Mask || msg.Frames[0].MaskingKey != nil {
 			t.Error("frame should be unmasked with no key")
 		}
 	})
@@ -211,14 +211,14 @@ func TestNewMsgMasking(t *testing.T) {
 
 func TestNewMsgOpcode(t *testing.T) {
 	for _, opcode := range []uint8{1, 2, 8, 9, 10} {
-		m, err := newMsg([]byte("x"), opcode, false, newMsgDI{
+		msg, err := newMsg([]byte("x"), opcode, false, newMsgDI{
 			generateMaskingKey: func() ([]byte, error) { return nil, nil },
 		})
 		if err != nil {
 			t.Fatalf("newMsg: %v", err)
 		}
-		if m.Frames[0].Opcode != opcode {
-			t.Errorf("Opcode = %d, want %d", m.Frames[0].Opcode, opcode)
+		if msg.Frames[0].Opcode != opcode {
+			t.Errorf("Opcode = %d, want %d", msg.Frames[0].Opcode, opcode)
 		}
 	}
 }

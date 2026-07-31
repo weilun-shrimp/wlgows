@@ -14,10 +14,10 @@ func TestMsgIsIncludedMaskedFrame(t *testing.T) {
 		{"mixed, masked last", Msg{Frames: []*Frame{{Mask: false}, {Mask: true}}}, true},
 		{"mixed, masked first", Msg{Frames: []*Frame{{Mask: true}, {Mask: false}}}, true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.msg.IsIncludedMaskedFrame(); got != tt.want {
-				t.Errorf("IsIncludedMaskedFrame() = %v, want %v", got, tt.want)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := testCase.msg.IsIncludedMaskedFrame(); got != testCase.want {
+				t.Errorf("IsIncludedMaskedFrame() = %v, want %v", got, testCase.want)
 			}
 		})
 	}
@@ -35,10 +35,10 @@ func TestMsgIsIncludedUnMaskedFrame(t *testing.T) {
 		{"mixed, unmasked last", Msg{Frames: []*Frame{{Mask: true}, {Mask: false}}}, true},
 		{"mixed, unmasked first", Msg{Frames: []*Frame{{Mask: false}, {Mask: true}}}, true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.msg.IsIncludedUnMaskedFrame(); got != tt.want {
-				t.Errorf("IsIncludedUnMaskedFrame() = %v, want %v", got, tt.want)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := testCase.msg.IsIncludedUnMaskedFrame(); got != testCase.want {
+				t.Errorf("IsIncludedUnMaskedFrame() = %v, want %v", got, testCase.want)
 			}
 		})
 	}
@@ -46,8 +46,8 @@ func TestMsgIsIncludedUnMaskedFrame(t *testing.T) {
 
 // A mixed message is reported by both predicates; they are not complements.
 func TestMsgIncludePredicatesAreIndependent(t *testing.T) {
-	m := Msg{Frames: []*Frame{{Mask: true}, {Mask: false}}}
-	if !m.IsIncludedMaskedFrame() || !m.IsIncludedUnMaskedFrame() {
+	msg := Msg{Frames: []*Frame{{Mask: true}, {Mask: false}}}
+	if !msg.IsIncludedMaskedFrame() || !msg.IsIncludedUnMaskedFrame() {
 		t.Error("a mixed message should report true for both predicates")
 	}
 	empty := Msg{}

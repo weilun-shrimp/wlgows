@@ -26,11 +26,11 @@ func TestFrameGetMaxPayloadLength(t *testing.T) {
 		{"126 defers to extended", 126, 300, 300},
 		{"127 defers to extended", 127, 70000, 70000},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f := &Frame{PayloadLength: tt.payloadLength, ExtendedPayloadLength: tt.extended}
-			if got := f.GetMaxPayloadLength(); got != tt.want {
-				t.Errorf("GetMaxPayloadLength() = %d, want %d", got, tt.want)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			frame := &Frame{PayloadLength: testCase.payloadLength, ExtendedPayloadLength: testCase.extended}
+			if got := frame.GetMaxPayloadLength(); got != testCase.want {
+				t.Errorf("GetMaxPayloadLength() = %d, want %d", got, testCase.want)
 			}
 		})
 	}
@@ -92,15 +92,15 @@ func TestFrameSeal(t *testing.T) {
 			),
 		},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.frame.Seal(); !bytes.Equal(got, tt.want) {
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := testCase.frame.Seal(); !bytes.Equal(got, testCase.want) {
 				if len(got) > 32 {
 					t.Errorf("Seal() len = %d (want %d), head = % x (want % x)",
-						len(got), len(tt.want), got[:12], tt.want[:12])
+						len(got), len(testCase.want), got[:12], testCase.want[:12])
 					return
 				}
-				t.Errorf("Seal() = % x, want % x", got, tt.want)
+				t.Errorf("Seal() = % x, want % x", got, testCase.want)
 			}
 		})
 	}
@@ -108,11 +108,11 @@ func TestFrameSeal(t *testing.T) {
 
 // Seal masks with key[i%4], so a payload longer than the key cycles it.
 func TestFrameSealCyclesMaskingKey(t *testing.T) {
-	f := &Frame{
+	frame := &Frame{
 		FIN: true, Opcode: 1, Mask: true, PayloadLength: 6,
 		MaskingKey: []byte{0x10, 0x20, 0x30, 0x40}, PayloadData: []byte("abcdef"),
 	}
-	got := f.Seal()
+	got := frame.Seal()
 	want := []byte{
 		0x81, 0x86, 0x10, 0x20, 0x30, 0x40,
 		'a' ^ 0x10, 'b' ^ 0x20, 'c' ^ 0x30, 'd' ^ 0x40, 'e' ^ 0x10, 'f' ^ 0x20,

@@ -9,69 +9,69 @@ import (
 )
 
 func TestNewResponseWriter(t *testing.T) {
-	w := NewResponseWriter()
-	if w.header == nil {
+	writer := NewResponseWriter()
+	if writer.header == nil {
 		t.Error("header must be initialised")
 	}
-	if w.body_buff == nil {
+	if writer.body_buff == nil {
 		t.Error("body_buff must be initialised")
 	}
-	if w.di.generateSecWebsocketAccept == nil {
+	if writer.di.generateSecWebsocketAccept == nil {
 		t.Error("NewResponseWriter must populate di")
 	}
-	if w.statusCode != 0 {
-		t.Errorf("statusCode = %d, want 0 before WriteHeader", w.statusCode)
+	if writer.statusCode != 0 {
+		t.Errorf("statusCode = %d, want 0 before WriteHeader", writer.statusCode)
 	}
 }
 
 func TestResponseWriterHeaderAndWriteHeader(t *testing.T) {
-	w := NewResponseWriter()
-	w.Header().Set("X-Test", "value")
-	if got := w.Header().Get("X-Test"); got != "value" {
+	writer := NewResponseWriter()
+	writer.Header().Set("X-Test", "value")
+	if got := writer.Header().Get("X-Test"); got != "value" {
 		t.Errorf("Header().Get = %q, want %q", got, "value")
 	}
 	// Header() returns the live map, not a copy.
-	if w.header.Get("X-Test") != "value" {
+	if writer.header.Get("X-Test") != "value" {
 		t.Error("Header() should expose the internal header map")
 	}
 
-	w.WriteHeader(http.StatusSwitchingProtocols)
-	if w.statusCode != 101 {
-		t.Errorf("statusCode = %d, want 101", w.statusCode)
+	writer.WriteHeader(http.StatusSwitchingProtocols)
+	if writer.statusCode != 101 {
+		t.Errorf("statusCode = %d, want 101", writer.statusCode)
 	}
 }
 
 func TestResponseWriterGenerateResponse(t *testing.T) {
-	w := NewResponseWriter()
-	w.WriteHeader(http.StatusSwitchingProtocols)
-	w.Header().Set("Upgrade", "websocket")
+	writer := NewResponseWriter()
+	writer.WriteHeader(http.StatusSwitchingProtocols)
+	writer.Header().Set("Upgrade", "websocket")
 
-	res := w.GenerateResponse()
+	response := writer.GenerateResponse()
 
-	if res.Proto != "HTTP/1.1" || res.ProtoMajor != 1 || res.ProtoMinor != 1 {
-		t.Errorf("proto = %s %d.%d", res.Proto, res.ProtoMajor, res.ProtoMinor)
+	if response.Proto != "HTTP/1.1" || response.ProtoMajor != 1 || response.ProtoMinor != 1 {
+		t.Errorf("proto = %s %d.%d", response.Proto, response.ProtoMajor, response.ProtoMinor)
 	}
-	if res.StatusCode != 101 {
-		t.Errorf("StatusCode = %d, want 101", res.StatusCode)
+	if response.StatusCode != 101 {
+		t.Errorf("StatusCode = %d, want 101", response.StatusCode)
 	}
-	if res.Header.Get("Upgrade") != "websocket" {
-		t.Errorf("Upgrade header = %q", res.Header.Get("Upgrade"))
+	if response.Header.Get("Upgrade") != "websocket" {
+		t.Errorf("Upgrade header = %q", response.Header.Get("Upgrade"))
 	}
-	if res.Header.Get("Content-Length") != "0" {
-		t.Errorf("Content-Length = %q, want %q", res.Header.Get("Content-Length"), "0")
+	if response.Header.Get("Content-Length") != "0" {
+		t.Errorf("Content-Length = %q, want %q", response.Header.Get("Content-Length"), "0")
 	}
 	// No body was written, so Content-Type is left unset.
-	if res.Header.Get("Content-Type") != "" {
-		t.Errorf("Content-Type = %q, want empty", res.Header.Get("Content-Type"))
+	if response.Header.Get("Content-Type") != "" {
+		t.Errorf("Content-Type = %q, want empty", response.Header.Get("Content-Type"))
 	}
 }
 
 func TestResponseWriterGenerateResponseKeepsExplicitContentLength(t *testing.T) {
-	w := NewResponseWriter()
-	w.Header().Set("Content-Length", "42")
-	res := w.GenerateResponse()
-	if res.Header.Get("Content-Length") != "42" {
-		t.Errorf("Content-Length = %q, want the caller's 42", res.Header.Get("Content-Length"))
+	writer := NewResponseWriter()
+	writer.Header().Set("Content-Length", "42")
+	response := writer.GenerateResponse()
+	if response.Header.Get("Content-Length") != "42" {
+		t.Errorf("Content-Length = %q, want the caller's 42", response.Header.Get("Content-Length"))
 	}
 }
 
@@ -86,9 +86,9 @@ When the flush bug is fixed, this test should start failing — that is the
 signal to update it to assert the corrected behaviour.
 */
 func TestResponseWriterWrittenBodyIsLostWithoutFlush(t *testing.T) {
-	w := NewResponseWriter()
-	w.WriteHeader(http.StatusBadRequest)
-	n, err := w.Write([]byte("some error detail"))
+	writer := NewResponseWriter()
+	writer.WriteHeader(http.StatusBadRequest)
+	n, err := writer.Write([]byte("some error detail"))
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -96,16 +96,16 @@ func TestResponseWriterWrittenBodyIsLostWithoutFlush(t *testing.T) {
 		t.Errorf("Write returned n = %d, want %d", n, len("some error detail"))
 	}
 
-	res := w.GenerateResponse()
-	body, err := io.ReadAll(res.Body)
+	response := writer.GenerateResponse()
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
 	if len(body) != 0 {
 		t.Errorf("body = %q; the unflushed-buffer bug appears to be fixed, update this test", body)
 	}
-	if res.Header.Get("Content-Length") != "0" {
-		t.Errorf("Content-Length = %q, want 0 while the bug stands", res.Header.Get("Content-Length"))
+	if response.Header.Get("Content-Length") != "0" {
+		t.Errorf("Content-Length = %q, want 0 while the bug stands", response.Header.Get("Content-Length"))
 	}
 }
 
@@ -116,27 +116,27 @@ underlying buffer, so a large body DOES survive while a small one is swallowed.
 That asymmetry is why the Content-Type branch is reachable at all.
 */
 func TestResponseWriterLargeBodyBypassesTheBufferAndSurvives(t *testing.T) {
-	w := NewResponseWriter()
-	w.WriteHeader(http.StatusOK)
+	writer := NewResponseWriter()
+	writer.WriteHeader(http.StatusOK)
 	big := strings.Repeat("x", 5000)
-	if _, err := w.Write([]byte(big)); err != nil {
+	if _, err := writer.Write([]byte(big)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	res := w.GenerateResponse()
-	body, err := io.ReadAll(res.Body)
+	response := writer.GenerateResponse()
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
 	if len(body) != 5000 {
 		t.Errorf("body is %d bytes, want 5000", len(body))
 	}
-	if res.Header.Get("Content-Length") != "5000" {
-		t.Errorf("Content-Length = %q, want 5000", res.Header.Get("Content-Length"))
+	if response.Header.Get("Content-Length") != "5000" {
+		t.Errorf("Content-Length = %q, want 5000", response.Header.Get("Content-Length"))
 	}
 	// Only reached when the body actually made it into body_buff.
-	if res.Header.Get("Content-Type") != "text/plain" {
-		t.Errorf("Content-Type = %q, want text/plain", res.Header.Get("Content-Type"))
+	if response.Header.Get("Content-Type") != "text/plain" {
+		t.Errorf("Content-Type = %q, want text/plain", response.Header.Get("Content-Type"))
 	}
 }
 
@@ -154,25 +154,25 @@ func TestResponseWriterDeclineByErrorType(t *testing.T) {
 		{"something we never defined", http.StatusInternalServerError},
 		{"", http.StatusInternalServerError},
 	}
-	for _, tt := range tests {
-		t.Run(tt.errorType, func(t *testing.T) {
-			w := NewResponseWriter()
-			w.DeclineByErrorType(tt.errorType)
-			if w.statusCode != tt.want {
-				t.Errorf("statusCode = %d, want %d", w.statusCode, tt.want)
+	for _, testCase := range tests {
+		t.Run(testCase.errorType, func(t *testing.T) {
+			writer := NewResponseWriter()
+			writer.DeclineByErrorType(testCase.errorType)
+			if writer.statusCode != testCase.want {
+				t.Errorf("statusCode = %d, want %d", writer.statusCode, testCase.want)
 			}
 		})
 	}
 }
 
 func TestResponseWriterUpgradeForWebsocket(t *testing.T) {
-	w := NewResponseWriter()
-	w.di.generateSecWebsocketAccept = func(key string) string { return "ACCEPT(" + key + ")" }
+	writer := NewResponseWriter()
+	writer.di.generateSecWebsocketAccept = func(key string) string { return "ACCEPT(" + key + ")" }
 
-	w.UpgradeForWebsocket("the-key")
+	writer.UpgradeForWebsocket("the-key")
 
-	if w.statusCode != http.StatusSwitchingProtocols {
-		t.Errorf("statusCode = %d, want 101", w.statusCode)
+	if writer.statusCode != http.StatusSwitchingProtocols {
+		t.Errorf("statusCode = %d, want 101", writer.statusCode)
 	}
 	want := map[string]string{
 		"Upgrade":               "websocket",
@@ -180,9 +180,9 @@ func TestResponseWriterUpgradeForWebsocket(t *testing.T) {
 		"Sec-Websocket-Version": "13",
 		"Sec-Websocket-Accept":  "ACCEPT(the-key)",
 	}
-	for k, v := range want {
-		if got := w.Header().Get(k); got != v {
-			t.Errorf("header %s = %q, want %q", k, got, v)
+	for headerKey, wantValue := range want {
+		if got := writer.Header().Get(headerKey); got != wantValue {
+			t.Errorf("header %s = %q, want %q", headerKey, got, wantValue)
 		}
 	}
 }

@@ -13,7 +13,7 @@ func TestRun(t *testing.T) {
 		wantListener := &net.TCPListener{}
 		var gotNetwork, gotService string
 
-		s, err := run("127.0.0.1:8001", runDI{
+		server, err := run("127.0.0.1:8001", runDI{
 			netResolveTCPAddr: func(network, address string) (*net.TCPAddr, error) {
 				gotNetwork, gotService = network, address
 				return wantAddr, nil
@@ -35,10 +35,10 @@ func TestRun(t *testing.T) {
 		if gotNetwork != "tcp4" || gotService != "127.0.0.1:8001" {
 			t.Errorf("resolve(%q, %q), want (tcp4, 127.0.0.1:8001)", gotNetwork, gotService)
 		}
-		if s.TCPAddr != wantAddr || s.TCPListener != wantListener {
+		if server.TCPAddr != wantAddr || server.TCPListener != wantListener {
 			t.Error("the server should carry the resolved address and listener")
 		}
-		if s.di.newServerConn == nil {
+		if server.di.newServerConn == nil {
 			t.Error("run must build the Server through its constructor")
 		}
 	})
@@ -77,40 +77,40 @@ func TestNewServer(t *testing.T) {
 	addr := &net.TCPAddr{Port: 8001}
 	listener := &net.TCPListener{}
 
-	s := newServer(addr, listener)
+	server := newServer(addr, listener)
 
-	if s.TCPAddr != addr || s.TCPListener != listener {
+	if server.TCPAddr != addr || server.TCPListener != listener {
 		t.Error("fields were not set")
 	}
-	if s.di.newServerConn == nil {
+	if server.di.newServerConn == nil {
 		t.Error("newServer must populate di")
 	}
 }
 
 func TestServerAcceptBuildsAServerConn(t *testing.T) {
-	s, err := Run("127.0.0.1:0")
+	server, err := Run("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer s.Close()
+	defer server.Close()
 
-	// Route Accept's result through a recording constructor.
+	// Route Accept'server result through a recording constructor.
 	var gotRequest *http.Request
 	called := false
-	s.di.newServerConn = func(c net.Conn, req *http.Request) *ServerConn {
+	server.di.newServerConn = func(c net.Conn, req *http.Request) *ServerConn {
 		called = true
 		gotRequest = req
 		return NewServerConn(c, req)
 	}
 
 	go func() {
-		c, err := net.Dial("tcp", s.TCPListener.Addr().String())
+		c, err := net.Dial("tcp", server.TCPListener.Addr().String())
 		if err == nil {
 			defer c.Close()
 		}
 	}()
 
-	sc, err := s.Accept()
+	sc, err := server.Accept()
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
@@ -128,13 +128,13 @@ func TestServerAcceptBuildsAServerConn(t *testing.T) {
 }
 
 func TestServerAcceptAfterClose(t *testing.T) {
-	s, err := Run("127.0.0.1:0")
+	server, err := Run("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	s.Close()
+	server.Close()
 
-	if _, err := s.Accept(); err == nil {
+	if _, err := server.Accept(); err == nil {
 		t.Error("Accept should fail once the listener is closed")
 	}
 }
@@ -146,17 +146,17 @@ func TestRunRejectsABadService(t *testing.T) {
 }
 
 func TestRunBindsAndReportsItsAddress(t *testing.T) {
-	s, err := Run("127.0.0.1:0")
+	server, err := Run("127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer s.Close()
+	defer server.Close()
 
-	if s.TCPAddr == nil || s.TCPListener == nil {
+	if server.TCPAddr == nil || server.TCPListener == nil {
 		t.Fatal("Run should populate both the address and the listener")
 	}
 	// Port 0 asks the OS to choose, so the listener knows the real port.
-	if addr, ok := s.TCPListener.Addr().(*net.TCPAddr); !ok || addr.Port == 0 {
-		t.Errorf("listener address = %v, want a bound port", s.TCPListener.Addr())
+	if addr, ok := server.TCPListener.Addr().(*net.TCPAddr); !ok || addr.Port == 0 {
+		t.Errorf("listener address = %v, want a bound port", server.TCPListener.Addr())
 	}
 }
