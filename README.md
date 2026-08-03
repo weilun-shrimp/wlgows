@@ -65,11 +65,12 @@ Exported fields (`ClientRequest`, `ServerResponse`, `TCPAddr`, `TCPListener`) ar
 ## Reading a message
 
 `GetNextMsg` returns a `Msg`, which is just a slice of the frames the peer sent.
-Five ways to get at it:
+Six ways to get at it:
 
 | Call | Returns | Use it for |
 |------|---------|------------|
 | `msg.GetStr()` | `string` | text (opcode 1) payloads |
+| `msg.PayloadByteLength()` | `int` | the assembled size **in bytes**, without assembling — allocates nothing |
 | `msg.GetBytes()` | `[]byte` | binary (opcode 2) payloads, and anything you will hand back to `SendText`/`SendByte` — both take `[]byte` whatever opcode they send |
 | `msg.Frames` | `[]*Frame` | the opcode, the FIN/RSV bits, per-frame detail |
 | `msg.IsIncludedMaskedFrame()` | `bool` | asserting a client masked its payload, as RFC 6455 requires |
@@ -91,6 +92,10 @@ case 0x9: // ping
 case 0xA: // pong
 }
 ```
+
+`PayloadByteLength()` is not a size guard: `GetNextMsg` has already read and
+allocated every frame before it returns, so a check on the assembled `Msg` comes
+too late to protect against a hostile peer.
 
 `GetBytes()` hands back a copy you own, so writing to it never reaches the
 frames. If you need zero allocations and the message is one frame, read

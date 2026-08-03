@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestMsgGetStr(t *testing.T) {
@@ -109,6 +110,81 @@ func TestMsgGetBytes(t *testing.T) {
 		}
 		if cap(got) != 1000 {
 			t.Errorf("cap = %d, want 1000 (exactly sized)", cap(got))
+		}
+	})
+}
+
+func TestMsgPayloadByteLength(t *testing.T) {
+	t.Run("empty message", func(t *testing.T) {
+		msg := Msg{}
+		if got := msg.PayloadByteLength(); got != 0 {
+			t.Errorf("PayloadByteLength() = %d, want 0", got)
+		}
+	})
+
+	t.Run("sums every frame", func(t *testing.T) {
+		msg := Msg{Frames: []*Frame{
+			{PayloadData: []byte("hello ")},
+			{PayloadData: []byte("wl")},
+			{PayloadData: []byte("gows")},
+		}}
+		if got := msg.PayloadByteLength(); got != 12 {
+			t.Errorf("PayloadByteLength() = %d, want 12", got)
+		}
+	})
+
+	// It has to be what the assemblers actually produce, or the exact-size
+	// allocation they share with it is wrong.
+	t.Run("matches what GetStr and GetBytes return", func(t *testing.T) {
+		msg := Msg{Frames: []*Frame{
+			{PayloadData: bytes.Repeat([]byte{'x'}, 700)},
+			{PayloadData: bytes.Repeat([]byte{'y'}, 300)},
+		}}
+		want := msg.PayloadByteLength()
+		if got := len(msg.GetBytes()); got != want {
+			t.Errorf("len(GetBytes()) = %d, PayloadByteLength() = %d", got, want)
+		}
+		if got := len(msg.GetStr()); got != want {
+			t.Errorf("len(GetStr()) = %d, PayloadByteLength() = %d", got, want)
+		}
+	})
+
+	// The exact claim the doc comment makes. Each CJK rune is 3 bytes in UTF-8,
+	// so a 3 character payload is 9 bytes.
+	t.Run("counts bytes rather than characters", func(t *testing.T) {
+		msg := Msg{Frames: []*Frame{{PayloadData: []byte("中文字")}}}
+		if got := msg.PayloadByteLength(); got != 9 {
+			t.Errorf("PayloadByteLength() = %d, want 9", got)
+		}
+		if got := utf8.RuneCountInString(msg.GetStr()); got != 3 {
+			t.Errorf("the payload should still be 3 characters, got %d", got)
+		}
+	})
+
+	// A rune straddling a frame boundary is counted once, not per fragment.
+	t.Run("counts a rune split across frames once", func(t *testing.T) {
+		msg := Msg{Frames: []*Frame{
+			{PayloadData: []byte{0xE4, 0xB8}}, // first 2 bytes of 中
+			{PayloadData: []byte{0xAD}},       // last byte of 中
+		}}
+		if got := msg.PayloadByteLength(); got != 3 {
+			t.Errorf("PayloadByteLength() = %d, want 3", got)
+		}
+		if msg.GetStr() != "中" {
+			t.Errorf("GetStr() = %q, want 中", msg.GetStr())
+		}
+	})
+
+	// Reading the size must not cost an allocation — that is the point of
+	// having it instead of len(msg.GetBytes()).
+	t.Run("allocates nothing", func(t *testing.T) {
+		msg := Msg{Frames: []*Frame{{PayloadData: bytes.Repeat([]byte{'x'}, 1000)}}}
+		var got int
+		if allocs := testing.AllocsPerRun(100, func() { got = msg.PayloadByteLength() }); allocs != 0 {
+			t.Errorf("PayloadByteLength() allocated %v times, want 0", allocs)
+		}
+		if got != 1000 {
+			t.Errorf("PayloadByteLength() = %d, want 1000", got)
 		}
 	})
 }
