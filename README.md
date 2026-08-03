@@ -62,6 +62,41 @@ Exported fields (`ClientRequest`, `ServerResponse`, `TCPAddr`, `TCPListener`) ar
 
 `Close` takes neither lock on purpose: closing the fd is what unblocks a read or write parked on a dead peer.
 
+## Reading a message
+
+`GetNextMsg` returns a `Msg`, which is just a slice of the frames the peer sent.
+Five ways to get at it:
+
+| Call | Returns | Use it for |
+|------|---------|------------|
+| `msg.GetStr()` | `string` | text (opcode 1) payloads |
+| `msg.GetBytes()` | `[]byte` | binary (opcode 2) payloads, and anything you will hand back to `SendText`/`SendByte` — both take `[]byte` whatever opcode they send |
+| `msg.Frames` | `[]*Frame` | the opcode, the FIN/RSV bits, per-frame detail |
+| `msg.IsIncludedMaskedFrame()` | `bool` | asserting a client masked its payload, as RFC 6455 requires |
+| `msg.IsIncludedUnMaskedFrame()` | `bool` | the mirror check |
+
+Both assemblers join every frame, so a message fragmented across frames comes
+back whole — including a multi-byte rune split down the middle by a frame
+boundary. Prefer `GetBytes()` over `[]byte(GetStr())`: the conversion copies the
+whole payload a second time (see [Testing](#testing) for the numbers).
+
+The opcode lives on the first frame — continuation frames carry 0:
+
+```go
+switch msg.Frames[0].Opcode {
+case 0x1: // text
+case 0x2: // binary
+case 0x8: // close — stop reading, the peer is done
+case 0x9: // ping
+case 0xA: // pong
+}
+```
+
+`GetBytes()` hands back a copy you own, so writing to it never reaches the
+frames. If you need zero allocations and the message is one frame, read
+`msg.Frames[0].PayloadData` directly instead — but that slice belongs to the
+`Msg`, so mutating it mutates the message.
+
 ## Quick Start
 
 ### Server Side
@@ -111,8 +146,9 @@ func main() {
 					break
 				}
 
-				// Echo back the message
-				conn.SendText([]byte(msg.GetStr()))
+				// Echo back the message. GetBytes assembles the frame
+				// payloads once; []byte(msg.GetStr()) would copy them twice.
+				conn.SendText(msg.GetBytes())
 			}
 		}()
 	}
@@ -255,7 +291,8 @@ go run ./example/client
 ```bash
 go test ./...           # full suite
 go test -race ./...     # the integration tests spawn goroutines
-go test -cover .        # 97.7% of statements
+go test -cover .        # 97.9% of statements
+go test -bench . .      # benchmarks, which plain `go test` skips
 ```
 
 One `_test.go` per source file, all in package `wlgows` so the `di` seams are
@@ -265,6 +302,20 @@ reachable. Two files have no source counterpart:
 |------|----------|
 | [`Fakes_test.go`](./Fakes_test.go) | Shared doubles — `fakeConn` (in-memory `net.Conn`), `fixedRandRead`, `scriptedReadTCPConn` |
 | [`Integration_test.go`](./Integration_test.go) | Five tests over real sockets with **no** `di` substitution: raw TCP echo, a 70000 byte payload forcing the 64 bit length path, a non-websocket request rejected with 400, and both hijack paths against live servers |
+
+`BenchmarkMsgAssembly` in [`Msg_test.go`](./Msg_test.go) is the one benchmark,
+and it exists to justify `GetBytes` over `[]byte(GetStr())` on a 70000 byte
+message:
+
+```
+[]byte(GetStr())   10447 ns/op   147457 B/op   2 allocs/op
+GetBytes()          5786 ns/op    73728 B/op   1 allocs/op
+```
+
+Half the time, half the memory — the `string` header only ever existed to be
+converted away. `TestMsgGetBytes/allocates_once_at_the_exact_size` is the
+matching assertion, so a regression fails the suite rather than quietly showing
+up here.
 
 The integration tests are what catch wiring mistakes the unit tests structurally
 cannot — a constructor that forgets a `di` field, or a default pointing at the

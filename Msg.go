@@ -17,10 +17,42 @@ Reference: https://studygolang.com/articles/12796
 */
 func (m *Msg) GetStr() string {
 	var builder strings.Builder
+	builder.Grow(m.payloadLength()) // one exact allocation instead of regrowth
 	for _, f := range m.Frames {
 		builder.Write(f.PayloadData)
 	}
 	return builder.String()
+}
+
+/*
+GetBytes returns the payload of every frame joined into one slice.
+
+Prefer it over []byte(GetStr()) whenever the caller wants bytes — the
+conversion copies the assembled payload a second time, so the byte path costs
+two full-size buffers where this costs one. A binary (opcode 2) message has no
+reason to become a string at all.
+
+The result is a fresh copy, so mutating it never reaches Frames. Callers
+willing to trade that safety for zero allocations can read a single frame
+message straight off m.Frames[0].PayloadData, but must then treat the slice as
+owned by the Msg.
+*/
+func (m *Msg) GetBytes() []byte {
+	result := make([]byte, 0, m.payloadLength())
+	for _, f := range m.Frames {
+		result = append(result, f.PayloadData...)
+	}
+	return result
+}
+
+// payloadLength is the summed size of every frame payload, so the assemblers
+// above can allocate once at the exact size.
+func (m *Msg) payloadLength() int {
+	total := 0
+	for _, f := range m.Frames {
+		total += len(f.PayloadData)
+	}
+	return total
 }
 
 func GetMsgFromTCPConn(conn net.Conn) (Msg, error) {
