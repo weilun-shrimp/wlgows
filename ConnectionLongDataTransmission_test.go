@@ -100,57 +100,69 @@ func TestConnTransmitData(t *testing.T) {
 		if err := wsConn.TransmitData(nil); err != nil {
 			t.Fatalf("TransmitData(nil): %v", err)
 		}
-		if wsConn.currentTransmitDataFrame != nil {
-			t.Error("an empty fragment became a frame")
-		}
 		if len(netConn.written()) != 0 {
 			t.Errorf("%d bytes reached the socket", len(netConn.written()))
 		}
-	})
-
-	// The lookahead. Nothing can go out yet, because this fragment may turn out
-	// to be the last and need FIN.
-	t.Run("holds the first fragment back", func(t *testing.T) {
-		wsConn, netConn, _ := transmitting(t, OpcodeText)
-
-		if err := wsConn.TransmitData([]byte("hello")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-		if len(netConn.written()) != 0 {
-			t.Errorf("%d bytes reached the socket, want the fragment held back", len(netConn.written()))
-		}
-		if wsConn.currentTransmitDataFrame == nil {
-			t.Fatal("nothing was held back")
-		}
-		if wsConn.currentTransmitDataFrame.Opcode != OpcodeText {
-			t.Errorf("held frame opcode = %#x, want %#x", wsConn.currentTransmitDataFrame.Opcode, OpcodeText)
+		if wsConn.currentTransmitDataMsgOpened {
+			t.Error("an empty fragment opened the message")
 		}
 	})
 
-	t.Run("flushes the previous fragment when the next arrives", func(t *testing.T) {
+	// Nothing is held back, which is what lets a caller reuse its read buffer.
+	t.Run("sends each fragment before returning", func(t *testing.T) {
 		wsConn, netConn, _ := transmitting(t, OpcodeText)
 
 		if err := wsConn.TransmitData([]byte("hello ")); err != nil {
 			t.Fatalf("TransmitData: %v", err)
 		}
+		if sent := framesOn(t, netConn); len(sent) != 1 {
+			t.Fatalf("%d frames on the wire after one fragment, want 1", len(sent))
+		}
+
 		if err := wsConn.TransmitData([]byte("world")); err != nil {
 			t.Fatalf("TransmitData: %v", err)
 		}
 
 		sent := framesOn(t, netConn)
-		if len(sent) != 1 {
-			t.Fatalf("%d frames on the wire, want 1 — only the first is flushed", len(sent))
+		if len(sent) != 2 {
+			t.Fatalf("%d frames on the wire, want 2", len(sent))
 		}
-		if sent[0].Opcode != OpcodeText {
-			t.Errorf("Opcode = %#x, want %#x", sent[0].Opcode, OpcodeText)
+		// 5.4: the message's opcode opens it, the next frame continues it.
+		if sent[0].Opcode != OpcodeText || sent[1].Opcode != OpcodeContinuation {
+			t.Errorf("opcodes %#x, %#x — want %#x then %#x",
+				sent[0].Opcode, sent[1].Opcode, OpcodeText, OpcodeContinuation)
 		}
-		if sent[0].FIN {
-			t.Error("FIN was set on a fragment that is not the last")
+		for i, f := range sent {
+			if f.FIN {
+				t.Errorf("frame %d set FIN before the message ended", i)
+			}
 		}
-		// 5.4: the second fragment continues the message, it does not restart it.
-		if wsConn.currentTransmitDataFrame.Opcode != OpcodeContinuation {
-			t.Errorf("held frame opcode = %#x, want %#x",
-				wsConn.currentTransmitDataFrame.Opcode, OpcodeContinuation)
+	})
+
+	/*
+		The reason nothing is held. A caller streaming a file reads into one
+		buffer over and over, which is what io.Copy does too — a frame keeping a
+		window onto that buffer would go out carrying the next chunk's bytes,
+		with every length still correct and only the contents wrong.
+	*/
+	t.Run("does not retain the caller's buffer", func(t *testing.T) {
+		wsConn, netConn, _ := transmitting(t, OpcodeBinary)
+
+		buf := make([]byte, 4)
+		copy(buf, "AAAA")
+		if err := wsConn.TransmitData(buf); err != nil {
+			t.Fatalf("TransmitData: %v", err)
+		}
+		copy(buf, "BBBB") // the caller reuses its buffer for the next read
+		if err := wsConn.TransmitData(buf); err != nil {
+			t.Fatalf("TransmitData: %v", err)
+		}
+		if err := wsConn.EndLongDataTransmission(); err != nil {
+			t.Fatalf("End: %v", err)
+		}
+
+		if got := framesOn(t, netConn).Bytes(); !bytes.Equal(got, []byte("AAAABBBB")) {
+			t.Errorf("wire carries %q, want %q", got, "AAAABBBB")
 		}
 	})
 
@@ -167,16 +179,18 @@ func TestConnTransmitData(t *testing.T) {
 		}
 	})
 
-	t.Run("propagates a write error from the flush", func(t *testing.T) {
+	// The failing call is the failing fragment — nothing is queued, so an error
+	// never points at an earlier one.
+	t.Run("propagates a write error", func(t *testing.T) {
 		wantErr := errors.New("socket gone")
 		wsConn, netConn, _ := transmitting(t, OpcodeText)
-
-		if err := wsConn.TransmitData([]byte("hello")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
 		netConn.writeErr = wantErr
-		if err := wsConn.TransmitData([]byte("world")); !errors.Is(err, wantErr) {
+
+		if err := wsConn.TransmitData([]byte("hello")); !errors.Is(err, wantErr) {
 			t.Errorf("TransmitData = %v, want %v", err, wantErr)
+		}
+		if wsConn.currentTransmitDataMsgOpened {
+			t.Error("a fragment that never reached the socket opened the message")
 		}
 	})
 }
@@ -197,8 +211,11 @@ func TestConnEndLongDataTransmission(t *testing.T) {
 		}
 	})
 
-	// Started and never fed: no message was ever opened on the wire, so there is
-	// nothing to terminate.
+	/*
+		Started and never fed — an empty file streams exactly like this. No
+		message was opened on the wire, so a terminator would reach the peer as
+		a continuation with nothing to continue, and cost the connection.
+	*/
 	t.Run("writes nothing when no fragment was transmitted", func(t *testing.T) {
 		wsConn, netConn, locker := transmitting(t, OpcodeBinary)
 
@@ -214,7 +231,12 @@ func TestConnEndLongDataTransmission(t *testing.T) {
 		}
 	})
 
-	t.Run("sends the held fragment with FIN", func(t *testing.T) {
+	/*
+		5.4 terminates a message with opcode 0 and FIN set, and constrains its
+		length not at all — so an empty one ends the message without holding a
+		fragment back to put FIN on.
+	*/
+	t.Run("terminates with an empty continuation carrying FIN", func(t *testing.T) {
 		wsConn, netConn, locker := transmitting(t, OpcodeText)
 
 		if err := wsConn.TransmitData([]byte("hello")); err != nil {
@@ -225,11 +247,18 @@ func TestConnEndLongDataTransmission(t *testing.T) {
 		}
 
 		sent := framesOn(t, netConn)
-		if len(sent) != 1 {
-			t.Fatalf("%d frames on the wire, want 1", len(sent))
+		if len(sent) != 2 {
+			t.Fatalf("%d frames on the wire, want 2 — the fragment and the terminator", len(sent))
 		}
-		if !sent[0].FIN {
-			t.Error("FIN was not set — the peer would wait for more")
+		last := sent[len(sent)-1]
+		if last.Opcode != OpcodeContinuation {
+			t.Errorf("terminator opcode = %#x, want %#x", last.Opcode, OpcodeContinuation)
+		}
+		if !last.FIN {
+			t.Error("terminator did not set FIN — the peer would wait for more")
+		}
+		if len(last.PayloadData) != 0 {
+			t.Errorf("terminator carries %d bytes, want none", len(last.PayloadData))
 		}
 		if !locker.ok(1) {
 			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
@@ -255,8 +284,25 @@ func TestConnEndLongDataTransmission(t *testing.T) {
 			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
 				locker.locks, locker.unlocks, locker.held)
 		}
-		if wsConn.currentTransmitDataFrame != nil || wsConn.currentTransmitDataMsgOpcode != 0 {
+		if wsConn.currentTransmitDataMsgOpcode != 0 || wsConn.currentTransmitDataMsgOpened {
 			t.Error("state survived a failed end, so the next transmission inherits it")
+		}
+	})
+
+	t.Run("propagates a build error and still unlocks", func(t *testing.T) {
+		wantErr := errors.New("cannot build")
+		wsConn, _, locker := transmitting(t, OpcodeText)
+		if err := wsConn.TransmitData([]byte("hello")); err != nil {
+			t.Fatalf("TransmitData: %v", err)
+		}
+		wsConn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
+
+		if err := wsConn.EndLongDataTransmission(); !errors.Is(err, wantErr) {
+			t.Errorf("End = %v, want %v", err, wantErr)
+		}
+		if !locker.ok(1) {
+			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
+				locker.locks, locker.unlocks, locker.held)
 		}
 	})
 }
@@ -280,11 +326,11 @@ func TestConnLongDataTransmissionWholeMessage(t *testing.T) {
 	}
 
 	sent := framesOn(t, netConn)
-	if len(sent) != 3 {
-		t.Fatalf("%d frames on the wire, want 3", len(sent))
+	if len(sent) != 4 {
+		t.Fatalf("%d frames on the wire, want 4 — three fragments and the terminator", len(sent))
 	}
 
-	wantOpcodes := []byte{OpcodeText, OpcodeContinuation, OpcodeContinuation}
+	wantOpcodes := []byte{OpcodeText, OpcodeContinuation, OpcodeContinuation, OpcodeContinuation}
 	for i, f := range sent {
 		if f.Opcode != wantOpcodes[i] {
 			t.Errorf("frame %d opcode = %#x, want %#x", i, f.Opcode, wantOpcodes[i])

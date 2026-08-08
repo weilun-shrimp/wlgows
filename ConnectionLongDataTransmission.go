@@ -16,9 +16,14 @@ chunks and it goes out as one message, fragment by fragment.
 	}
 
 RFC 6455 5.4 is kept for you: the opcode goes on the first frame and
-OpcodeContinuation on every frame after, FIN lands on the last one, and no other
-message interleaves. A chunk is one frame, so pick a size — 32 KB is a fair
-default — rather than passing a byte at a time.
+OpcodeContinuation on every frame after, and no other message interleaves. A
+chunk is one frame, so pick a size — 32 KB is a fair default — rather than
+passing a byte at a time.
+
+End terminates the message with an empty continuation frame carrying FIN. 5.4
+puts FIN on the last frame and says nothing about its length, so an empty one
+costs six bytes and lets every chunk go out the moment you pass it. Nothing is
+held between calls, so the buffer you read into is yours to reuse.
 
 Two rules stay yours. A text transmission must be valid UTF-8, which is not
 checked here as it is in SendText, and a peer may refuse a message larger than
@@ -50,11 +55,11 @@ func (c *Conn) StartLongDataTransmission(opcode uint8) error {
 }
 
 /*
-TransmitData adds one fragment. Empty data is dropped — a zero length fragment
-adds nothing to the message 5.4 defines as the concatenation of its fragments.
+TransmitData adds one fragment, sealed and written before it returns. Empty data
+is dropped — a zero length fragment adds nothing to the message 5.4 defines as
+the concatenation of its fragments.
 
-What reaches the socket is the fragment before this one, held back so End has a
-frame to set FIN on. An error here means an earlier fragment failed to send.
+data is not retained, so the buffer you read into can be reused straight away.
 */
 func (c *Conn) TransmitData(data []byte) error {
 	if c.currentTransmitDataMsgOpcode == 0 {
@@ -66,7 +71,7 @@ func (c *Conn) TransmitData(data []byte) error {
 
 	// 5.4: the message's own opcode opens it, every frame after continues it.
 	opcode := c.currentTransmitDataMsgOpcode
-	if c.currentTransmitDataFrame != nil {
+	if c.currentTransmitDataMsgOpened {
 		opcode = OpcodeContinuation
 	}
 
@@ -76,21 +81,21 @@ func (c *Conn) TransmitData(data []byte) error {
 	if err != nil {
 		return err
 	}
-
-	// Flush the one held back, now that it is known not to be the last.
-	if c.currentTransmitDataFrame != nil {
-		if err := c.SendFrame(c.currentTransmitDataFrame); err != nil {
-			return err
-		}
+	if err := c.SendFrame(f); err != nil {
+		return err
 	}
 
-	c.currentTransmitDataFrame = f
+	c.currentTransmitDataMsgOpened = true
 	return nil
 }
 
 /*
-EndLongDataTransmission sends the held back fragment with FIN set, which ends
-the message (5.4), and releases the connection.
+EndLongDataTransmission terminates the message with an empty continuation frame
+carrying FIN, which is what tells the peer it is complete (5.4), and releases the
+connection.
+
+A transmission that never sent a fragment opened no message on the wire, so
+nothing is terminated and only the lock is released.
 
 The lock is released even when the write fails, so a deferred call always frees
 it.
@@ -101,15 +106,20 @@ func (c *Conn) EndLongDataTransmission() error {
 	}
 
 	defer func() {
-		c.currentTransmitDataFrame = nil
 		c.currentTransmitDataMsgOpcode = 0
+		c.currentTransmitDataMsgOpened = false
 		c.di.dataFramesWriteLocker.Unlock()
 	}()
 
-	if c.currentTransmitDataFrame == nil {
+	if !c.currentTransmitDataMsgOpened {
 		return nil // Nothing was sent, so no message is open on the wire.
 	}
 
-	c.currentTransmitDataFrame.FIN = true
-	return c.SendFrame(c.currentTransmitDataFrame)
+	f, err := c.di.newDataFrame(NewFrameConfig{
+		Opcode: OpcodeContinuation, Mask: c.maskSendFrame, FIN: true,
+	})
+	if err != nil {
+		return err
+	}
+	return c.SendFrame(f)
 }

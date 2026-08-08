@@ -75,8 +75,9 @@ Every `Send*` call above is yours, in a hook — the Listener writes nothing. Th
 one `defer conn.Close()` is the only close, since the hooks pause the loop and
 let this function return rather than closing underneath it.
 
-This server never sends a message of its own: v3 has `SendClose`, `SendPing` and
-`SendPong` and no data frame API yet.
+This one only answers; it never starts a message of its own. `SendText`,
+`SendBinary` and `StartLongDataTransmission` are there when you want to — see
+the Sending section of the [main README](./README.md).
 
 ## Three things it will not do for you
 

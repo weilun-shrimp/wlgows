@@ -22,16 +22,16 @@ type Conn struct {
 	// frames: it covers every frame this Conn ever builds.
 	maskSendFrame bool
 
-	// The fragment TransmitData held back. RFC 6455 5.4 puts FIN on the last
-	// frame, and which one is last is only known when End says so, so one is
-	// always kept to set it on.
-	currentTransmitDataFrame *Frame
-
 	// The opcode the message opened with, and the record that one is open —
 	// 5.4 never lets a message start with OpcodeContinuation, so zero means no
-	// transmission. It cannot be read back off currentTransmitDataFrame, whose
-	// opcode becomes OpcodeContinuation after the first fragment.
+	// transmission.
 	currentTransmitDataMsgOpcode uint8
+
+	// Whether the opening frame has gone out, which decides two things: the
+	// next frame carries OpcodeContinuation rather than the opcode again, and
+	// End has a message to terminate. Ending one that never opened would send
+	// a continuation the peer has nothing to continue.
+	currentTransmitDataMsgOpened bool
 
 	di connDI
 }
