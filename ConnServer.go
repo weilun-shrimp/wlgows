@@ -28,7 +28,7 @@ type serverConnDI struct {
 }
 
 func NewServerConn(c net.Conn, req *http.Request) *ServerConn {
-	sc := &ServerConn{Conn: *NewConn(c, req, nil)}
+	sc := &ServerConn{Conn: *NewConn(c, req, nil, false)}
 	sc.di = serverConnDI{
 		readRequest:              sc.ReadRequest,
 		validateHandShakeRequest: ValidateHandShakeRequest,

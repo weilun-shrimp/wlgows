@@ -145,7 +145,7 @@ func TestNewFrameLengthEncoding(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			frame, err := newFrame(NewFrameConfig{
-				Data: bytes.Repeat([]byte{'x'}, testCase.size), Opcode: 1, FIN: true,
+				PayloadData: bytes.Repeat([]byte{'x'}, testCase.size), Opcode: 1, FIN: true,
 			}, newFrameDI{
 				generateMaskingKey: func() ([]byte, error) { return nil, nil },
 			})
@@ -187,7 +187,7 @@ func TestNewFrameEmptyDataStillProducesAFrame(t *testing.T) {
 func TestNewFrameMasking(t *testing.T) {
 	t.Run("masks with the injected key", func(t *testing.T) {
 		frame, err := newFrame(NewFrameConfig{
-			Data: []byte("hi"), Opcode: 1, Mask: true, FIN: true,
+			PayloadData: []byte("hi"), Opcode: 1, Mask: true, FIN: true,
 		}, newFrameDI{
 			generateMaskingKey: func() ([]byte, error) { return []byte{1, 2, 3, 4}, nil },
 		})
@@ -213,7 +213,7 @@ func TestNewFrameMasking(t *testing.T) {
 
 	t.Run("leaves the frame unmasked when not requested", func(t *testing.T) {
 		frame, err := newFrame(NewFrameConfig{
-			Data: []byte("hi"), Opcode: 1, FIN: true,
+			PayloadData: []byte("hi"), Opcode: 1, FIN: true,
 		}, newFrameDI{
 			generateMaskingKey: func() ([]byte, error) {
 				t.Fatal("generateMaskingKey must not be called when Mask is false")
@@ -231,7 +231,7 @@ func TestNewFrameMasking(t *testing.T) {
 	t.Run("propagates a masking key error", func(t *testing.T) {
 		want := errors.New("no entropy")
 		_, err := newFrame(NewFrameConfig{
-			Data: []byte("hi"), Opcode: 1, Mask: true, FIN: true,
+			PayloadData: []byte("hi"), Opcode: 1, Mask: true, FIN: true,
 		}, newFrameDI{
 			generateMaskingKey: func() ([]byte, error) { return nil, want },
 		})
@@ -244,7 +244,7 @@ func TestNewFrameMasking(t *testing.T) {
 func TestNewFrameOpcode(t *testing.T) {
 	for _, opcode := range []uint8{0, 1, 2, 8, 9, 10} {
 		frame, err := newFrame(NewFrameConfig{
-			Data: []byte("x"), Opcode: opcode, FIN: true,
+			PayloadData: []byte("x"), Opcode: opcode, FIN: true,
 		}, newFrameDI{
 			generateMaskingKey: func() ([]byte, error) { return nil, nil },
 		})
@@ -302,7 +302,7 @@ treats as fragmented and then waits for a continuation of.
 func TestNewFrameFIN(t *testing.T) {
 	t.Run("carries FIN through", func(t *testing.T) {
 		for _, want := range []bool{true, false} {
-			frame, err := NewFrame(NewFrameConfig{Data: []byte("x"), Opcode: 1, FIN: want})
+			frame, err := NewFrame(NewFrameConfig{PayloadData: []byte("x"), Opcode: 1, FIN: want})
 			if err != nil {
 				t.Fatalf("NewFrame: %v", err)
 			}
@@ -318,7 +318,7 @@ func TestNewFrameFIN(t *testing.T) {
 
 	// Pins the zero value so a change to it cannot pass unnoticed.
 	t.Run("omitting FIN yields a non final frame", func(t *testing.T) {
-		frame, err := NewFrame(NewFrameConfig{Data: []byte("x"), Opcode: 1})
+		frame, err := NewFrame(NewFrameConfig{PayloadData: []byte("x"), Opcode: 1})
 		if err != nil {
 			t.Fatalf("NewFrame: %v", err)
 		}
@@ -330,11 +330,11 @@ func TestNewFrameFIN(t *testing.T) {
 	// The fragmentation shape the doc comment describes, round tripped through
 	// Seal and back, then reassembled by Frames.
 	t.Run("a fragmented message reassembles", func(t *testing.T) {
-		head, err := NewFrame(NewFrameConfig{Data: []byte("中文"), Opcode: 1})
+		head, err := NewFrame(NewFrameConfig{PayloadData: []byte("中文"), Opcode: 1})
 		if err != nil {
 			t.Fatalf("NewFrame head: %v", err)
 		}
-		tail, err := NewFrame(NewFrameConfig{Data: []byte("字"), Opcode: 0, FIN: true})
+		tail, err := NewFrame(NewFrameConfig{PayloadData: []byte("字"), Opcode: 0, FIN: true})
 		if err != nil {
 			t.Fatalf("NewFrame tail: %v", err)
 		}

@@ -21,10 +21,10 @@ type capture struct {
 	held   bool // was the write lock held at the moment of the write?
 }
 
-func captureSend(t *testing.T, send func(*Conn) error) capture {
+func captureSend(t *testing.T, maskSendFrame bool, send func(*Conn) error) capture {
 	t.Helper()
 	got := capture{conn: newFakeConn(nil), locker: &fakeLocker{}}
-	wsConn := NewConn(got.conn, nil, nil)
+	wsConn := NewConn(got.conn, nil, nil, maskSendFrame)
 	wsConn.di.writeLocker = got.locker
 	wsConn.di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
 		got.config = config
@@ -59,7 +59,7 @@ func assertPropagatesBuildError(t *testing.T, send func(*Conn) error) {
 	t.Helper()
 	want := errors.New("cannot build")
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil)
+	wsConn := NewConn(netConn, nil, nil, false)
 	wsConn.di.newControlFrame = func(NewControlFrameConfig) (*Frame, error) { return nil, want }
 	if err := send(wsConn); !errors.Is(err, want) {
 		t.Errorf("err = %v, want %v", err, want)
@@ -71,7 +71,7 @@ func assertPropagatesBuildError(t *testing.T, send func(*Conn) error) {
 
 func TestConnSendClose(t *testing.T) {
 	t.Run("nil payload sends no body", func(t *testing.T) {
-		got := captureSend(t, func(c *Conn) error { return c.SendClose(false, nil) })
+		got := captureSend(t, false, func(c *Conn) error { return c.SendClose(nil) })
 		if got.config.Opcode != OpcodeClose {
 			t.Errorf("Opcode = %#x, want %#x", got.config.Opcode, OpcodeClose)
 		}
@@ -81,30 +81,24 @@ func TestConnSendClose(t *testing.T) {
 		got.assertWrittenUnderLock(t)
 	})
 
-	t.Run("relays mask and the encoded payload", func(t *testing.T) {
+	t.Run("relays the encoded payload", func(t *testing.T) {
 		payload := &ClosePayload{StatusCode: CloseNormalClosure, Reason: "bye"}
-		got := captureSend(t, func(c *Conn) error { return c.SendClose(true, payload) })
-		if !got.config.Mask {
-			t.Error("Mask was not relayed")
-		}
+		got := captureSend(t, false, func(c *Conn) error { return c.SendClose(payload) })
 		if string(got.config.PayloadData) != string(payload.Bytes()) {
 			t.Errorf("PayloadData = % x, want % x", got.config.PayloadData, payload.Bytes())
 		}
 	})
 
 	t.Run("propagates a build error", func(t *testing.T) {
-		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendClose(false, nil) })
+		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendClose(nil) })
 	})
 }
 
 func TestConnSendPing(t *testing.T) {
-	t.Run("relays mask and payload unchanged", func(t *testing.T) {
-		got := captureSend(t, func(c *Conn) error { return c.SendPing(true, []byte("hb")) })
+	t.Run("relays payload unchanged", func(t *testing.T) {
+		got := captureSend(t, false, func(c *Conn) error { return c.SendPing([]byte("hb")) })
 		if got.config.Opcode != OpcodePing {
 			t.Errorf("Opcode = %#x, want %#x", got.config.Opcode, OpcodePing)
-		}
-		if !got.config.Mask {
-			t.Error("Mask was not relayed")
 		}
 		if string(got.config.PayloadData) != "hb" {
 			t.Errorf("PayloadData = %q, want %q", got.config.PayloadData, "hb")
@@ -113,18 +107,15 @@ func TestConnSendPing(t *testing.T) {
 	})
 
 	t.Run("propagates a build error", func(t *testing.T) {
-		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendPing(false, nil) })
+		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendPing(nil) })
 	})
 }
 
 func TestConnSendPong(t *testing.T) {
-	t.Run("relays mask and payload unchanged", func(t *testing.T) {
-		got := captureSend(t, func(c *Conn) error { return c.SendPong(true, []byte("hb")) })
+	t.Run("relays payload unchanged", func(t *testing.T) {
+		got := captureSend(t, false, func(c *Conn) error { return c.SendPong([]byte("hb")) })
 		if got.config.Opcode != OpcodePong {
 			t.Errorf("Opcode = %#x, want %#x", got.config.Opcode, OpcodePong)
-		}
-		if !got.config.Mask {
-			t.Error("Mask was not relayed")
 		}
 		if string(got.config.PayloadData) != "hb" {
 			t.Errorf("PayloadData = %q, want %q", got.config.PayloadData, "hb")
@@ -133,6 +124,29 @@ func TestConnSendPong(t *testing.T) {
 	})
 
 	t.Run("propagates a build error", func(t *testing.T) {
-		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendPong(false, nil) })
+		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendPong(nil) })
 	})
+}
+
+/*
+The mask is no longer a parameter — RFC 6455 5.1 ties it to which side the Conn
+is, so it is settled at construction and every control frame the Conn builds
+must carry whatever was set there.
+*/
+func TestConnSendControlFrameTakesMaskFromConn(t *testing.T) {
+	senders := map[string]func(*Conn) error{
+		"SendClose": func(c *Conn) error { return c.SendClose(nil) },
+		"SendPing":  func(c *Conn) error { return c.SendPing(nil) },
+		"SendPong":  func(c *Conn) error { return c.SendPong(nil) },
+	}
+
+	for name, send := range senders {
+		t.Run(name, func(t *testing.T) {
+			for _, maskSendFrame := range []bool{false, true} {
+				if got := captureSend(t, maskSendFrame, send); got.config.Mask != maskSendFrame {
+					t.Errorf("Conn built with maskSendFrame=%v sent Mask=%v", maskSendFrame, got.config.Mask)
+				}
+			}
+		})
+	}
 }

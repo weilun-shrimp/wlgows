@@ -33,6 +33,11 @@ var (
 	// data opcode, which would go out with control frame rules applied to it.
 	ErrNotControlFrameOpcode = errors.New("opcode is not a control frame opcode")
 
+	// ErrNotDataFrameOpcode guards NewDataFrame against a control opcode, which
+	// would go out without the 125 byte cap and forced FIN that RFC 6455 5.5
+	// requires of one.
+	ErrNotDataFrameOpcode = errors.New("opcode is not a data frame opcode")
+
 	// ErrNotCloseFrameOpcode is returned by Frame.GetClosePayload for a frame
 	// that is not a close frame.
 	ErrNotCloseFrameOpcode = errors.New("opcode is not a close frame opcode")
@@ -55,9 +60,13 @@ var (
 	// panic on the first frame instead of saying what is wrong.
 	ErrListenerConnIsNil = errors.New("listener has no Conn")
 
-	// ErrContinuationFrameWithoutMsg is a continuation frame arriving with no
-	// fragmented message open. RFC 6455 5.4 only allows opcode 0 after a data
-	// frame with FIN clear — answer with close code 1002.
+	// ErrContinuationFrameWithoutMsg is a continuation frame with no fragmented
+	// message open. RFC 6455 5.4 only allows opcode 0 after a data frame with
+	// FIN clear.
+	//
+	// Both directions: from Listen the peer sent it, and close code 1002 is the
+	// answer. From StartLongDataTransmission you opened a message with it, and
+	// there is nothing for it to continue.
 	ErrContinuationFrameWithoutMsg = errors.New("continuation frame with no message being assembled")
 
 	// ErrDataFrameDuringMsg is a data frame arriving while a fragmented message
@@ -67,7 +76,11 @@ var (
 
 	// ErrInvalidUTF8 is a text message payload that is not valid UTF-8. RFC
 	// 6455 5.6 makes a text message UTF-8 as a whole, and 8.1 requires failing
-	// the connection when it is not — answer with close code 1007.
+	// the connection when it is not.
+	//
+	// Both directions: from Listen it means the peer sent it, and answering with
+	// close code 1007 is the response. From SendText it means you did, and the
+	// message was refused before it reached the socket.
 	//
 	// A close frame reason is UTF-8 too (5.5.1) and is not checked yet.
 	ErrInvalidUTF8 = errors.New("text message payload is not valid UTF-8")
@@ -103,6 +116,12 @@ var (
 // connection state
 var (
 	ErrClientRequestHasSet = errors.New("client request has already been set")
+
+	// ErrLongDataTransmissionNotStarted is TransmitData or
+	// EndLongDataTransmission called with no transmission open. Both rely on
+	// StartLongDataTransmission having taken dataFramesWriteLocker, so acting
+	// anyway would write outside the lock and unlock what was never locked.
+	ErrLongDataTransmissionNotStarted = errors.New("no long data transmission is open")
 )
 
 // handshake

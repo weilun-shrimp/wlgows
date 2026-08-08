@@ -81,7 +81,7 @@ single frame message.
 type NewFrameConfig struct {
 	// Data is the payload, carried whole. Empty is legal: a zero length frame
 	// is how an empty text message or a bare close goes out.
-	Data []byte
+	PayloadData []byte
 	// Opcode is 1 text, 2 binary, 8 close, 9 ping, 0xA pong, 0 continuation.
 	Opcode uint8
 	// Mask must be true on a frame a client sends and may be false on one a
@@ -122,7 +122,7 @@ type newFrameDI struct {
 }
 
 func newFrame(config NewFrameConfig, di newFrameDI) (*Frame, error) {
-	f := &Frame{FIN: config.FIN, Opcode: config.Opcode, PayloadData: config.Data}
+	f := &Frame{FIN: config.FIN, Opcode: config.Opcode, PayloadData: config.PayloadData}
 	if config.Mask {
 		f.Mask = true
 		key, err := di.generateMaskingKey()
@@ -132,7 +132,7 @@ func newFrame(config NewFrameConfig, di newFrameDI) (*Frame, error) {
 		f.MaskingKey = key
 	}
 
-	dataLength := uint64(len(config.Data))
+	dataLength := uint64(len(config.PayloadData))
 	switch {
 	case dataLength <= uint64(125):
 		f.PayloadLength = uint8(dataLength)

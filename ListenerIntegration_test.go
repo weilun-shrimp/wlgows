@@ -35,20 +35,20 @@ func TestListenerIntegration(t *testing.T) {
 			peer.Write(frame.Seal())
 		}
 
-		write(NewFrameConfig{Opcode: OpcodeText, FIN: true, Data: []byte("hello")})
+		write(NewFrameConfig{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hello")})
 		// A message split in two, with a ping in between — 5.4 allows a control
 		// frame to arrive mid message.
-		write(NewFrameConfig{Opcode: OpcodeText, Data: []byte("wl")})
-		write(NewFrameConfig{Opcode: OpcodePing, FIN: true, Data: []byte("hb")})
-		write(NewFrameConfig{Opcode: OpcodeContinuation, FIN: true, Data: []byte("gows")})
-		write(NewFrameConfig{Opcode: OpcodeBinary, FIN: true, Data: []byte{0x00, 0xFF}})
+		write(NewFrameConfig{Opcode: OpcodeText, PayloadData: []byte("wl")})
+		write(NewFrameConfig{Opcode: OpcodePing, FIN: true, PayloadData: []byte("hb")})
+		write(NewFrameConfig{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("gows")})
+		write(NewFrameConfig{Opcode: OpcodeBinary, FIN: true, PayloadData: []byte{0x00, 0xFF}})
 		write(NewFrameConfig{
 			Opcode: OpcodeClose, FIN: true,
-			Data: (&ClosePayload{StatusCode: CloseNormalClosure, Reason: "bye"}).Bytes(),
+			PayloadData: (&ClosePayload{StatusCode: CloseNormalClosure, Reason: "bye"}).Bytes(),
 		})
 	}()
 
-	conn := NewConn(netConn, nil, nil)
+	conn := NewConn(netConn, nil, nil, false)
 	defer conn.Close()
 
 	listener := &Listener{}

@@ -33,15 +33,15 @@ func handleConn(conn *wlgows.ServerConn) {
 			log.Printf("binary: %d bytes", frames.ByteLen())
 		},
 		Ping: func(f *wlgows.Frame) {
-			conn.SendPong(false, f.PayloadData) // 5.5.2: MUST answer, echoing
+			conn.SendPong(f.PayloadData) // 5.5.2: MUST answer, echoing
 		},
 		Close: func(f *wlgows.Frame) {
 			payload, _ := f.GetClosePayload() // the Listener already validated it
-			conn.SendClose(false, payload)    // 5.5.1: MUST answer
+			conn.SendClose(payload)           // 5.5.1: MUST answer
 			listener.PauseListen()            // 5.5.1: and read nothing further
 		},
 		Unknown: func(f *wlgows.Frame) {
-			conn.SendClose(false, &wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
+			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
 			listener.PauseListen()
 		},
 	}); err != nil {
@@ -64,7 +64,7 @@ func handleConn(conn *wlgows.ServerConn) {
 	// payload comes back only for the first — a dead socket has nothing to tell.
 	default:
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-			conn.SendClose(false, payload)
+			conn.SendClose(payload)
 		}
 		log.Println("closing:", err)
 	}
@@ -265,7 +265,7 @@ case errors.Is(err, wlgows.ErrListenerConnIsNil),
 
 default:
 	if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-		conn.SendClose(false, payload) // group 1. false: a server does not mask
+		conn.SendClose(payload) // group 1
 	}
 	conn.Close() // groups 1 and 2, and the server is the one that closes
 }

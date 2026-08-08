@@ -45,10 +45,10 @@ func NewControlFrame(config NewControlFrameConfig) (*Frame, error) {
 	}
 
 	return NewFrame(NewFrameConfig{
-		Data:   config.PayloadData,
-		Opcode: config.Opcode,
-		Mask:   config.Mask,
-		FIN:    true,
+		PayloadData: config.PayloadData,
+		Opcode:      config.Opcode,
+		Mask:        config.Mask,
+		FIN:         true,
 	})
 }
 

@@ -30,7 +30,7 @@ type clientConnDI struct {
 }
 
 func NewClientConn(c net.Conn, req *http.Request) *ClientConn {
-	cc := &ClientConn{Conn: *NewConn(c, req, nil)}
+	cc := &ClientConn{Conn: *NewConn(c, req, nil, true)}
 	cc.di = clientConnDI{
 		upgradeRequest:            UpgradeRequest,
 		sendHand:                  cc.SendHand,

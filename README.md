@@ -38,7 +38,7 @@ sc, _   := wlgows.HijackFromHttp(w, r)
 ```go
 cc := wlgows.NewClientConn(netConn, req)
 sc := wlgows.NewServerConn(netConn, req)
-c  := wlgows.NewConn(netConn, req, res)
+c  := wlgows.NewConn(netConn, req, res, false) // false: a server does not mask (5.1)
 ```
 
 Exported fields (`ClientRequest`, `ServerResponse`, `TCPAddr`, `TCPListener`) are readable and settable.
