@@ -16,8 +16,8 @@ puts on a receiver lands on a hook, never inside the Listener.
 - [Errors](#errors) — four groups, and which of them want a close frame
 - [Pausing and resuming](#pausing-and-resuming) — ending a run, and starting it again
 
-The rest of the library — sending, streaming, handshakes, locks — is in the
-[main README](./README.md).
+The rest of the library — sending, streaming, liveness, handshakes, locks — is
+in the [main README](./README.md).
 
 ## Quick start
 

@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 type Conn struct {
@@ -52,6 +53,7 @@ type connDI struct {
 	newControlFrame       func(config NewControlFrameConfig) (*Frame, error)
 	newDataFrame          func(config NewFrameConfig) (*Frame, error)
 	generateMaskingKey    func() ([]byte, error)
+	loop                  func(trigger func(stop_signal chan<- struct{}), interval time.Duration)
 	writeLocker           sync.Locker // Protect writing one frame to TCP conn.
 	readLocker            sync.Locker // Protect reading one frame to TCP conn.
 	dataFramesWriteLocker sync.Locker // Protect writing data frames to TCP conn.
@@ -75,6 +77,7 @@ func NewConn(c net.Conn, req *http.Request, res *http.Response, maskSendFrame bo
 			newControlFrame:       NewControlFrame,
 			newDataFrame:          NewDataFrame,
 			generateMaskingKey:    GenerateMaskingKey,
+			loop:                  Loop,
 			writeLocker:           &sync.Mutex{},
 			readLocker:            &sync.Mutex{},
 			dataFramesWriteLocker: &sync.Mutex{},

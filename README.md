@@ -13,6 +13,7 @@ see it.
 - **Listener** — a read loop that validates against RFC 6455 and routes frames to your hooks
 - **Frame-level control** — build and send your own frames when you need to
 - **Streaming** — send a message larger than memory, fragment by fragment
+- **Keepalive** — ping on an interval, with a payload you choose per ping
 - **Concurrent sending** — lock-guarded, and control frames are never stuck behind a long message
 
 ## Contents
@@ -23,6 +24,7 @@ see it.
 - [Design](#design)
 - [Reading](#reading) — `Listener`, or one frame at a time
 - [Sending](#sending) — whole messages, control frames, streaming, raw frames
+- [Keepalive](#keepalive) — pinging on an interval, and noticing silence
 - [Concurrency](#concurrency) — which lock guards what
 - [Errors](#errors) — sentinels and `StandardClosePayloadFor`
 - [Testing](#testing)
@@ -86,6 +88,10 @@ func handle(conn *wlgows.ServerConn) {
 	}
 	listener.SetConfig(config)
 
+	// Heartbeat, on a goroutine of its own. It ends itself when the connection
+	// does — see Keepalive for noticing a peer that never pongs back.
+	go conn.StartPingLoop(30*time.Second, nil)
+
 	if err := listener.Listen(); err != nil {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 			conn.SendClose(payload)
@@ -129,6 +135,8 @@ func main() {
 		log.Println("received:", frames.String())
 	}
 	listener.SetConfig(config)
+
+	go conn.StartPingLoop(30*time.Second, nil) // heartbeat; ends itself
 
 	conn.SendText([]byte("Hello, WebSocket!"))
 
@@ -388,6 +396,60 @@ retains nothing — see [LISTENER_README.md](./LISTENER_README.md).
 
 `SendFrame` is the escape hatch — it writes what you built and checks almost
 nothing beyond masking. Read its doc before reaching for it.
+
+## Keepalive
+
+A dead peer looks exactly like a quiet one. RFC 6455 5.5.2 makes a ping the
+question and a pong the answer, so liveness is two halves: something asking on
+an interval, and something judging the replies.
+
+`StartPingLoop` is the asking half. It blocks, so the goroutine is yours:
+
+```go
+go conn.StartPingLoop(30*time.Second, nil)   // nil: an empty ping
+```
+
+It ends itself — on a ping that cannot be sent, and once a close has gone out
+from either side of the handshake. Nothing retries, so a failed ping is the last
+one, and there is no handle to remember.
+
+`payload` is called for each ping, not once. 5.5.2 has the peer echo those bytes
+back verbatim, so varying them is what lets you tell which ping came back:
+
+```go
+var seq atomic.Uint64
+go conn.StartPingLoop(30*time.Second, func() []byte {
+	return []byte(fmt.Sprintf("ping-%d", seq.Add(1)))
+})
+```
+
+The pong carries that same `ping-4` back, so a `Pong` hook can see which one it
+answers. Bytes are bytes to the protocol — a number, a timestamp, anything you
+can recognise on the way back.
+
+**Judging the replies is yours**, and it has to be. Stamp a time in your `Pong`
+hook, compare it against a deadline of your own, and close when it passes:
+
+```go
+config.Pong = func(*wlgows.Frame) { lastPong.Store(time.Now()) }
+```
+
+Ignore the payload when stamping. 5.5.3 permits unsolicited pongs and 5.5.2
+permits answering only the most recent of several outstanding pings, so a pong
+that matches nothing you sent is still proof the peer is alive.
+
+`Loop` underneath it is exported and takes any work at all — it calls a func
+on an interval until that func signals stop:
+
+```go
+wlgows.Loop(func(stop chan<- struct{}) {
+	if done() {
+		stop <- struct{}{}   // send once; checked the moment this returns
+		return
+	}
+	work()
+}, time.Second)
+```
 
 ## Concurrency
 
