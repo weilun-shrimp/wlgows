@@ -75,63 +75,57 @@ func handler(c *gin.Context) {
 	}
 	fmt.Println("connected:", conn.RemoteAddr())
 
-	listener := wlgows.NewListener(conn)
-	listener.SetConfig(wlgows.ListenerConfig{
-		PeerIsClient:         true, // we are the server, so the peer masks (5.1)
-		MaxMsgPayloadByteLen: maxMsgPayloadByteLen,
-		FrameReadTimeout:     frameReadTimeout,
+	// Ping, pong, close and reserved opcodes are answered for you, and masking
+	// (5.1) is settled from which side this connection is.
+	listener := conn.NewStandardListener()
 
-		// A whole message, assembled across every fragment. The payload is
-		// already checked as valid UTF-8 (5.6, 8.1).
-		Text: func(frames wlgows.Frames) {
-			text := frames.String()
-			fmt.Printf("text: frames=%d bytes=%d runes=%d: %s\n",
-				len(frames), frames.ByteLen(), utf8.RuneCountInString(text), text)
+	// SetConfig replaces all of it, so start from what the standard hooks left
+	// rather than from an empty ListenerConfig.
+	config := listener.GetConfig()
+	config.MaxMsgPayloadByteLen = maxMsgPayloadByteLen
+	config.FrameReadTimeout = frameReadTimeout
 
-			if err := conn.SendText(frames.Bytes()); err != nil {
-				fmt.Println("echo text:", err)
-			}
-		},
+	// A whole message, assembled across every fragment. The payload is already
+	// checked as valid UTF-8 (5.6, 8.1).
+	config.Text = func(frames wlgows.Frames) {
+		text := frames.String()
+		fmt.Printf("text: frames=%d bytes=%d runes=%d: %s\n",
+			len(frames), frames.ByteLen(), utf8.RuneCountInString(text), text)
 
-		// Arbitrary bytes — 5.6 gives binary no encoding at all.
-		Binary: func(frames wlgows.Frames) {
-			fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), frames.ByteLen())
+		if err := conn.SendText(frames.Bytes()); err != nil {
+			fmt.Println("echo text:", err)
+		}
+	}
 
-			if err := conn.SendBinary(frames.Bytes()); err != nil {
-				fmt.Println("echo binary:", err)
-			}
-		},
+	// Arbitrary bytes — 5.6 gives binary no encoding at all.
+	config.Binary = func(frames wlgows.Frames) {
+		fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), frames.ByteLen())
 
-		// 5.5.2: MUST answer with a pong carrying the same payload.
-		Ping: func(f *wlgows.Frame) {
-			if err := conn.SendPong(f.PayloadData); err != nil {
-				fmt.Println("pong:", err)
-			}
-		},
+		if err := conn.SendBinary(frames.Bytes()); err != nil {
+			fmt.Println("echo binary:", err)
+		}
+	}
 
-		// 5.5.1: MUST answer with a close, then stop reading. PauseListen is
-		// what stops it — the Listener hands over the frame and reads on.
-		Close: func(f *wlgows.Frame) {
-			payload, _ := f.GetClosePayload() // already validated by the Listener
-			fmt.Printf("closed by peer: %+v\n", payload)
+	// The standard hooks already answer and pause, so these only report what
+	// arrived and hand over. Reading them back out of the config is what makes
+	// that possible.
+	standardClose, standardUnknown := config.Close, config.Unknown
+	config.Close = func(f *wlgows.Frame) {
+		payload, _ := f.GetClosePayload() // already validated by the Listener
+		fmt.Printf("closed by peer: %+v\n", payload)
 
-			conn.SendClose(payload)
-			listener.PauseListen()
-		},
+		standardClose(f)
+	}
+	config.Unknown = func(f *wlgows.Frame) {
+		fmt.Printf("unknown opcode %#x\n", f.Opcode)
 
-		// An opcode 5.2 reserves. A protocol error: answer 1002 and stop.
-		Unknown: func(f *wlgows.Frame) {
-			fmt.Printf("unknown opcode %#x\n", f.Opcode)
+		standardUnknown(f)
+	}
 
-			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
-			listener.PauseListen()
-		},
-
-		// Pong is nil on purpose: 5.5.3 says MUST NOT answer one.
-	})
+	listener.SetConfig(config)
 
 	// Blocks until a read fails, a frame breaks a rule, or a hook pauses it.
-	// nil means PauseListen was called — here only the Close and Unknown hooks
+	// nil means PauseListen was called — here only the close and unknown hooks
 	// do that, so it is the ordinary shutdown.
 	if err := listener.Listen(); err != nil {
 		// No payload when no close frame can answer err: a dead socket, or
