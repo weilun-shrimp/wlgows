@@ -74,26 +74,17 @@ func handle(conn *wlgows.ServerConn) {
 		return
 	}
 
-	listener := wlgows.NewListener()
-	if err := listener.SetConfig(wlgows.ListenerConfig{
-		Conn:                 conn,
-		PeerIsClient:         true, // we are the server, so the peer masks
-		MaxMsgPayloadByteLen: 10 * 1024 * 1024,
+	// Ping, pong, close and reserved opcodes already answered, masking settled
+	// from which side this connection is.
+	listener := conn.NewStandardListener()
 
-		Text: func(frames wlgows.Frames) {
-			conn.SendText(frames.Bytes()) // echo
-		},
-		Ping: func(f *wlgows.Frame) {
-			conn.SendPong(f.PayloadData) // 5.5.2: MUST answer
-		},
-		Close: func(f *wlgows.Frame) {
-			payload, _ := f.GetClosePayload()
-			conn.SendClose(payload) // 5.5.1: MUST answer
-			listener.PauseListen()
-		},
-	}); err != nil {
-		return
+	// SetConfig replaces all of it, so start from what the standard hooks left.
+	config := listener.GetConfig()
+	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
+	config.Text = func(frames wlgows.Frames) {
+		conn.SendText(frames.Bytes()) // echo
 	}
+	listener.SetConfig(config)
 
 	if err := listener.Listen(); err != nil {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
@@ -106,8 +97,9 @@ func handle(conn *wlgows.ServerConn) {
 
 ### Client
 
-Same shape as the server — only `PeerIsClient` flips, since a server does not
-mask what it sends:
+Same shape as the server. Masking flips — a server does not mask what it sends —
+but nothing here says so: a `Conn` knows which side it is, and
+`NewStandardListener` takes it from there.
 
 ```go
 package main
@@ -129,26 +121,14 @@ func main() {
 		panic(err)
 	}
 
-	listener := wlgows.NewListener()
-	if err := listener.SetConfig(wlgows.ListenerConfig{
-		Conn:                 conn,
-		PeerIsClient:         false, // we are the client, so the peer does not mask
-		MaxMsgPayloadByteLen: 10 * 1024 * 1024,
+	listener := conn.NewStandardListener()
 
-		Text: func(frames wlgows.Frames) {
-			log.Println("received:", frames.String())
-		},
-		Ping: func(f *wlgows.Frame) {
-			conn.SendPong(f.PayloadData) // 5.5.2: MUST answer
-		},
-		Close: func(f *wlgows.Frame) {
-			payload, _ := f.GetClosePayload()
-			conn.SendClose(payload) // 5.5.1: MUST answer
-			listener.PauseListen()
-		},
-	}); err != nil {
-		panic(err)
+	config := listener.GetConfig() // what the standard hooks left
+	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
+	config.Text = func(frames wlgows.Frames) {
+		log.Println("received:", frames.String())
 	}
+	listener.SetConfig(config)
 
 	conn.SendText([]byte("Hello, WebSocket!"))
 
@@ -278,20 +258,24 @@ Two ways, depending on how much you want to own.
 
 **A `Listener`** reads, validates against RFC 6455, assembles fragmented
 messages and calls the hook for each opcode. It never writes and never closes —
-every obligation the RFC puts on a receiver lands on a hook:
+every obligation the RFC puts on a receiver lands on a hook. `SetConfig` takes
+the configuration whole, by copy, and is callable whenever — including from
+inside a hook:
 
 ```go
-listener := wlgows.NewListener()
-listener.SetConfig(wlgows.ListenerConfig{
-	Conn:                 conn,
-	PeerIsClient:         true,
-	MaxMsgPayloadByteLen: 10 * 1024 * 1024,
+listener := conn.NewStandardListener() // or wlgows.NewListener(conn), no hooks
 
-	Text: func(frames wlgows.Frames) { log.Print(frames.String()) },
-	Ping: func(f *wlgows.Frame)      { conn.SendPong(f.PayloadData) },
-})
+config := listener.GetConfig()
+config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
+config.Text = func(frames wlgows.Frames) { log.Print(frames.String()) }
+listener.SetConfig(config)
+
 err := listener.Listen()
 ```
+
+`NewStandardListener` is the same Listener with the protocol's own duties already
+answered — ping, pong, close and reserved opcodes — and `PeerIsClient` taken from
+which side the connection is. Every one of those hooks can be replaced.
 
 See **[LISTENER_README.md](./LISTENER_README.md)** — hooks, limits, pausing, and
 what each error means.

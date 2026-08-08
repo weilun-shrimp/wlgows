@@ -3,6 +3,7 @@ package wlgows
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -18,7 +19,7 @@ func TestListenerListen(t *testing.T) {
 		claimed := make(chan struct{})
 		var looped <-chan struct{}
 
-		err := (&Listener{}).listen(listenDI{
+		err := (&Listener{configLocker: &sync.Mutex{}}).listen(listenDI{
 			claimListen: func() (chan struct{}, error) {
 				steps = append(steps, "claimListen")
 				return claimed, nil
@@ -50,7 +51,7 @@ func TestListenerListen(t *testing.T) {
 		want := errors.New("refused")
 		var steps []string
 
-		err := (&Listener{}).listen(listenDI{
+		err := (&Listener{configLocker: &sync.Mutex{}}).listen(listenDI{
 			claimListen:  func() (chan struct{}, error) { return nil, want },
 			listenFrames: func(<-chan struct{}) error { steps = append(steps, "listenFrames"); return nil },
 			pauseListen:  func() { steps = append(steps, "pauseListen") },
@@ -71,7 +72,7 @@ func TestListenerListen(t *testing.T) {
 		want := errors.New("read failed")
 		released := false
 
-		err := (&Listener{}).listen(listenDI{
+		err := (&Listener{configLocker: &sync.Mutex{}}).listen(listenDI{
 			claimListen:  func() (chan struct{}, error) { return make(chan struct{}), nil },
 			listenFrames: func(<-chan struct{}) error { return want },
 			pauseListen:  func() { released = true },
@@ -94,8 +95,7 @@ rather than failing, so the counting Locker is what makes it visible.
 func TestListenerClaimListen(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		locker := &fakeLocker{}
-		l := &Listener{listenLocker: locker}
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: &fakeListenerConn{}, listenLocker: locker}
 
 		pauseChan, err := l.claimListen()
 
@@ -122,10 +122,10 @@ func TestListenerClaimListen(t *testing.T) {
 	t.Run("already listening", func(t *testing.T) {
 		running := make(chan struct{})
 		locker := &fakeLocker{}
-		l := &Listener{pauseChan: running, listenLocker: locker}
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: running, listenLocker: locker}
 
-		// config is left invalid on purpose: the refusal has to come first, so
-		// a Listener already running is never reported as misconfigured.
+		// conn is left nil on purpose: the refusal has to come first, so a
+		// Listener already running is never reported as unbuilt.
 		_, err := l.claimListen()
 
 		if !errors.Is(err, ErrListenerIsListening) {
@@ -140,10 +140,11 @@ func TestListenerClaimListen(t *testing.T) {
 		}
 	})
 
-	// A Listener that never had SetConfig called reaches here with a nil Conn.
-	t.Run("invalid config", func(t *testing.T) {
+	// NewListener is the only thing that sets conn, so a Listener built by hand
+	// reaches here with nothing to read from.
+	t.Run("nil conn", func(t *testing.T) {
 		locker := &fakeLocker{}
-		l := &Listener{listenLocker: locker}
+		l := &Listener{configLocker: &sync.Mutex{}, listenLocker: locker}
 
 		_, err := l.claimListen()
 
@@ -152,7 +153,7 @@ func TestListenerClaimListen(t *testing.T) {
 		}
 		// Nothing was claimed, so a later claimListen must still succeed.
 		if l.pauseChan != nil {
-			t.Error("pauseChan was set despite the config being refused")
+			t.Error("pauseChan was set despite the claim being refused")
 		}
 		if !locker.ok(1) {
 			t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
@@ -164,14 +165,14 @@ func TestListenerClaimListen(t *testing.T) {
 	// protocol error.
 	t.Run("keeps currentDataFrames", func(t *testing.T) {
 		l := &Listener{
+			configLocker:           &sync.Mutex{},
+			conn:                   &fakeListenerConn{},
 			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
 			currentDataFrameCount:  1,
 			currentDataAccLength:   2,
 			currentDataFrameOpcode: OpcodeText,
 			listenLocker:           &fakeLocker{},
 		}
-
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}}
 
 		if _, err := l.claimListen(); err != nil {
 			t.Fatalf("claimListen: %v", err)
@@ -237,8 +238,7 @@ func TestListenerListenFrames(t *testing.T) {
 	// never blocks on one more.
 	t.Run("pauseChan closed", func(t *testing.T) {
 		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: conn}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		pauseChan := make(chan struct{})
 		close(pauseChan)
@@ -256,8 +256,7 @@ func TestListenerListenFrames(t *testing.T) {
 			frames:          []*Frame{{Opcode: OpcodeText}, {Opcode: OpcodeBinary}},
 			getNextFrameErr: drained,
 		}
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: conn}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		var steps []string
 		di := workingDI()
@@ -277,8 +276,7 @@ func TestListenerListenFrames(t *testing.T) {
 	// declare, so it has to reach GetNextFrame unchanged.
 	t.Run("nextFrameByteLimit", func(t *testing.T) {
 		conn := &fakeListenerConn{frames: []*Frame{{}}, getNextFrameErr: drained}
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: conn}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		di := workingDI()
 		di.nextFrameByteLimit = func() uint64 { return 4242 }
@@ -294,8 +292,8 @@ func TestListenerListenFrames(t *testing.T) {
 	t.Run("FrameReadTimeout", func(t *testing.T) {
 		fixed := time.Unix(1000, 0)
 		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: conn, FrameReadTimeout: 30 * time.Second}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		l.config = ListenerConfig{FrameReadTimeout: 30 * time.Second}
 
 		di := workingDI()
 		di.timeNow = func() time.Time { return fixed }
@@ -313,8 +311,7 @@ func TestListenerListenFrames(t *testing.T) {
 	// caller set on the conn themselves.
 	t.Run("no FrameReadTimeout", func(t *testing.T) {
 		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: conn}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		l.listenFrames(make(chan struct{}), workingDI())
 		if len(conn.deadlines) != 0 {
@@ -348,8 +345,8 @@ func TestListenerListenFrames(t *testing.T) {
 				di := workingDI()
 				testCase.setup(conn, &di)
 
-				l := &Listener{}
-				l.config = ListenerConfig{Conn: conn, FrameReadTimeout: time.Second}
+				l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+				l.config = ListenerConfig{FrameReadTimeout: time.Second}
 
 				if err := l.listenFrames(make(chan struct{}), di); !errors.Is(err, want) {
 					t.Errorf("err = %v, want %v", err, want)
@@ -368,7 +365,7 @@ func TestListenerPauseListen(t *testing.T) {
 	t.Run("closes and clears pauseChan", func(t *testing.T) {
 		pauseChan := make(chan struct{})
 		locker := &fakeLocker{}
-		l := &Listener{pauseChan: pauseChan, listenLocker: locker}
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: locker}
 
 		var closed []chan struct{}
 		l.pauseListen(pauseListenDI{
@@ -393,7 +390,7 @@ func TestListenerPauseListen(t *testing.T) {
 	// PauseListen already ran.
 	t.Run("nil pauseChan", func(t *testing.T) {
 		locker := &fakeLocker{}
-		l := &Listener{listenLocker: locker}
+		l := &Listener{configLocker: &sync.Mutex{}, listenLocker: locker}
 
 		closes := 0
 		l.pauseListen(pauseListenDI{
@@ -413,7 +410,7 @@ func TestListenerPauseListen(t *testing.T) {
 	})
 
 	t.Run("twice", func(t *testing.T) {
-		l := &Listener{pauseChan: make(chan struct{}), listenLocker: &fakeLocker{}}
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: make(chan struct{}), listenLocker: &fakeLocker{}}
 		closes := 0
 		di := pauseListenDI{
 			closeChan: func(c chan struct{}) { closes++; close(c) },

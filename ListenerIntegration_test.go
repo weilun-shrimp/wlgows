@@ -51,11 +51,10 @@ func TestListenerIntegration(t *testing.T) {
 	conn := NewConn(netConn, nil, nil, false)
 	defer conn.Close()
 
-	listener := NewListener()
+	listener := NewListener(conn)
 	var got []string
 
-	err := listener.SetConfig(ListenerConfig{
-		Conn:                 conn,
+	listener.SetConfig(ListenerConfig{
 		PeerIsClient:         true,
 		MaxMsgPayloadByteLen: 1024,
 		FrameReadTimeout:     5 * time.Second,
@@ -72,9 +71,6 @@ func TestListenerIntegration(t *testing.T) {
 			listener.PauseListen()
 		},
 	})
-	if err != nil {
-		t.Fatalf("SetConfig: %v", err)
-	}
 
 	// PauseListen from the Close hook, so this returns nil rather than a read
 	// error.

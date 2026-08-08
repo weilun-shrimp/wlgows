@@ -68,50 +68,28 @@ func main() {
 	var stopOnce sync.Once
 	stop := func() { stopOnce.Do(func() { close(stopChan) }) }
 
-	listener := wlgows.NewListener()
-	if err := listener.SetConfig(wlgows.ListenerConfig{
-		Conn:                 conn,
-		PeerIsClient:         false, // we are the client, so the peer does not mask (5.1)
-		MaxMsgPayloadByteLen: maxMsgPayloadByteLen,
-		FrameReadTimeout:     frameReadTimeout,
+	// Ping (5.5.2), pong (5.5.3), close (5.5.1) and reserved opcodes (5.2) are
+	// answered for you, and masking is settled from which side this is — here a
+	// client, so the peer does not mask.
+	listener := conn.NewStandardListener()
+	listener.SetMaxMsgPayloadByteLen(maxMsgPayloadByteLen)
+	listener.SetFrameReadTimeout(frameReadTimeout)
 
-		Text: func(frames wlgows.Frames) {
-			fmt.Println("echo server return: ", frames.String())
-		},
-		Binary: func(frames wlgows.Frames) {
-			fmt.Printf("echo server return %d binary bytes\n", frames.ByteLen())
-		},
+	listener.SetText(func(frames wlgows.Frames) {
+		fmt.Println("echo server return: ", frames.String())
+	})
+	listener.SetBinary(func(frames wlgows.Frames) {
+		fmt.Printf("echo server return %d binary bytes\n", frames.ByteLen())
+	})
 
-		// 5.5.2: MUST answer with a pong carrying the same payload. Without this
-		// hook a server watching for liveness eventually drops us.
-		Ping: func(f *wlgows.Frame) {
-			if err := conn.SendPong(f.PayloadData); err != nil {
-				fmt.Println("pong:", err)
-			}
-		},
+	// The standard close hook answers and pauses; this only reports first.
+	standardClose := conn.RFC6455CloseHook(listener)
+	listener.SetClose(func(f *wlgows.Frame) {
+		payload, _ := f.GetClosePayload() // already validated by the Listener
+		fmt.Printf("closed by server: %+v\n", payload)
 
-		// 5.5.1: MUST answer with a close, then stop reading.
-		Close: func(f *wlgows.Frame) {
-			payload, _ := f.GetClosePayload() // already validated by the Listener
-			fmt.Printf("closed by server: %+v\n", payload)
-
-			conn.SendClose(payload)
-			listener.PauseListen()
-		},
-
-		// An opcode 5.2 reserves. A protocol error: answer 1002 and stop.
-		Unknown: func(f *wlgows.Frame) {
-			fmt.Printf("unknown opcode %#x\n", f.Opcode)
-
-			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
-			listener.PauseListen()
-		},
-
-		// Pong is nil on purpose: 5.5.3 says MUST NOT answer one.
-	}); err != nil {
-		fmt.Println("listener config:", err)
-		return
-	}
+		standardClose(f)
+	})
 
 	go func() { // read from the server
 		defer stop()

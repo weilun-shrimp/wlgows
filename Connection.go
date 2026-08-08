@@ -33,6 +33,15 @@ type Conn struct {
 	// a continuation the peer has nothing to continue.
 	currentTransmitDataMsgOpened bool
 
+	// Whether SendClose has been called and taken. RFC 6455 5.5.1 puts the
+	// closing handshake at one close each way, so this is what says the answer
+	// is already spent.
+	//
+	// SendClose owns it, reading and writing it under writeLocker so the check
+	// and the send are one step. A close built by hand and pushed through
+	// SendFrame does not count — that path checks nothing by design.
+	closeSent bool
+
 	di connDI
 }
 
@@ -147,6 +156,10 @@ func (c *Conn) SendFrame(f *Frame) error {
 	c.di.writeLocker.Lock()
 	defer c.di.writeLocker.Unlock()
 
+	return c.sendFrame(f)
+}
+
+func (c *Conn) sendFrame(f *Frame) error {
 	switch {
 	case c.maskSendFrame && !f.Mask:
 		key, err := c.di.generateMaskingKey()

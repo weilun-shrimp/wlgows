@@ -56,9 +56,10 @@ var (
 	// take an arbitrary subset of the frames.
 	ErrListenerIsListening = errors.New("listener is already listening")
 
-	// ErrListenerConnIsNil is a Listen with no Conn set. Reading from it would
-	// panic on the first frame instead of saying what is wrong.
-	ErrListenerConnIsNil = errors.New("listener has no Conn")
+	// ErrListenerConnIsNil is a Listen on a Listener built by hand rather than by
+	// NewListener, so it has no connection. Reading from it would panic on the
+	// first frame instead of saying what is wrong.
+	ErrListenerConnIsNil = errors.New("listener has no conn")
 
 	// ErrContinuationFrameWithoutMsg is a continuation frame with no fragmented
 	// message open. RFC 6455 5.4 only allows opcode 0 after a data frame with
@@ -122,6 +123,16 @@ var (
 	// StartLongDataTransmission having taken dataFramesWriteLocker, so acting
 	// anyway would write outside the lock and unlock what was never locked.
 	ErrLongDataTransmissionNotStarted = errors.New("no long data transmission is open")
+
+	// ErrCloseAlreadySent is SendClose on a connection that has already put a
+	// close frame on the wire. RFC 6455 5.5.1 gives the closing handshake one
+	// close each way, so a second is a violation — and the first already said
+	// everything the peer will read.
+	//
+	// Not a failure to handle so much as a race resolved: two goroutines both
+	// answering a close both call SendClose, and this tells the loser its frame
+	// was not needed. Nothing reached the socket.
+	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
 )
 
 // handshake

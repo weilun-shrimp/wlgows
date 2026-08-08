@@ -5,17 +5,33 @@ SendClose sends a close frame (OpcodeClose). A nil payload sends one with no
 body at all, which RFC 6455 7.1.5 permits and a peer reports locally as close
 code 1005.
 
+Only the first call goes out. 5.5.1 gives the handshake one close each way, so a
+second returns ErrCloseAlreadySent having written nothing. The claim is taken
+under the same hold of writeLocker as the send, so two goroutines racing to
+answer one close cannot both put a frame on the wire.
+
+A payload that cannot be built leaves the claim unspent, so a bad reason can be
+corrected and sent. A write that fails does spend it: the connection is already
+gone, and a second close will not reach a peer the first could not.
+
 Sending close does not close the socket. The RFC handshake is to send this, wait
 for the peer's close frame, then Close.
 */
 func (c *Conn) SendClose(payload *ClosePayload) error {
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+
+	if c.closeSent {
+		return ErrCloseAlreadySent
+	}
 	f, err := c.di.newControlFrame(NewControlFrameConfig{
 		Opcode: OpcodeClose, Mask: c.maskSendFrame, PayloadData: payload.Bytes(),
 	})
 	if err != nil {
 		return err
 	}
-	return c.SendFrame(f)
+	c.closeSent = true
+	return c.sendFrame(f)
 }
 
 /*

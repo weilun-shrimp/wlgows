@@ -61,8 +61,10 @@ func (l *Listener) claimListen() (chan struct{}, error) {
 	if l.pauseChan != nil {
 		return nil, ErrListenerIsListening
 	}
-	if err := l.config.validate(); err != nil {
-		return nil, err
+	// NewListener is the only thing that sets it, so nil means the Listener was
+	// built by hand. Reading from it would panic on the first frame.
+	if l.conn == nil {
+		return nil, ErrListenerConnIsNil
 	}
 	l.pauseChan = make(chan struct{})
 
@@ -75,8 +77,8 @@ func (l *Listener) claimListen() (chan struct{}, error) {
 	return l.pauseChan, nil
 }
 
-// listenFramesDI is every step the loop takes on a frame. Conn is not here
-// because ListenerConfig already carries it — a scripted conn is what feeds the
+// listenFramesDI is every step the loop takes on a frame. The conn is not here
+// because the Listener already carries it — a scripted conn is what feeds the
 // loop its frames. timeNow is the only value that is not deterministic.
 type listenFramesDI struct {
 	timeNow            func() time.Time
@@ -100,13 +102,17 @@ func (l *Listener) listenFrames(pauseChan <-chan struct{}, di listenFramesDI) er
 		default:
 		}
 
-		if l.config.FrameReadTimeout > 0 {
-			if err := l.config.Conn.SetReadDeadline(di.timeNow().Add(l.config.FrameReadTimeout)); err != nil {
+		// Read per frame rather than once before the loop, which is what lets a
+		// timeout set mid run land on the next frame instead of the next Listen.
+		frameReadTimeout := l.GetConfig().FrameReadTimeout
+
+		if frameReadTimeout > 0 {
+			if err := l.conn.SetReadDeadline(di.timeNow().Add(frameReadTimeout)); err != nil {
 				return err
 			}
 		}
 
-		f, err := l.config.Conn.GetNextFrame(di.nextFrameByteLimit())
+		f, err := l.conn.GetNextFrame(di.nextFrameByteLimit())
 		if err != nil {
 			return err
 		}

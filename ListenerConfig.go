@@ -3,20 +3,12 @@ package wlgows
 import "time"
 
 /*
-ListenerConfig is everything a Listener reads from. Hand it over with
-SetConfig, which refuses while a loop is running — pause, set, start again.
+ListenerConfig is everything a Listener reads from, and it is never handed over
+whole: each item has its own setter on the Listener, below. Every one of them
+has a working zero value, so a Listener is usable before any is called — one
+that reads conformingly and answers nothing.
 */
 type ListenerConfig struct {
-	// Where the frames come from.
-	Conn interface {
-		GetNextFrame(maxByteLength uint64) (*Frame, error)
-
-		// SetReadDeadline sets the deadline for future Read calls and any
-		// currently-blocked Read call. A zero value for t means Read will not time
-		// out. Same as net.Conn.SetReadDeadline, and only called when
-		// Listener.FrameReadTimeout is set.
-		SetReadDeadline(t time.Time) error
-	}
 
 	// Bounds one frame, armed before each read. A frame's header, extended
 	// length, masking key and payload are several reads and all of them must
@@ -117,38 +109,54 @@ type ListenerConfig struct {
 	Unknown func(unknown_frame *Frame) // An opcode RFC 6455 5.2 reserves. A protocol error: answer 1002 and close.
 }
 
-// validate refuses a configuration no read loop could run on. SetConfig calls it
-// on the way in; Listen calls it again, where a failure means SetConfig was
-// never called at all.
-func (config ListenerConfig) validate() error {
-	if config.Conn == nil {
-		return ErrListenerConnIsNil
-	}
-	return nil
+/*
+GetConfig is what the Listener is running on, as a copy taken under
+configLocker. Safe from any goroutine, including from inside a hook.
+
+A copy, so writing to it changes nothing — SetConfig is the only way in. It is
+for reading back what was set, for changing one item without restating the rest,
+and for a hook wanting the configuration it did not capture.
+
+The hooks come back callable, and calling one is yours to serialise. The read
+loop calls them one at a time, which is what keeps the ordering RFC 6455 5.4
+gives you; calling one from here while a loop runs is a second caller that
+ordering does not cover. A hook can also only be compared to nil, so this
+answers whether one is set, never which one.
+
+It stands on its own only because every item is a value or a func value. Keep it
+that way: a slice or a map here would come back sharing its storage, and this
+would hand out a race instead of a snapshot.
+*/
+func (l *Listener) GetConfig() ListenerConfig {
+	l.configLocker.Lock()
+	defer l.configLocker.Unlock()
+
+	return l.config
 }
 
 /*
-SetConfig replaces the configuration. It refuses a nil Conn, and refuses
-entirely while a loop is running.
+SetConfig replaces the whole configuration, under configLocker and by copy.
 
-That refusal is what lets Listen read the configuration straight from the
-Listener: nothing can write it between two frames, so there is no race to guard
-against and no copy to take. Pause, set, start again.
+Callable whenever — before Listen, between two runs, or from a hook inside the
+read loop. Nothing is refused: the lock makes the write safe against a running
+loop, and the copy means the frame in flight finishes on the values it read, so
+a change lands on the next frame rather than halfway through this one.
+
+All of it, every time. What you do not set is set to its zero value, which is
+why changing one thing is a GetConfig away:
+
+	config := listener.GetConfig()
+	config.Text = hook
+	listener.SetConfig(config)
+
+Nothing here is required. Every item has a working zero value, so a Listener
+this was never called on still reads — though a zero PeerIsClient says the peer
+is a server, and a server that never says otherwise refuses every frame a client
+sends.
 */
-func (l *Listener) SetConfig(config ListenerConfig) error {
-	// Before the lock: a config that could never run has no business making a
-	// running loop wait. listenLocker being an interface is what lets a test see
-	// that a refused config never took the lock at all.
-	if err := config.validate(); err != nil {
-		return err
-	}
+func (l *Listener) SetConfig(config ListenerConfig) {
+	l.configLocker.Lock()
+	defer l.configLocker.Unlock()
 
-	l.listenLocker.Lock()
-	defer l.listenLocker.Unlock()
-
-	if l.pauseChan != nil {
-		return ErrListenerIsListening
-	}
 	l.config = config
-	return nil
 }

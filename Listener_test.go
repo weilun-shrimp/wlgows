@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -32,7 +33,7 @@ func TestListenerNextFrameByteLimit(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			l := &Listener{currentDataAccLength: testCase.currentDataAccLength}
+			l := &Listener{configLocker: &sync.Mutex{}, currentDataAccLength: testCase.currentDataAccLength}
 			l.config.MaxMsgPayloadByteLen = testCase.maxMsgPayloadByteLen
 
 			if got := l.nextFrameByteLimit(); got != testCase.want {
@@ -58,7 +59,7 @@ func TestListenerValidateFrame(t *testing.T) {
 			"RSV3": {Opcode: OpcodePing, FIN: true, RSV3: true},
 		} {
 			t.Run(name, func(t *testing.T) {
-				if err := (&Listener{}).validateFrame(frame); !errors.Is(err, ErrReservedBitsSet) {
+				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrame(frame); !errors.Is(err, ErrReservedBitsSet) {
 					t.Errorf("err = %v, want ErrReservedBitsSet", err)
 				}
 			})
@@ -80,7 +81,7 @@ func TestListenerValidateFrame(t *testing.T) {
 		}
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
-				l := &Listener{}
+				l := &Listener{configLocker: &sync.Mutex{}}
 				l.config.PeerIsClient = testCase.peerIsClient
 
 				err := l.validateFrame(&Frame{Opcode: OpcodePing, FIN: true, Mask: testCase.mask})
@@ -113,7 +114,7 @@ func TestListenerValidateFrame(t *testing.T) {
 		}
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
-				if err := (&Listener{}).validateFrame(testCase.frame); !errors.Is(err, testCase.want) {
+				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrame(testCase.frame); !errors.Is(err, testCase.want) {
 					t.Errorf("err = %v, want %v", err, testCase.want)
 				}
 			})
@@ -126,7 +127,7 @@ func TestListenerValidateFrame(t *testing.T) {
 	t.Run("reserved opcodes", func(t *testing.T) {
 		for _, opcode := range []byte{0x3, 0x7, 0xB, 0xF} {
 			frame := &Frame{Opcode: opcode, PayloadData: make([]byte, 200)}
-			if err := (&Listener{}).validateFrame(frame); err != nil {
+			if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrame(frame); err != nil {
 				t.Errorf("opcode %#x: err = %v, want nil", opcode, err)
 			}
 		}
@@ -157,7 +158,7 @@ func TestListenerValidateFrame(t *testing.T) {
 		}
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
-				l := &Listener{currentDataFrameCount: testCase.currentDataFrameCount}
+				l := &Listener{configLocker: &sync.Mutex{}, currentDataFrameCount: testCase.currentDataFrameCount}
 
 				if err := l.validateFrame(testCase.frame); !errors.Is(err, testCase.want) {
 					t.Errorf("err = %v, want %v", err, testCase.want)

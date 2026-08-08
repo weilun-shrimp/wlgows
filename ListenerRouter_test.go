@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -35,7 +36,7 @@ func TestListenerRouteFrame(t *testing.T) {
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
 				var got []*Frame
-				l := &Listener{}
+				l := &Listener{configLocker: &sync.Mutex{}}
 				testCase.hook(&l.config, &got)
 
 				// A message half assembled, to prove the control frame leaves it be.
@@ -59,7 +60,7 @@ func TestListenerRouteFrame(t *testing.T) {
 	// A nil hook drops the frame, which is what makes a partly configured
 	// Listener readable rather than a panic.
 	t.Run("nil hooks", func(t *testing.T) {
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		for _, opcode := range []byte{OpcodePing, OpcodePong, OpcodeClose, 0xB} {
 			if err := l.routeFrame(&Frame{Opcode: opcode, FIN: true}); err != nil {
 				t.Errorf("opcode %#x: %v", opcode, err)
@@ -72,7 +73,7 @@ func TestListenerRouteFrame(t *testing.T) {
 
 	t.Run("Text across fragments", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(frames Frames) { got = frames }
 
 		for _, frame := range []*Frame{
@@ -100,7 +101,7 @@ func TestListenerRouteFrame(t *testing.T) {
 	// even though its continuations carry opcode 0.
 	t.Run("Binary", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Binary = func(frames Frames) { got = frames }
 
 		l.routeFrame(&Frame{Opcode: OpcodeBinary, PayloadData: []byte{0x00}})
@@ -115,7 +116,7 @@ func TestListenerRouteFrame(t *testing.T) {
 	// FIN frame with no continuations is a whole message on its own.
 	t.Run("Text unfragmented", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(Frames) { called++ }
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hi")})
@@ -129,7 +130,7 @@ func TestListenerRouteFrame(t *testing.T) {
 	// message had left, so a data frame can still arrive over budget.
 	t.Run("MaxMsgPayloadByteLen", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.MaxMsgPayloadByteLen = 10
 		l.config.Text = func(Frames) { called++ }
 
@@ -157,7 +158,7 @@ func TestListenerRouteFrame(t *testing.T) {
 	*/
 	t.Run("hook Frames survive the next message", func(t *testing.T) {
 		var first Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(frames Frames) {
 			if first == nil {
 				first = frames
@@ -183,7 +184,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	t.Run("every frame of the message, in order", func(t *testing.T) {
 		var got Frames
 		textCalled, binaryCalled := 0, 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(f *Frame) { got = append(got, f) }
 		l.config.Text = func(Frames) { textCalled++ }
 		l.config.Binary = func(Frames) { binaryCalled++ }
@@ -204,7 +205,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	// than memory cannot be held in it. The other two fields still move: they
 	// are the budgets, and the count is what says a message is open.
 	t.Run("currentDataFrames stays empty, the totals do not", func(t *testing.T) {
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(*Frame) {}
 
 		l.routeFrame(&Frame{Opcode: OpcodeBinary, PayloadData: []byte{0x00}})
@@ -221,7 +222,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	})
 
 	t.Run("FIN reopens the state", func(t *testing.T) {
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(*Frame) {}
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("hi")})
@@ -246,7 +247,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	*/
 	t.Run("GetCurrentMsgOpcode through the message", func(t *testing.T) {
 		var got []byte
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(*Frame) { got = append(got, l.GetCurrentMsgOpcode()) }
 
 		l.routeFrame(&Frame{Opcode: OpcodeBinary, PayloadData: []byte{0x00}})
@@ -271,7 +272,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	// Checking is the caller's, and so is answering 1007.
 	t.Run("no UTF-8 check", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(*Frame) { called++ }
 
 		err := l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte{0xFF, 0xFE}})
@@ -287,7 +288,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	// Control frames have their own hooks and never joined the message anyway.
 	t.Run("control frames are untouched", func(t *testing.T) {
 		dataCalled, pingCalled := 0, 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(*Frame) { dataCalled++ }
 		l.config.Ping = func(*Frame) { pingCalled++ }
 
@@ -313,7 +314,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
 				called := 0
-				l := &Listener{}
+				l := &Listener{configLocker: &sync.Mutex{}}
 				l.config.Data = func(*Frame) { called++ }
 				testCase.config(&l.config)
 
@@ -339,7 +340,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 	// the ones the message is made of.
 	t.Run("empty continuation is dropped", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Data = func(*Frame) { called++ }
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("hi")})
@@ -364,6 +365,7 @@ of the ones a hook is still holding.
 func TestListenerResetCurrentDataFrames(t *testing.T) {
 	t.Run("zeroes every field", func(t *testing.T) {
 		l := &Listener{
+			configLocker:           &sync.Mutex{},
 			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
 			currentDataFrameCount:  1,
 			currentDataAccLength:   2,
@@ -398,7 +400,7 @@ func TestListenerResetCurrentDataFrames(t *testing.T) {
 
 	t.Run("a fresh slice, not the old array", func(t *testing.T) {
 		held := Frames{{Opcode: OpcodeText, PayloadData: []byte("first")}}
-		l := &Listener{currentDataFrames: held, currentDataAccLength: 5}
+		l := &Listener{configLocker: &sync.Mutex{}, currentDataFrames: held, currentDataAccLength: 5}
 
 		l.resetCurrentDataFrames()
 		l.currentDataFrames = append(l.currentDataFrames, &Frame{
@@ -418,7 +420,7 @@ connection when it is not. Binary is exempt: its payload is arbitrary bytes.
 func TestListenerRouteFrameTextUTF8(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(Frames) { called++ }
 
 		err := l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("中文")})
@@ -433,7 +435,7 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 
 	t.Run("invalid", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(Frames) { called++ }
 
 		err := l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte{0xFF, 0xFE}})
@@ -450,7 +452,7 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 	// judged once joined. Per frame these are 0xE4 0xB8 and 0xAD, both invalid.
 	t.Run("rune split across frames", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(frames Frames) { got = frames }
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte{0xE4, 0xB8}})
@@ -468,7 +470,7 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 	// check would let this through.
 	t.Run("invalid only once joined", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(Frames) { called++ }
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte{0xE4, 0xB8}})
@@ -486,7 +488,7 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 	// protobuf, image and compressed payload.
 	t.Run("Binary is not checked", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Binary = func(frames Frames) { got = frames }
 
 		err := l.routeFrame(&Frame{Opcode: OpcodeBinary, FIN: true, PayloadData: []byte{0xFF, 0xFE}})
@@ -523,7 +525,7 @@ func TestListenerRouteFrameClosePayload(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			called := 0
-			l := &Listener{}
+			l := &Listener{configLocker: &sync.Mutex{}}
 			l.config.Close = func(*Frame) { called++ }
 
 			err := l.routeFrame(&Frame{Opcode: OpcodeClose, FIN: true, PayloadData: testCase.payload})
@@ -594,7 +596,7 @@ budget.
 func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 	t.Run("dropped", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(frames Frames) { got = frames }
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("he")})
@@ -614,7 +616,7 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 	// A frame with FIN ends the message whether or not it carries payload.
 	t.Run("empty FIN still ends the message", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(frames Frames) { got = frames }
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("hi")})
@@ -632,7 +634,7 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 	// and the next continuation finds nothing open.
 	t.Run("empty opening frame is kept", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.Text = func(frames Frames) { got = frames }
 
 		if err := l.routeFrame(&Frame{Opcode: OpcodeText}); err != nil {
@@ -657,7 +659,7 @@ byte budget, which is why the second bound exists.
 func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 	t.Run("exactly the limit is allowed", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.MaxMsgFrameCount = 3
 		l.config.Text = func(frames Frames) { got = frames }
 
@@ -675,7 +677,7 @@ func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 
 	t.Run("one over is refused", func(t *testing.T) {
 		called := 0
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.MaxMsgFrameCount = 2
 		l.config.Text = func(Frames) { called++ }
 
@@ -700,7 +702,7 @@ func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 	// counting one here would refuse a message whose frames all fit.
 	t.Run("empty continuations do not count", func(t *testing.T) {
 		var got Frames
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.config.MaxMsgFrameCount = 2
 		l.config.Text = func(frames Frames) { got = frames }
 
@@ -723,7 +725,7 @@ func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 	// The count is kept beside the frames instead of read off them, so nothing
 	// stops the two from drifting apart except this.
 	t.Run("counts what is held", func(t *testing.T) {
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("a")})
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation})    // dropped
@@ -737,7 +739,7 @@ func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 	})
 
 	t.Run("0 means no limit", func(t *testing.T) {
-		l := &Listener{}
+		l := &Listener{configLocker: &sync.Mutex{}}
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("x")})
 		for i := 0; i < 5000; i++ {
 			if err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("x")}); err != nil {
@@ -754,7 +756,7 @@ func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 // arriving between two fragments spends nothing from MaxMsgFrameCount.
 func TestListenerRouteFrameControlFramesDoNotCount(t *testing.T) {
 	var got Frames
-	l := &Listener{}
+	l := &Listener{configLocker: &sync.Mutex{}}
 	l.config.MaxMsgFrameCount = 2
 	l.config.Text = func(frames Frames) { got = frames }
 	l.config.Ping = func(*Frame) {}

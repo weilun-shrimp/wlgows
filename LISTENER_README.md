@@ -7,6 +7,18 @@ hook you configured for each opcode.
 It knows the protocol's **shape**, not its **policy**. Every obligation the RFC
 puts on a receiver lands on a hook, never inside the Listener.
 
+## Contents
+
+- [Quick start](#quick-start) — one connection, start to finish
+- [Three things it will not do for you](#three-things-it-will-not-do-for-you) — [closing](#it-never-closes-the-connection) · [writing](#it-never-writes-anything) · [liveness](#it-has-no-pingpong-liveness)
+- [Configuration](#configuration) — `SetConfig`, `GetConfig`, and which item to get right
+- [Hooks](#hooks) — which frame reaches which, and what the RFC asks back
+- [Errors](#errors) — four groups, and which of them want a close frame
+- [Pausing and resuming](#pausing-and-resuming) — ending a run, and starting it again
+
+The rest of the library — sending, streaming, handshakes, locks — is in the
+[main README](./README.md).
+
 ## Quick start
 
 `conn` is an already handshaken `*wlgows.ServerConn`. This handles one of them
@@ -14,13 +26,15 @@ start to finish, and covers every way `Listen` can return. `Pong` is the one
 hook left nil on purpose — 5.5.3 says MUST NOT answer a pong, which is exactly
 what a nil hook does.
 
+`SetConfig` hands over the whole configuration at once, and is callable whenever
+— before `Listen`, between two runs, or from inside a hook.
+
 ```go
 func handleConn(conn *wlgows.ServerConn) {
 	defer conn.Close() // the only place this connection is closed
 
-	listener := wlgows.NewListener()
-	if err := listener.SetConfig(wlgows.ListenerConfig{
-		Conn:                 conn,
+	listener := wlgows.NewListener(conn)
+	listener.SetConfig(wlgows.ListenerConfig{
 		PeerIsClient:         true,             // we are the server, so the peer masks
 		MaxMsgPayloadByteLen: 10 * 1024 * 1024, // 10 MB per message
 		MaxMsgFrameCount:     4000,             // see Configuration
@@ -44,10 +58,7 @@ func handleConn(conn *wlgows.ServerConn) {
 			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
 			listener.PauseListen()
 		},
-	}); err != nil {
-		log.Println("config:", err)
-		return
-	}
+	})
 
 	// Blocks until a read fails, a frame breaks a rule, or PauseListen is called.
 	switch err := listener.Listen(); {
@@ -123,22 +134,40 @@ sending data while ignoring your pings looks perfectly alive to it.
 
 ## Configuration
 
-Set through `SetConfig`, which refuses while a loop is running. Pause, set,
-start again.
+`SetConfig` takes the whole `ListenerConfig` by copy, under a lock, so it is
+safe from any goroutine and from a hook inside the read loop. The connection is
+not in it — that is `NewListener`'s, and fixed for the life of the Listener.
 
 | field | |
 |---|---|
-| `Conn` | where frames come from. Required. |
 | `PeerIsClient` | which side the peer is on, which decides masking (5.1) |
 | `MaxMsgPayloadByteLen` | payload budget for one message |
 | `MaxMsgFrameCount` | how many frames one message may arrive in |
 | `FrameReadTimeout` | per frame, armed before each read |
 
+**All of it, every time.** What you leave out is set to its zero value, not left
+alone, so changing one thing means reading the rest back first:
+
+```go
+config := listener.GetConfig() // a copy of what it is running on
+config.MaxMsgFrameCount = 4000
+listener.SetConfig(config)
+```
+
+That round trip is also how a hook changes something mid run. A frame already
+being routed finishes on the values it started with, so a change lands on the
+next frame rather than halfway through this one.
+
+Nothing is required. Every item has a working zero value, so a Listener this was
+never called on still reads — though `PeerIsClient` is the one to get right,
+since its zero value says the peer is a server and a server that leaves it
+refuses every frame a client sends.
+
 `MaxMsgPayloadByteLen` is the one worth setting. A peer can claim a 10 GB
 payload in a 10 byte header, and without a limit that claim becomes a 10 GB
 allocation before a single payload byte arrives.
 
-Each field carries its own detail — what the zero value means, which frames it
+Each item carries its own detail — what the zero value means, which frames it
 covers, and how to pick a number:
 
 ```bash
@@ -198,11 +227,10 @@ if err != nil {
 }
 defer out.Close()
 
-listener := wlgows.NewListener()
-if err := listener.SetConfig(wlgows.ListenerConfig{
-	Conn:                 conn,
+listener := wlgows.NewListener(conn)
+listener.SetConfig(wlgows.ListenerConfig{
 	PeerIsClient:         true,
-	MaxMsgPayloadByteLen: 2 * 1024 * 1024 * 1024, // still the whole message, so size it for the stream
+	MaxMsgPayloadByteLen: 2 * 1024 * 1024 * 1024, // the whole message, so size it for the stream
 	FrameReadTimeout:     60 * time.Second,
 
 	Data: func(f *wlgows.Frame) {
@@ -230,9 +258,8 @@ if err := listener.SetConfig(wlgows.ListenerConfig{
 		conn.SendClose(payload)
 		listener.PauseListen()
 	},
-}); err != nil {
-	return err
-}
+})
+
 return listener.Listen()
 ```
 
@@ -300,7 +327,8 @@ you can decide which, so `StandardClosePayloadFor` will not decide it for you.
 
 ### 3. You misused the Listener
 
-`ErrListenerConnIsNil` when `SetConfig` was never called, and
+`ErrListenerConnIsNil` when the Listener was built by hand instead of by
+`NewListener`, so it has no connection to read from, and
 `ErrListenerIsListening` when a second `Listen` overlaps the first. Both are
 returned before a single byte is read.
 

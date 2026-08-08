@@ -1,89 +1,78 @@
 package wlgows
 
 import (
-	"errors"
 	"testing"
+	"time"
 )
 
-func TestListenerConfigValidate(t *testing.T) {
-	t.Run("ok", func(t *testing.T) {
-		config := ListenerConfig{Conn: &fakeListenerConn{}}
-		if err := config.validate(); err != nil {
-			t.Errorf("validate() = %v, want nil", err)
-		}
+/*
+SetConfig and GetConfig are the only ways in and out of l.config, so between
+them they carry the whole guarantee: the lock is taken, and what crosses is a
+copy rather than a reference the other side can still reach.
+*/
+
+// All of it, every time — what is left out is set to its zero value, not left
+// alone. Zero is a real setting for each: no timeout, no limit, a peer that is
+// a server, hooks that drop.
+func TestListenerSetConfig(t *testing.T) {
+	locker := &fakeLocker{}
+	l := &Listener{configLocker: locker}
+	called := 0
+
+	l.SetConfig(ListenerConfig{
+		PeerIsClient:         true,
+		MaxMsgPayloadByteLen: 1000,
+		MaxMsgFrameCount:     4000,
+		FrameReadTimeout:     30 * time.Second,
+		Text:                 func(Frames) { called++ },
 	})
 
-	// Conn is the only thing a read loop cannot do without. Everything else has
-	// a working zero value: no timeout, no limit, and nil hooks that drop.
-	t.Run("nil Conn", func(t *testing.T) {
-		if err := (ListenerConfig{}).validate(); !errors.Is(err, ErrListenerConnIsNil) {
-			t.Errorf("validate() = %v, want ErrListenerConnIsNil", err)
-		}
-	})
+	if !locker.ok(1) {
+		t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
+	}
+	if !l.config.PeerIsClient || l.config.MaxMsgPayloadByteLen != 1000 ||
+		l.config.MaxMsgFrameCount != 4000 || l.config.FrameReadTimeout != 30*time.Second {
+		t.Errorf("config = %+v, want what was set", l.config)
+	}
+	l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hi")})
+	if called != 1 {
+		t.Errorf("the Text hook ran %d times, want 1", called)
+	}
+
+	l.SetConfig(ListenerConfig{})
+
+	if l.config.MaxMsgPayloadByteLen != 0 || l.config.Text != nil {
+		t.Error("the previous config survived being replaced")
+	}
+	// A hook replaced by nil drops the frames rather than being called through.
+	if err := l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hi")}); err != nil {
+		t.Errorf("a message with no hook should be dropped: %v", err)
+	}
+	if called != 1 {
+		t.Errorf("the replaced hook ran again, %d times total", called)
+	}
 }
 
-/*
-SetConfig is the only writer of Listener.config, and that is what lets the read
-loop read it without a lock. So the two refusals matter as much as the write:
-config must be unchanged after either.
-*/
-func TestListenerSetConfig(t *testing.T) {
-	t.Run("ok", func(t *testing.T) {
-		conn := &fakeListenerConn{}
-		locker := &fakeLocker{}
-		l := &Listener{listenLocker: locker}
+// A copy, taken under the lock. The copy is what makes it safe to hand out: the
+// caller cannot reach l.config through it, and SetConfig cannot reach theirs.
+func TestListenerGetConfig(t *testing.T) {
+	locker := &fakeLocker{}
+	l := &Listener{configLocker: locker}
+	l.SetConfig(ListenerConfig{MaxMsgFrameCount: 4000, Text: func(Frames) {}})
+	locker.locks, locker.unlocks = 0, 0 // count this call only
 
-		err := l.SetConfig(ListenerConfig{Conn: conn, MaxMsgPayloadByteLen: 1000})
+	got := l.GetConfig()
 
-		if err != nil {
-			t.Fatalf("SetConfig: %v", err)
-		}
-		if l.config.Conn != conn || l.config.MaxMsgPayloadByteLen != 1000 {
-			t.Error("config was not stored")
-		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
-		}
-	})
+	if got.MaxMsgFrameCount != 4000 || got.Text == nil {
+		t.Errorf("got %+v, want what was set", got)
+	}
+	if !locker.ok(1) {
+		t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
+	}
 
-	t.Run("invalid config", func(t *testing.T) {
-		locker := &fakeLocker{}
-		l := &Listener{listenLocker: locker}
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 1000}
+	got.MaxMsgFrameCount = 1
 
-		err := l.SetConfig(ListenerConfig{})
-
-		if !errors.Is(err, ErrListenerConnIsNil) {
-			t.Errorf("err = %v, want ErrListenerConnIsNil", err)
-		}
-		if l.config.MaxMsgPayloadByteLen != 1000 {
-			t.Error("a refused config was stored anyway")
-		}
-		// validate runs first, so a config that could never run never makes a
-		// running loop wait for the lock.
-		if locker.locks != 0 {
-			t.Errorf("locks = %d, want 0", locker.locks)
-		}
-	})
-
-	// pauseChan being set is what says a run holds the Listener. Replacing the
-	// config under it would change what the loop reads mid run.
-	t.Run("already listening", func(t *testing.T) {
-		locker := &fakeLocker{}
-		l := &Listener{pauseChan: make(chan struct{}), listenLocker: locker}
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 1000}
-
-		err := l.SetConfig(ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 2000})
-
-		if !errors.Is(err, ErrListenerIsListening) {
-			t.Errorf("err = %v, want ErrListenerIsListening", err)
-		}
-		if l.config.MaxMsgPayloadByteLen != 1000 {
-			t.Error("the running config was replaced")
-		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d — the refusal path must give the lock back",
-				locker.locks, locker.unlocks, locker.misuse)
-		}
-	})
+	if l.config.MaxMsgFrameCount != 4000 {
+		t.Error("writing to the returned config reached the Listener")
+	}
 }

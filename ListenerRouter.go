@@ -19,29 +19,36 @@ makes the type of every fragment in it. A Data hook replaces that assembly:
 every data frame goes straight out and none is kept.
 */
 func (l *Listener) routeFrame(f *Frame) error {
+	// One snapshot for this frame, taken before any hook runs: a hook may set an
+	// item from inside the read loop, and holding the lock across the call would
+	// deadlock on the setter. It also means the frame is judged against one
+	// configuration throughout, and that a hook read as non nil is the one
+	// called — reading the field twice could find it replaced in between.
+	config := l.GetConfig()
+
 	switch f.Opcode {
 	case OpcodePing:
-		if l.config.Ping != nil {
-			l.config.Ping(f)
+		if config.Ping != nil {
+			config.Ping(f)
 		}
 		return nil
 	case OpcodePong:
-		if l.config.Pong != nil {
-			l.config.Pong(f)
+		if config.Pong != nil {
+			config.Pong(f)
 		}
 		return nil
 	case OpcodeClose:
 		if err := validateClosePayload(f.PayloadData); err != nil {
 			return err
 		}
-		if l.config.Close != nil {
-			l.config.Close(f)
+		if config.Close != nil {
+			config.Close(f)
 		}
 		return nil
 	}
 	if !IsDataOpcode(f.Opcode) { // reserved by 5.2, meaning undefined
-		if l.config.Unknown != nil {
-			l.config.Unknown(f)
+		if config.Unknown != nil {
+			config.Unknown(f)
 		}
 		return nil
 	}
@@ -66,7 +73,7 @@ func (l *Listener) routeFrame(f *Frame) error {
 	// The read limit granted the larger of the control allowance and what the
 	// message had left, so a data frame can still arrive over budget.
 	l.currentDataAccLength += uint64(len(f.PayloadData))
-	if l.config.MaxMsgPayloadByteLen > 0 && l.currentDataAccLength > l.config.MaxMsgPayloadByteLen {
+	if config.MaxMsgPayloadByteLen > 0 && l.currentDataAccLength > config.MaxMsgPayloadByteLen {
 		l.resetCurrentDataFrames() // it can never complete now
 		return ErrFrameByteLengthExceeded
 	}
@@ -74,7 +81,7 @@ func (l *Listener) routeFrame(f *Frame) error {
 	// Counted before the append, the way the byte budget above is, so a message
 	// of exactly MaxMsgFrameCount frames is allowed and the next one is not.
 	l.currentDataFrameCount++
-	if l.config.MaxMsgFrameCount > 0 && l.currentDataFrameCount > l.config.MaxMsgFrameCount {
+	if config.MaxMsgFrameCount > 0 && l.currentDataFrameCount > config.MaxMsgFrameCount {
 		l.resetCurrentDataFrames() // it can never complete now
 		return ErrMsgFrameCountExceeded
 	}
@@ -89,8 +96,8 @@ func (l *Listener) routeFrame(f *Frame) error {
 	// assembled — same guards, same budgets, nothing retained. The reset comes
 	// after the call, not before it as below, so GetCurrentMsgOpcode still
 	// answers for the frame the hook is holding.
-	if l.config.Data != nil {
-		l.config.Data(f)
+	if config.Data != nil {
+		config.Data(f)
 		if f.FIN {
 			l.resetCurrentDataFrames()
 		}
@@ -109,12 +116,12 @@ func (l *Listener) routeFrame(f *Frame) error {
 		if !validTextUTF8(frames) {
 			return ErrInvalidUTF8
 		}
-		if l.config.Text != nil {
-			l.config.Text(frames)
+		if config.Text != nil {
+			config.Text(frames)
 		}
 	case OpcodeBinary:
-		if l.config.Binary != nil {
-			l.config.Binary(frames)
+		if config.Binary != nil {
+			config.Binary(frames)
 		}
 	}
 	return nil

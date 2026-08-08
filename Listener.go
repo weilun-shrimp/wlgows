@@ -1,6 +1,9 @@
 package wlgows
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 /*
 Listener reads frames from a connection and hands each one to the hook
@@ -21,10 +24,18 @@ protocol error. It reports and returns. That is yours because RFC 6455 7.1.1 ask
 the two sides for different things and a Listener does not know which it is on.
 */
 type Listener struct {
-	// Set through SetConfig, which refuses while a loop is running — so the
-	// loop can read this without a lock, and without a frozen copy to read
-	// instead.
-	config ListenerConfig
+	// Where the frames come from. Fixed by NewListener and never written again,
+	// so the loop reads it without the lock — unlike config, which SetConfig can
+	// replace between runs.
+	conn ListenerConn
+
+	// Written one item at a time by the setters, which a hook may call from
+	// inside the read loop. Nothing reads it directly: GetConfig is the only way
+	// in, so there is one place taking configLocker rather than one per reader
+	// to forget. It hands back a copy, which is also what keeps the lock from
+	// being held while a hook runs — that would deadlock the setter it calls.
+	config       ListenerConfig
+	configLocker sync.Locker
 
 	// Assembly state for the message in flight, kept on the struct rather than
 	// in Listen so a pause and restart does not throw away frames already
@@ -56,20 +67,44 @@ type Listener struct {
 	pauseChan    chan struct{}
 }
 
+// ListenerConn is what a Listener reads from: an already handshaken *ServerConn
+// or *ClientConn, or anything else that can hand over the next frame — a
+// wrapper of your own, or a scripted one in a test.
+type ListenerConn interface {
+	GetNextFrame(maxByteLength uint64) (*Frame, error)
+
+	// SetReadDeadline sets the deadline for future Read calls and any
+	// currently-blocked Read call. A zero value for t means Read will not time
+	// out. Same as net.Conn.SetReadDeadline, and only called when
+	// Listener.FrameReadTimeout is set.
+	SetReadDeadline(t time.Time) error
+}
+
 /*
-NewListener builds a Listener ready to be configured.
+NewListener builds a Listener reading from conn.
 
-The zero value is not usable — listenLocker would be nil and panic on the first Lock —
-so this is the only way to make one. SetConfig is still required before Listen.
+The zero value is not usable — listenLocker would be nil and panic on the first
+Lock — so this is the only way to make one. The connection is settled here for
+good; the configuration is not, and SetConfig may replace it between runs.
 
-	listener := wlgows.NewListener()
+	listener := wlgows.NewListener(conn)
 	if err := listener.SetConfig(config); err != nil {
 		return err
 	}
 	err := listener.Listen()
+
+A nil conn is not refused here, since there is nothing to return it in. Listen
+answers ErrListenerConnIsNil instead, before it reads anything.
 */
-func NewListener() *Listener {
+func NewListener(conn ListenerConn) *Listener {
 	return &Listener{
+		conn: conn,
+
+		config: ListenerConfig{
+			// Pong: ,
+		},
+		configLocker: &sync.Mutex{},
+
 		listenLocker: &sync.Mutex{},
 	}
 }
@@ -99,7 +134,9 @@ class that overshoots is caught once the opcode is known.
 0 means no limit, which is the caller's decision to make.
 */
 func (l *Listener) nextFrameByteLimit() uint64 {
-	if l.config.MaxMsgPayloadByteLen == 0 {
+	maxMsgPayloadByteLen := l.GetConfig().MaxMsgPayloadByteLen
+
+	if maxMsgPayloadByteLen == 0 {
 		return 0
 	}
 	// Guarded, not just subtracted. Pausing mid message and lowering
@@ -107,11 +144,11 @@ func (l *Listener) nextFrameByteLimit() uint64 {
 	// the new budget with nothing having gone wrong, and an unguarded uint64
 	// subtraction would wrap to ~1.8e19 there — handing back a limit larger
 	// than the one just tightened.
-	if l.currentDataAccLength > l.config.MaxMsgPayloadByteLen {
+	if l.currentDataAccLength > maxMsgPayloadByteLen {
 		return ControlFramePayloadMaxByteLength
 	}
 	return max(
-		l.config.MaxMsgPayloadByteLen-l.currentDataAccLength, // Remain
+		maxMsgPayloadByteLen-l.currentDataAccLength, // Remain
 		ControlFramePayloadMaxByteLength,
 	)
 }
@@ -126,14 +163,16 @@ Every rule here is a MUST in RFC 6455, and breaking any of them is a protocol
 error the caller should answer with close code 1002.
 */
 func (l *Listener) validateFrame(f *Frame) error {
+	peerIsClient := l.GetConfig().PeerIsClient
+
 	// 5.2: the reserved bits belong to negotiated extensions, and none is.
 	if f.RSV1 || f.RSV2 || f.RSV3 {
 		return ErrReservedBitsSet
 	}
 
 	// 5.1: a client masks every frame, a server masks none.
-	if f.Mask != l.config.PeerIsClient {
-		if l.config.PeerIsClient {
+	if f.Mask != peerIsClient {
+		if peerIsClient {
 			return ErrFrameNotMasked
 		}
 		return ErrFrameMasked
