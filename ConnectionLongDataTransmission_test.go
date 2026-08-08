@@ -352,3 +352,79 @@ func TestConnLongDataTransmissionWholeMessage(t *testing.T) {
 		t.Errorf("a second transmission was refused: %v", err)
 	}
 }
+
+/*
+A close ends the transmission wherever it lands (5.5.1), so all three refuse
+after one. Start is the easy case; the other two matter more, since a stream is
+where a close arriving mid message is the ordinary thing rather than a race.
+*/
+func TestConnStartLongDataTransmissionAfterClose(t *testing.T) {
+	locker := &fakeLocker{}
+	wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+	wsConn.di.dataFramesWriteLocker = locker
+	if err := wsConn.SendClose(nil); err != nil {
+		t.Fatalf("SendClose: %v", err)
+	}
+
+	err := wsConn.StartLongDataTransmission(OpcodeBinary)
+
+	if !errors.Is(err, ErrCloseAlreadySent) {
+		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
+	}
+	// Nothing was claimed, so a deferred End would unlock what was never locked.
+	if locker.locks != 0 {
+		t.Errorf("locks = %d, want 0", locker.locks)
+	}
+	if wsConn.currentTransmitDataMsgOpcode != 0 {
+		t.Error("a refused Start left a transmission open")
+	}
+}
+
+func TestConnTransmitDataAfterClose(t *testing.T) {
+	wsConn, netConn, _ := transmitting(t, OpcodeBinary)
+	if err := wsConn.TransmitData([]byte("first")); err != nil {
+		t.Fatalf("TransmitData: %v", err)
+	}
+	if err := wsConn.SendClose(nil); err != nil {
+		t.Fatalf("SendClose: %v", err)
+	}
+	sentBefore := len(netConn.written())
+
+	err := wsConn.TransmitData([]byte("second"))
+
+	if !errors.Is(err, ErrCloseAlreadySent) {
+		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
+	}
+	if len(netConn.written()) != sentBefore {
+		t.Error("a refused fragment still reached the socket")
+	}
+}
+
+// The terminating frame is a data frame too, so it is refused as well — and the
+// lock still has to come back, or the next transmission waits forever on it.
+func TestConnEndLongDataTransmissionAfterClose(t *testing.T) {
+	wsConn, netConn, locker := transmitting(t, OpcodeBinary)
+	if err := wsConn.TransmitData([]byte("first")); err != nil {
+		t.Fatalf("TransmitData: %v", err)
+	}
+	if err := wsConn.SendClose(nil); err != nil {
+		t.Fatalf("SendClose: %v", err)
+	}
+	sentBefore := len(netConn.written())
+
+	err := wsConn.EndLongDataTransmission()
+
+	if !errors.Is(err, ErrCloseAlreadySent) {
+		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
+	}
+	if len(netConn.written()) != sentBefore {
+		t.Error("the FIN frame reached the socket after a close")
+	}
+	if !locker.ok(1) {
+		t.Errorf("locks=%d unlocks=%d misuse=%d — the refusal path must release it",
+			locker.locks, locker.unlocks, locker.misuse)
+	}
+	if wsConn.currentTransmitDataMsgOpcode != 0 {
+		t.Error("the transmission state was left open")
+	}
+}

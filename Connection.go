@@ -37,9 +37,11 @@ type Conn struct {
 	// closing handshake at one close each way, so this is what says the answer
 	// is already spent.
 	//
-	// SendClose owns it, reading and writing it under writeLocker so the check
-	// and the send are one step. A close built by hand and pushed through
-	// SendFrame does not count — that path checks nothing by design.
+	// SendClose writes it, and SendText, SendBinary and StartLongDataTransmission
+	// read it — 5.5.1 allows no data frame after a close either. Every one of
+	// them does so under writeLocker, so a check and the write it guards cannot
+	// cross. A close built by hand and pushed through SendFrame does not count:
+	// that path checks nothing by design.
 	closeSent bool
 
 	di connDI

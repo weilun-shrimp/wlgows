@@ -180,7 +180,7 @@ three different ways, so the client drives any of them:
 | [`hijack_http`](./example/hijack_http/main.go) | The same server behind `net/http`, via `HijackFromHttp` |
 | [`hijack_gin`](./example/hijack_gin/main.go) | The same server behind Gin, via `HijackFromGin`. `GET /ping` keeps answering JSON alongside the WebSocket |
 | [`client`](./example/client/main.go) | Interactive client. Type a line to send it, `exit` to close cleanly. Prompts for a CA path, so it speaks `wss://` too |
-| [`stream_server`](./example/stream_server/main.go) | Receives a streamed message frame by frame, straight to disk — the one example that reads without a `Listener` |
+| [`stream_server`](./example/stream_server/main.go) | Receives a streamed message frame by frame, straight to disk — the `Data` hook, for a message too large to hold |
 | [`stream_client`](./example/stream_client/main.go) | Streams a file as one binary message, a chunk at a time |
 
 ```bash
@@ -336,6 +336,15 @@ Four levels. Use the highest one that fits.
 because a peer that validates answers close 1007. `SendBinary` checks nothing —
 5.6 gives binary no encoding at all.
 
+**The close ends it.** 5.5.1 puts the closing handshake at one close each way and
+allows no data frame after one, so once `SendClose` has gone out, `SendClose`,
+`SendText`, `SendBinary` and `StartLongDataTransmission` all return
+`ErrCloseAlreadySent` and write nothing. Each checks under the same lock that
+records the close, so two goroutines racing to answer a peer's close cannot both
+put a frame on the wire — the loser is told its frame was not needed. `SendFrame`
+is exempt: it checks nothing by design, so a close you build yourself is yours to
+sequence.
+
 Streaming a message too big for memory — one chunk is one frame, so read into a
 buffer and pass it as many times as you like:
 
@@ -373,10 +382,9 @@ frames.
 
 [`stream_client`](./example/stream_client/main.go) streams a file this way, and
 [`stream_server`](./example/stream_server/main.go) receives it without holding
-it, reading the frames itself. A `Listener` normally assembles the whole message
-before your hook runs — its `Data` hook is the other way to receive one this
-size, taking each data frame instead. See
-[LISTENER_README.md](./LISTENER_README.md).
+it. A `Listener` normally assembles the whole message before your hook runs, so
+that end uses the `Data` hook, which hands over each data frame instead and
+retains nothing — see [LISTENER_README.md](./LISTENER_README.md).
 
 `SendFrame` is the escape hatch — it writes what you built and checks almost
 nothing beyond masking. Read its doc before reaching for it.

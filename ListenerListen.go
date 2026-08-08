@@ -10,8 +10,10 @@ Every return leaves the connection open — see the type comment. A returned err
 is a reason to close, never a sign that Listen already did.
 
 Calling it again after a pause resumes where it left off: a fragmented message
-half assembled when you paused is still open, so SetConfig may be called in
-between without losing frames.
+half assembled when you paused is still open, so the configuration may be
+replaced in between without losing frames. SetConfig does not need the pause —
+it is safe under a running loop — but a pause is what makes the change land on
+a message boundary rather than between two of its frames.
 */
 func (l *Listener) Listen() error {
 	framesDI := listenFramesDI{

@@ -124,14 +124,16 @@ var (
 	// anyway would write outside the lock and unlock what was never locked.
 	ErrLongDataTransmissionNotStarted = errors.New("no long data transmission is open")
 
-	// ErrCloseAlreadySent is SendClose on a connection that has already put a
-	// close frame on the wire. RFC 6455 5.5.1 gives the closing handshake one
-	// close each way, so a second is a violation — and the first already said
-	// everything the peer will read.
+	// ErrCloseAlreadySent is a send on a connection that has already put a close
+	// frame on the wire. RFC 6455 5.5.1 ends the conversation there: the closing
+	// handshake is one close each way, and no data frame follows one.
 	//
-	// Not a failure to handle so much as a race resolved: two goroutines both
-	// answering a close both call SendClose, and this tells the loser its frame
-	// was not needed. Nothing reached the socket.
+	// From SendClose it is a race resolved rather than a failure to handle — two
+	// goroutines both answering the peer's close both call it, and this tells the
+	// loser its frame was not needed. From SendText, SendBinary or
+	// StartLongDataTransmission it means the message came too late to send.
+	//
+	// Nothing reached the socket either way.
 	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
 )
 

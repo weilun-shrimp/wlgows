@@ -16,12 +16,14 @@ use SendFrame.
 dataFramesWriteLocker is held for the call, so a message from another goroutine
 cannot interleave with this one (5.4). A control frame still can, which is what
 5.4 permits and 5.5.2 needs.
+
+Refused with ErrCloseAlreadySent once a close has gone out: 5.5.1 allows no data
+frame after one, and nothing was written.
 */
 func (c *Conn) SendText(text []byte) error {
 	if !utf8.Valid(text) {
 		return ErrInvalidUTF8
 	}
-
 	c.di.dataFramesWriteLocker.Lock()
 	defer c.di.dataFramesWriteLocker.Unlock()
 
@@ -31,7 +33,16 @@ func (c *Conn) SendText(text []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.SendFrame(f)
+
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+
+	// 5.5.1: no data frame after a close has gone out. Checked under the lock
+	// that sets it, the way SendClose does, so the two cannot cross.
+	if c.closeSent {
+		return ErrCloseAlreadySent
+	}
+	return c.sendFrame(f)
 }
 
 /*
@@ -45,6 +56,9 @@ than in a text frame the peer will reject.
 dataFramesWriteLocker is held for the call, so a message from another goroutine
 cannot interleave with this one (5.4). A control frame still can, which is what
 5.4 permits and 5.5.2 needs.
+
+Refused with ErrCloseAlreadySent once a close has gone out: 5.5.1 allows no data
+frame after one, and nothing was written.
 */
 func (c *Conn) SendBinary(data []byte) error {
 	c.di.dataFramesWriteLocker.Lock()
@@ -56,5 +70,14 @@ func (c *Conn) SendBinary(data []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.SendFrame(f)
+
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+
+	// 5.5.1: no data frame after a close has gone out. Checked under the lock
+	// that sets it, the way SendClose does, so the two cannot cross.
+	if c.closeSent {
+		return ErrCloseAlreadySent
+	}
+	return c.sendFrame(f)
 }

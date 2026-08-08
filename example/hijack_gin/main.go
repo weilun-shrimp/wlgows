@@ -76,7 +76,7 @@ func handler(c *gin.Context) {
 	fmt.Println("connected:", conn.RemoteAddr())
 
 	listener := wlgows.NewListener(conn)
-	if err := listener.SetConfig(wlgows.ListenerConfig{
+	listener.SetConfig(wlgows.ListenerConfig{
 		PeerIsClient:         true, // we are the server, so the peer masks (5.1)
 		MaxMsgPayloadByteLen: maxMsgPayloadByteLen,
 		FrameReadTimeout:     frameReadTimeout,
@@ -128,10 +128,7 @@ func handler(c *gin.Context) {
 		},
 
 		// Pong is nil on purpose: 5.5.3 says MUST NOT answer one.
-	}); err != nil {
-		fmt.Println("listener config:", err)
-		return
-	}
+	})
 
 	// Blocks until a read fails, a frame breaks a rule, or a hook pauses it.
 	// nil means PauseListen was called — here only the Close and Unknown hooks

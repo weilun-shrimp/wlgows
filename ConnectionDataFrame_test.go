@@ -242,3 +242,44 @@ func TestConnSendBinary(t *testing.T) {
 		}
 	})
 }
+
+/*
+5.5.1 allows no data frame once a close has gone out. The close is sent through
+SendClose rather than by setting the flag, so what is exercised is the path a
+program actually takes.
+*/
+func TestConnSendTextAfterClose(t *testing.T) {
+	netConn := newFakeConn(nil)
+	wsConn := NewConn(netConn, nil, nil, false)
+	if err := wsConn.SendClose(nil); err != nil {
+		t.Fatalf("SendClose: %v", err)
+	}
+	sentByClose := len(netConn.written())
+
+	err := wsConn.SendText([]byte("hello"))
+
+	if !errors.Is(err, ErrCloseAlreadySent) {
+		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
+	}
+	if len(netConn.written()) != sentByClose {
+		t.Error("a refused message still reached the socket")
+	}
+}
+
+func TestConnSendBinaryAfterClose(t *testing.T) {
+	netConn := newFakeConn(nil)
+	wsConn := NewConn(netConn, nil, nil, false)
+	if err := wsConn.SendClose(nil); err != nil {
+		t.Fatalf("SendClose: %v", err)
+	}
+	sentByClose := len(netConn.written())
+
+	err := wsConn.SendBinary([]byte{0x00})
+
+	if !errors.Is(err, ErrCloseAlreadySent) {
+		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
+	}
+	if len(netConn.written()) != sentByClose {
+		t.Error("a refused message still reached the socket")
+	}
+}

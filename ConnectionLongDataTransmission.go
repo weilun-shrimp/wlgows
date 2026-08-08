@@ -32,14 +32,25 @@ its own limit.
 Control frames from other goroutines still get through while this runs, which
 5.4 permits and 5.5.2 wants. Call all three from one goroutine; ordering between
 whole messages is yours.
+
+A close ends the transmission wherever it lands. 5.5.1 allows no data frame after
+one, and a stream is the case where that matters — minutes of chunks against a
+peer that stopped reading them — so all three refuse with ErrCloseAlreadySent
+once SendClose has gone out: Start opens nothing, Transmit sends nothing, and End
+skips the terminating frame while still releasing the connection. A message cut
+off that way is left unterminated on the wire, which is what the close already
+told the peer.
 */
 
 /*
 StartLongDataTransmission opens a message and claims the connection for it,
 blocking until other data frame senders are done.
 
-opcode must be OpcodeText or OpcodeBinary. On an error nothing was locked, so
-defer EndLongDataTransmission only after this returns nil.
+opcode must be OpcodeText or OpcodeBinary. Once a close has gone out there is no
+message left to open, so this is refused with ErrCloseAlreadySent (5.5.1).
+
+On an error nothing was locked, so defer EndLongDataTransmission only after this
+returns nil.
 */
 func (c *Conn) StartLongDataTransmission(opcode uint8) error {
 	if opcode == OpcodeContinuation {
@@ -47,6 +58,17 @@ func (c *Conn) StartLongDataTransmission(opcode uint8) error {
 	}
 	if !IsDataOpcode(opcode) {
 		return ErrNotDataFrameOpcode
+	}
+	// Read under the lock that sets it, then released — not deferred. The next
+	// line waits for dataFramesWriteLocker, which another transmission can hold
+	// for minutes, and that transmission's TransmitData wants writeLocker for
+	// every fragment: holding it here would have the two wait on each other.
+	c.di.writeLocker.Lock()
+	closeSent := c.closeSent
+	c.di.writeLocker.Unlock()
+
+	if closeSent {
+		return ErrCloseAlreadySent
 	}
 
 	c.di.dataFramesWriteLocker.Lock()
@@ -81,7 +103,16 @@ func (c *Conn) TransmitData(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := c.SendFrame(f); err != nil {
+
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+
+	// Checked per fragment, not once at Start: a close arriving mid stream is
+	// the ordinary case, and every chunk after it is a frame 5.5.1 forbids.
+	if c.closeSent {
+		return ErrCloseAlreadySent
+	}
+	if err := c.sendFrame(f); err != nil {
 		return err
 	}
 
@@ -95,10 +126,10 @@ carrying FIN, which is what tells the peer it is complete (5.4), and releases th
 connection.
 
 A transmission that never sent a fragment opened no message on the wire, so
-nothing is terminated and only the lock is released.
+nothing is terminated and only the lock is released. So does a close having gone
+out, which leaves the message unterminated and returns ErrCloseAlreadySent.
 
-The lock is released even when the write fails, so a deferred call always frees
-it.
+The lock is released whatever happens, so a deferred call always frees it.
 */
 func (c *Conn) EndLongDataTransmission() error {
 	if c.currentTransmitDataMsgOpcode == 0 {
@@ -121,5 +152,14 @@ func (c *Conn) EndLongDataTransmission() error {
 	if err != nil {
 		return err
 	}
-	return c.SendFrame(f)
+
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+
+	// The FIN frame is a data frame too, so a close leaves the message
+	// unterminated. The deferred release above runs either way.
+	if c.closeSent {
+		return ErrCloseAlreadySent
+	}
+	return c.sendFrame(f)
 }

@@ -31,7 +31,7 @@ what a nil hook does.
 
 ```go
 func handleConn(conn *wlgows.ServerConn) {
-	defer conn.Close() // the only place this connection is closed
+	defer conn.Close() // yours: the Listener never closes anything
 
 	listener := wlgows.NewListener(conn)
 	listener.SetConfig(wlgows.ListenerConfig{
@@ -47,15 +47,15 @@ func handleConn(conn *wlgows.ServerConn) {
 			log.Printf("binary: %d bytes", frames.ByteLen())
 		},
 		Ping: func(f *wlgows.Frame) {
-			conn.SendPong(f.PayloadData) // 5.5.2: MUST answer, echoing
+			// 5.5.2: pong back, echoing f.PayloadData. Sending is yours.
 		},
 		Close: func(f *wlgows.Frame) {
 			payload, _ := f.GetClosePayload() // the Listener already validated it
-			conn.SendClose(payload)           // 5.5.1: MUST answer
-			listener.PauseListen()            // 5.5.1: and read nothing further
+			// 5.5.1: answer with a close, whatever you want in it, then stop.
+			listener.PauseListen()
 		},
 		Unknown: func(f *wlgows.Frame) {
-			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
+			// An opcode 5.2 reserves: close 1002, then stop.
 			listener.PauseListen()
 		},
 	})
@@ -75,20 +75,17 @@ func handleConn(conn *wlgows.ServerConn) {
 	// payload comes back only for the first — a dead socket has nothing to tell.
 	default:
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-			conn.SendClose(payload)
+			// Answer with it, then close.
 		}
 		log.Println("closing:", err)
 	}
 }
 ```
 
-Every `Send*` call above is yours, in a hook — the Listener writes nothing. The
-one `defer conn.Close()` is the only close, since the hooks pause the loop and
-let this function return rather than closing underneath it.
-
-This one only answers; it never starts a message of its own. `SendText`,
-`SendBinary` and `StartLongDataTransmission` are there when you want to — see
-the Sending section of the [main README](./README.md).
+The Listener writes nothing and closes nothing, so every answer above is a
+comment rather than a call: what goes on the wire is yours, and the hooks only
+say when. `PauseListen` is the one thing it does for you there — it ends the run
+so this function can return.
 
 ## Three things it will not do for you
 
@@ -102,11 +99,6 @@ That is not tidiness. RFC 6455 7.1.1 gives the two sides different obligations �
 a server MUST close the TCP connection immediately once close frames have
 crossed, while a client SHOULD wait for the server to close and may give up only
 after a reasonable delay. A Listener does not know which side it is on.
-
-Closing is also not free to get wrong: `Conn.Close` does not take the write
-lock, so calling it while another goroutine is mid-write truncates that frame on
-the wire and the peer records 1006 instead of the status code you meant to send.
-Sequencing the close against your own writes is something only you can do.
 
 ### It never writes anything
 
@@ -237,7 +229,7 @@ listener.SetConfig(wlgows.ListenerConfig{
 		// Binary only. A text message would need 5.6 checked on the joined
 		// bytes, which is why the opcode is worth asking for.
 		if listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
-			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseUnsupportedData})
+			// Refuse it — close 1003, or whatever your protocol says.
 			listener.PauseListen()
 			return
 		}
@@ -251,11 +243,10 @@ listener.SetConfig(wlgows.ListenerConfig{
 		}
 	},
 	Ping: func(f *wlgows.Frame) {
-		conn.SendPong(f.PayloadData)
+		// 5.5.2: pong back, echoing f.PayloadData.
 	},
 	Close: func(f *wlgows.Frame) {
-		payload, _ := f.GetClosePayload()
-		conn.SendClose(payload)
+		// 5.5.1: answer with a close, then stop.
 		listener.PauseListen()
 	},
 })
@@ -266,9 +257,13 @@ return listener.Listen()
 `MaxMsgPayloadByteLen` is the one to think about here. It is still spent across
 the whole message, so it has to cover the entire stream — and since it is also
 what bounds a single frame at the header, a budget that large lets one frame
-claim it all. Bounding frames tightly while letting the message run long is what
-reading with `Conn.GetNextFrame(max)` yourself still does better; see
-[`stream_server`](./example/stream_server/main.go).
+claim it all. Bounding every frame tightly while letting the message run long is
+the one thing this cannot express — `Conn.GetNextFrame(max)` can, because that
+limit is per read rather than per message.
+
+[`stream_server`](./example/stream_server/main.go) is this hook end to end: a
+file received frame by frame, hashed on the way past, with the budget sized for
+the whole stream.
 
 **After a close frame, stop reading.** RFC 6455 5.5.1 says an endpoint MUST NOT
 process any further data frames once a Close has arrived. The Listener does not
@@ -364,9 +359,10 @@ case errors.Is(err, wlgows.ErrListenerConnIsNil),
 
 default:
 	if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-		conn.SendClose(payload) // group 1
+		// group 1: answer with it before closing
 	}
-	conn.Close() // groups 1 and 2, and the server is the one that closes
+	// groups 1 and 2 both want the connection closed, and 7.1.1 says which side
+	// does it first. Both calls are yours.
 }
 ```
 

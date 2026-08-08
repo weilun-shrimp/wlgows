@@ -72,24 +72,29 @@ func main() {
 	// answered for you, and masking is settled from which side this is — here a
 	// client, so the peer does not mask.
 	listener := conn.NewStandardListener()
-	listener.SetMaxMsgPayloadByteLen(maxMsgPayloadByteLen)
-	listener.SetFrameReadTimeout(frameReadTimeout)
 
-	listener.SetText(func(frames wlgows.Frames) {
+	// SetConfig replaces all of it, so start from what the standard hooks left.
+	config := listener.GetConfig()
+	config.MaxMsgPayloadByteLen = maxMsgPayloadByteLen
+	config.FrameReadTimeout = frameReadTimeout
+
+	config.Text = func(frames wlgows.Frames) {
 		fmt.Println("echo server return: ", frames.String())
-	})
-	listener.SetBinary(func(frames wlgows.Frames) {
+	}
+	config.Binary = func(frames wlgows.Frames) {
 		fmt.Printf("echo server return %d binary bytes\n", frames.ByteLen())
-	})
+	}
 
 	// The standard close hook answers and pauses; this only reports first.
-	standardClose := conn.RFC6455CloseHook(listener)
-	listener.SetClose(func(f *wlgows.Frame) {
+	standardClose := config.Close
+	config.Close = func(f *wlgows.Frame) {
 		payload, _ := f.GetClosePayload() // already validated by the Listener
 		fmt.Printf("closed by server: %+v\n", payload)
 
 		standardClose(f)
-	})
+	}
+
+	listener.SetConfig(config)
 
 	go func() { // read from the server
 		defer stop()

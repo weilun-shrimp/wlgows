@@ -25,8 +25,8 @@ the two sides for different things and a Listener does not know which it is on.
 */
 type Listener struct {
 	// Where the frames come from. Fixed by NewListener and never written again,
-	// so the loop reads it without the lock — unlike config, which SetConfig can
-	// replace between runs.
+	// so the loop reads it without a lock — unlike config, which SetConfig can
+	// replace at any time, and which is read through GetConfig for that reason.
 	conn ListenerConn
 
 	// Written one item at a time by the setters, which a hook may call from
@@ -56,9 +56,10 @@ type Listener struct {
 	// fragment after it. See GetCurrentMsgOpcode.
 	currentDataFrameOpcode byte
 
-	// Guards pauseChan, so Listen, PauseListen and SetConfig can be called from
-	// different goroutines without two loops starting on one connection or a
-	// closed channel being closed twice.
+	// Guards pauseChan, so Listen and PauseListen can be called from different
+	// goroutines without two loops starting on one connection or a closed
+	// channel being closed twice. The configuration has its own lock: it is
+	// replaceable while a loop runs, and a claim is not.
 	//
 	// An interface rather than a sync.Mutex so a test can substitute one and see
 	// the ordering. That is also why NewListener exists: a nil Locker panics on
@@ -83,14 +84,13 @@ type ListenerConn interface {
 /*
 NewListener builds a Listener reading from conn.
 
-The zero value is not usable — listenLocker would be nil and panic on the first
+The zero value is not usable — the lockers would be nil and panic on the first
 Lock — so this is the only way to make one. The connection is settled here for
-good; the configuration is not, and SetConfig may replace it between runs.
+good; the configuration is not, and SetConfig may replace it whenever, including
+while a loop runs.
 
 	listener := wlgows.NewListener(conn)
-	if err := listener.SetConfig(config); err != nil {
-		return err
-	}
+	listener.SetConfig(config)
 	err := listener.Listen()
 
 A nil conn is not refused here, since there is nothing to return it in. Listen
@@ -100,9 +100,6 @@ func NewListener(conn ListenerConn) *Listener {
 	return &Listener{
 		conn: conn,
 
-		config: ListenerConfig{
-			// Pong: ,
-		},
 		configLocker: &sync.Mutex{},
 
 		listenLocker: &sync.Mutex{},
