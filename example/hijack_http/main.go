@@ -69,7 +69,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println("connected:", conn.RemoteAddr())
 
-	listener := &wlgows.Listener{}
+	listener := wlgows.NewListener()
 	if err := listener.SetConfig(wlgows.ListenerConfig{
 		Conn:                 conn,
 		PeerIsClient:         true, // we are the server, so the peer masks (5.1)

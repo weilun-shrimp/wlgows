@@ -74,7 +74,7 @@ func handle(conn *wlgows.ServerConn) {
 		return
 	}
 
-	listener := &wlgows.Listener{}
+	listener := wlgows.NewListener()
 	if err := listener.SetConfig(wlgows.ListenerConfig{
 		Conn:                 conn,
 		PeerIsClient:         true, // we are the server, so the peer masks
@@ -129,7 +129,7 @@ func main() {
 		panic(err)
 	}
 
-	listener := &wlgows.Listener{}
+	listener := wlgows.NewListener()
 	if err := listener.SetConfig(wlgows.ListenerConfig{
 		Conn:                 conn,
 		PeerIsClient:         false, // we are the client, so the peer does not mask
@@ -281,7 +281,7 @@ messages and calls the hook for each opcode. It never writes and never closes �
 every obligation the RFC puts on a receiver lands on a hook:
 
 ```go
-listener := &wlgows.Listener{}
+listener := wlgows.NewListener()
 listener.SetConfig(wlgows.ListenerConfig{
 	Conn:                 conn,
 	PeerIsClient:         true,
@@ -389,8 +389,10 @@ frames.
 
 [`stream_client`](./example/stream_client/main.go) streams a file this way, and
 [`stream_server`](./example/stream_server/main.go) receives it without holding
-it — a `Listener` would assemble the whole message before your hook ran, which
-is the one case to read frames yourself.
+it, reading the frames itself. A `Listener` normally assembles the whole message
+before your hook runs — its `Data` hook is the other way to receive one this
+size, taking each data frame instead. See
+[LISTENER_README.md](./LISTENER_README.md).
 
 `SendFrame` is the escape hatch — it writes what you built and checks almost
 nothing beyond masking. Read its doc before reaching for it.

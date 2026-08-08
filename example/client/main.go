@@ -68,7 +68,7 @@ func main() {
 	var stopOnce sync.Once
 	stop := func() { stopOnce.Do(func() { close(stopChan) }) }
 
-	listener := &wlgows.Listener{}
+	listener := wlgows.NewListener()
 	if err := listener.SetConfig(wlgows.ListenerConfig{
 		Conn:                 conn,
 		PeerIsClient:         false, // we are the client, so the peer does not mask (5.1)

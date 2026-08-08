@@ -15,7 +15,8 @@ Control frames go straight out and never join the message being assembled — RF
 6455 5.4 lets one arrive between two continuation frames, so touching the
 assembly state here would corrupt it. Data frames accumulate until FIN, then the
 whole message goes to the hook named by the opcode of its first frame, which 5.4
-makes the type of every fragment in it.
+makes the type of every fragment in it. A Data hook replaces that assembly:
+every data frame goes straight out and none is kept.
 */
 func (l *Listener) routeFrame(f *Frame) error {
 	switch f.Opcode {
@@ -70,12 +71,30 @@ func (l *Listener) routeFrame(f *Frame) error {
 		return ErrFrameByteLengthExceeded
 	}
 
-	// Checked before the append, so a message of exactly MaxMsgFrameCount
-	// frames is allowed and the next one is not.
-	if l.config.MaxMsgFrameCount > 0 &&
-		uint64(len(l.currentDataFrames)) >= l.config.MaxMsgFrameCount {
+	// Counted before the append, the way the byte budget above is, so a message
+	// of exactly MaxMsgFrameCount frames is allowed and the next one is not.
+	l.currentDataFrameCount++
+	if l.config.MaxMsgFrameCount > 0 && l.currentDataFrameCount > l.config.MaxMsgFrameCount {
 		l.resetCurrentDataFrames() // it can never complete now
 		return ErrMsgFrameCountExceeded
+	}
+
+	// Only text or binary can be first: validateFrame refuses a continuation
+	// with no message open, and a reserved opcode never got this far.
+	if f.Opcode != OpcodeContinuation {
+		l.currentDataFrameOpcode = f.Opcode
+	}
+
+	// A Data hook takes the frame here, where the message would otherwise be
+	// assembled — same guards, same budgets, nothing retained. The reset comes
+	// after the call, not before it as below, so GetCurrentMsgOpcode still
+	// answers for the frame the hook is holding.
+	if l.config.Data != nil {
+		l.config.Data(f)
+		if f.FIN {
+			l.resetCurrentDataFrames()
+		}
+		return nil
 	}
 
 	l.currentDataFrames = append(l.currentDataFrames, f)
@@ -83,11 +102,9 @@ func (l *Listener) routeFrame(f *Frame) error {
 		return nil
 	}
 
-	frames := l.currentDataFrames
+	frames, opcode := l.currentDataFrames, l.currentDataFrameOpcode
 	l.resetCurrentDataFrames()
-	// Only text or binary can be first: validateFrame refuses a continuation
-	// with no message open, and a reserved opcode never got this far.
-	switch frames[0].Opcode {
+	switch opcode {
 	case OpcodeText:
 		if !validTextUTF8(frames) {
 			return ErrInvalidUTF8
@@ -103,14 +120,18 @@ func (l *Listener) routeFrame(f *Frame) error {
 	return nil
 }
 
-// resetCurrentDataFrames reopens the assembly state for the next message.
+// resetCurrentDataFrames reopens the assembly state for the next message. Both
+// running totals go with the frames, or the next message starts out already
+// having spent the budget this one did.
 //
 // A fresh slice, never currentDataFrames[:0]: the frames just handed to a hook
 // share that backing array, and reusing it would let the next message overwrite
 // what the hook is still holding.
 func (l *Listener) resetCurrentDataFrames() {
 	l.currentDataFrames = Frames{}
+	l.currentDataFrameCount = 0
 	l.currentDataAccLength = 0
+	l.currentDataFrameOpcode = OpcodeContinuation // 0: no message open
 }
 
 /*

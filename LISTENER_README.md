@@ -18,7 +18,7 @@ what a nil hook does.
 func handleConn(conn *wlgows.ServerConn) {
 	defer conn.Close() // the only place this connection is closed
 
-	listener := &wlgows.Listener{}
+	listener := wlgows.NewListener()
 	if err := listener.SetConfig(wlgows.ListenerConfig{
 		Conn:                 conn,
 		PeerIsClient:         true,             // we are the server, so the peer masks
@@ -155,13 +155,14 @@ They are not called concurrently, which keeps the message ordering TCP and RFC
 
 A nil hook drops those frames.
 
-| hook | receives | what the RFC asks of you |
+| hook | receives | what it asks of you |
 |---|---|---|
 | `Ping` | one frame | 5.5.2: MUST answer with a pong echoing the payload, unless a close already arrived |
 | `Pong` | one frame | 5.5.3: MUST NOT answer |
 | `Close` | one frame | 5.5.1: MUST answer with a close, then close. `Frame.GetClosePayload` decodes the status code and reason, both already checked |
 | `Text` | a whole message | nothing — the payload is already checked as valid UTF-8 (5.6, 8.1) |
 | `Binary` | a whole message | nothing — arbitrary bytes |
+| `Data` | one data frame | **handle with care.** Watch for FIN, and check 5.6 UTF-8 yourself on a text message: answer 1007. Only for a message too large to hold — otherwise use `Text` or `Binary` |
 | `Unknown` | one frame | an opcode 5.2 reserves. A protocol error: answer 1002 and close |
 
 `Text` and `Binary` receive complete messages, assembled across every fragment.
@@ -172,6 +173,75 @@ A text message is checked against RFC 6455 5.6 before it reaches `Text`, and the
 check is on the **joined** bytes: a frame may end halfway through a rune, so per
 frame validation would reject a conforming message. `Binary` is never checked — 5.6
 makes binary payloads arbitrary bytes.
+
+`Data` replaces that assembly: each data frame goes straight to it and none is
+kept, so `Text` and `Binary` never run. It is the sharp edge of the config —
+take it only when you want the frames themselves, a transmission too large to
+hold or a stream you forward on, and only knowing exactly what comes with them.
+A message that fits in memory belongs to `Text` or `Binary`, which discharge all
+of it for you.
+
+What comes with them: FIN is yours to watch for, and 5.6 cannot be judged on one
+frame — it may end mid rune — so nothing checks it.
+`Listener.GetCurrentMsgOpcode` says whether the message is text and owes you that
+check, since a continuation frame does not carry the type. The budgets, 5.4 and
+the empty continuation drop are unchanged, so these are the frames the message is
+made of. Set it between messages, not during one.
+
+Receiving a message straight to disk, however large — memory stays flat because
+nothing is held between frames:
+
+```go
+out, err := os.Create("./received.bin")
+if err != nil {
+	return err
+}
+defer out.Close()
+
+listener := wlgows.NewListener()
+if err := listener.SetConfig(wlgows.ListenerConfig{
+	Conn:                 conn,
+	PeerIsClient:         true,
+	MaxMsgPayloadByteLen: 2 * 1024 * 1024 * 1024, // still the whole message, so size it for the stream
+	FrameReadTimeout:     60 * time.Second,
+
+	Data: func(f *wlgows.Frame) {
+		// Binary only. A text message would need 5.6 checked on the joined
+		// bytes, which is why the opcode is worth asking for.
+		if listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
+			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseUnsupportedData})
+			listener.PauseListen()
+			return
+		}
+		if _, err := out.Write(f.PayloadData); err != nil {
+			log.Println("write:", err)
+			listener.PauseListen()
+			return
+		}
+		if f.FIN { // nothing else marks the end
+			log.Println("message complete")
+		}
+	},
+	Ping: func(f *wlgows.Frame) {
+		conn.SendPong(f.PayloadData)
+	},
+	Close: func(f *wlgows.Frame) {
+		payload, _ := f.GetClosePayload()
+		conn.SendClose(payload)
+		listener.PauseListen()
+	},
+}); err != nil {
+	return err
+}
+return listener.Listen()
+```
+
+`MaxMsgPayloadByteLen` is the one to think about here. It is still spent across
+the whole message, so it has to cover the entire stream — and since it is also
+what bounds a single frame at the header, a budget that large lets one frame
+claim it all. Bounding frames tightly while letting the message run long is what
+reading with `Conn.GetNextFrame(max)` yourself still does better; see
+[`stream_server`](./example/stream_server/main.go).
 
 **After a close frame, stop reading.** RFC 6455 5.5.1 says an endpoint MUST NOT
 process any further data frames once a Close has arrived. The Listener does not

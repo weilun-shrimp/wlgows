@@ -23,23 +23,20 @@ func TestListenerConfigValidate(t *testing.T) {
 }
 
 /*
-setConfig is the only writer of Listener.config, and that is what lets the read
+SetConfig is the only writer of Listener.config, and that is what lets the read
 loop read it without a lock. So the two refusals matter as much as the write:
 config must be unchanged after either.
 */
 func TestListenerSetConfig(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		conn := &fakeListenerConn{}
-		l := &Listener{}
 		locker := &fakeLocker{}
+		l := &Listener{listenLocker: locker}
 
-		err := l.setConfig(
-			ListenerConfig{Conn: conn, MaxMsgPayloadByteLen: 1000},
-			setConfigDI{locker: locker},
-		)
+		err := l.SetConfig(ListenerConfig{Conn: conn, MaxMsgPayloadByteLen: 1000})
 
 		if err != nil {
-			t.Fatalf("setConfig: %v", err)
+			t.Fatalf("SetConfig: %v", err)
 		}
 		if l.config.Conn != conn || l.config.MaxMsgPayloadByteLen != 1000 {
 			t.Error("config was not stored")
@@ -50,11 +47,11 @@ func TestListenerSetConfig(t *testing.T) {
 	})
 
 	t.Run("invalid config", func(t *testing.T) {
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 1000}
 		locker := &fakeLocker{}
+		l := &Listener{listenLocker: locker}
+		l.config = ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 1000}
 
-		err := l.setConfig(ListenerConfig{}, setConfigDI{locker: locker})
+		err := l.SetConfig(ListenerConfig{})
 
 		if !errors.Is(err, ErrListenerConnIsNil) {
 			t.Errorf("err = %v, want ErrListenerConnIsNil", err)
@@ -72,14 +69,11 @@ func TestListenerSetConfig(t *testing.T) {
 	// pauseChan being set is what says a run holds the Listener. Replacing the
 	// config under it would change what the loop reads mid run.
 	t.Run("already listening", func(t *testing.T) {
-		l := &Listener{pauseChan: make(chan struct{})}
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 1000}
 		locker := &fakeLocker{}
+		l := &Listener{pauseChan: make(chan struct{}), listenLocker: locker}
+		l.config = ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 1000}
 
-		err := l.setConfig(
-			ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 2000},
-			setConfigDI{locker: locker},
-		)
+		err := l.SetConfig(ListenerConfig{Conn: &fakeListenerConn{}, MaxMsgPayloadByteLen: 2000})
 
 		if !errors.Is(err, ErrListenerIsListening) {
 			t.Errorf("err = %v, want ErrListenerIsListening", err)

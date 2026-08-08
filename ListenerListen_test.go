@@ -93,11 +93,11 @@ rather than failing, so the counting Locker is what makes it visible.
 */
 func TestListenerClaimListen(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
-		l := &Listener{}
-		l.config = ListenerConfig{Conn: &fakeListenerConn{}}
 		locker := &fakeLocker{}
+		l := &Listener{listenLocker: locker}
+		l.config = ListenerConfig{Conn: &fakeListenerConn{}}
 
-		pauseChan, err := l.claimListen(claimListenDI{locker: locker})
+		pauseChan, err := l.claimListen()
 
 		if err != nil {
 			t.Fatalf("claimListen: %v", err)
@@ -121,12 +121,12 @@ func TestListenerClaimListen(t *testing.T) {
 	// pauseChan being set is what says a run already has the Listener.
 	t.Run("already listening", func(t *testing.T) {
 		running := make(chan struct{})
-		l := &Listener{pauseChan: running}
 		locker := &fakeLocker{}
+		l := &Listener{pauseChan: running, listenLocker: locker}
 
 		// config is left invalid on purpose: the refusal has to come first, so
 		// a Listener already running is never reported as misconfigured.
-		_, err := l.claimListen(claimListenDI{locker: locker})
+		_, err := l.claimListen()
 
 		if !errors.Is(err, ErrListenerIsListening) {
 			t.Errorf("err = %v, want ErrListenerIsListening", err)
@@ -142,10 +142,10 @@ func TestListenerClaimListen(t *testing.T) {
 
 	// A Listener that never had SetConfig called reaches here with a nil Conn.
 	t.Run("invalid config", func(t *testing.T) {
-		l := &Listener{}
 		locker := &fakeLocker{}
+		l := &Listener{listenLocker: locker}
 
-		_, err := l.claimListen(claimListenDI{locker: locker})
+		_, err := l.claimListen()
 
 		if !errors.Is(err, ErrListenerConnIsNil) {
 			t.Errorf("err = %v, want ErrListenerConnIsNil", err)
@@ -159,24 +159,30 @@ func TestListenerClaimListen(t *testing.T) {
 		}
 	})
 
-	// Pausing and starting again must not reset currentDataFrames or
-	// currentDataAccLength, or the next continuation frame finds
-	// currentDataFrames empty and validateFrame calls it a protocol error.
+	// Pausing and starting again must not reset the assembly state, or the next
+	// continuation frame finds no message open and validateFrame calls it a
+	// protocol error.
 	t.Run("keeps currentDataFrames", func(t *testing.T) {
 		l := &Listener{
-			currentDataFrames:    Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
-			currentDataAccLength: 2,
+			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
+			currentDataFrameCount:  1,
+			currentDataAccLength:   2,
+			currentDataFrameOpcode: OpcodeText,
+			listenLocker:           &fakeLocker{},
 		}
 
 		l.config = ListenerConfig{Conn: &fakeListenerConn{}}
 
-		if _, err := l.claimListen(claimListenDI{locker: &fakeLocker{}}); err != nil {
+		if _, err := l.claimListen(); err != nil {
 			t.Fatalf("claimListen: %v", err)
 		}
 
-		if len(l.currentDataFrames) != 1 || l.currentDataAccLength != 2 {
-			t.Errorf("currentDataFrames=%d currentDataAccLength=%d, want both untouched",
-				len(l.currentDataFrames), l.currentDataAccLength)
+		if len(l.currentDataFrames) != 1 || l.currentDataFrameCount != 1 || l.currentDataAccLength != 2 {
+			t.Errorf("currentDataFrames=%d currentDataFrameCount=%d currentDataAccLength=%d, want all untouched",
+				len(l.currentDataFrames), l.currentDataFrameCount, l.currentDataAccLength)
+		}
+		if l.currentDataFrameOpcode != OpcodeText {
+			t.Error("the message type should have survived the restart")
 		}
 	})
 }
@@ -361,12 +367,11 @@ as a wrong answer, which is what the counting Locker is for.
 func TestListenerPauseListen(t *testing.T) {
 	t.Run("closes and clears pauseChan", func(t *testing.T) {
 		pauseChan := make(chan struct{})
-		l := &Listener{pauseChan: pauseChan}
 		locker := &fakeLocker{}
+		l := &Listener{pauseChan: pauseChan, listenLocker: locker}
 
 		var closed []chan struct{}
 		l.pauseListen(pauseListenDI{
-			locker:    locker,
 			closeChan: func(c chan struct{}) { closed = append(closed, c) },
 		})
 
@@ -387,12 +392,11 @@ func TestListenerPauseListen(t *testing.T) {
 	// no-op — listen defers this on every path out, including ones where
 	// PauseListen already ran.
 	t.Run("nil pauseChan", func(t *testing.T) {
-		l := &Listener{}
 		locker := &fakeLocker{}
+		l := &Listener{listenLocker: locker}
 
 		closes := 0
 		l.pauseListen(pauseListenDI{
-			locker:    locker,
 			closeChan: func(chan struct{}) { closes++ },
 		})
 
@@ -409,10 +413,9 @@ func TestListenerPauseListen(t *testing.T) {
 	})
 
 	t.Run("twice", func(t *testing.T) {
-		l := &Listener{pauseChan: make(chan struct{})}
+		l := &Listener{pauseChan: make(chan struct{}), listenLocker: &fakeLocker{}}
 		closes := 0
 		di := pauseListenDI{
-			locker:    &fakeLocker{},
 			closeChan: func(c chan struct{}) { closes++; close(c) },
 		}
 

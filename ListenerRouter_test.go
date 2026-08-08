@@ -174,6 +174,187 @@ func TestListenerRouteFrame(t *testing.T) {
 }
 
 /*
+The Data hook takes each data frame where the message would otherwise be
+assembled. So these check both sides of that swap: what reaches the hook, and
+what the Listener stops doing — no frames retained, no message handed to Text or
+Binary, no UTF-8 check.
+*/
+func TestListenerRouteFrameDataHook(t *testing.T) {
+	t.Run("every frame of the message, in order", func(t *testing.T) {
+		var got Frames
+		textCalled, binaryCalled := 0, 0
+		l := &Listener{}
+		l.config.Data = func(f *Frame) { got = append(got, f) }
+		l.config.Text = func(Frames) { textCalled++ }
+		l.config.Binary = func(Frames) { binaryCalled++ }
+
+		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("he")})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("llo ")})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("中文")})
+
+		if got.String() != "hello 中文" {
+			t.Errorf("Data received %q, want %q", got.String(), "hello 中文")
+		}
+		if textCalled != 0 || binaryCalled != 0 {
+			t.Errorf("Text called %d times and Binary %d, want 0 and 0", textCalled, binaryCalled)
+		}
+	})
+
+	// currentDataFrames never grows — that is the whole point, a message larger
+	// than memory cannot be held in it. The other two fields still move: they
+	// are the budgets, and the count is what says a message is open.
+	t.Run("currentDataFrames stays empty, the totals do not", func(t *testing.T) {
+		l := &Listener{}
+		l.config.Data = func(*Frame) {}
+
+		l.routeFrame(&Frame{Opcode: OpcodeBinary, PayloadData: []byte{0x00}})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte{0x01}})
+
+		if len(l.currentDataFrames) != 0 {
+			t.Errorf("currentDataFrames holds %d frames, want 0 — nothing may be appended",
+				len(l.currentDataFrames))
+		}
+		if l.currentDataFrameCount != 2 || l.currentDataAccLength != 2 {
+			t.Errorf("currentDataFrameCount=%d currentDataAccLength=%d, want 2 and 2",
+				l.currentDataFrameCount, l.currentDataAccLength)
+		}
+	})
+
+	t.Run("FIN reopens the state", func(t *testing.T) {
+		l := &Listener{}
+		l.config.Data = func(*Frame) {}
+
+		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("hi")})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("!")})
+
+		if l.currentDataFrameCount != 0 || l.currentDataAccLength != 0 {
+			t.Errorf("currentDataFrameCount=%d currentDataAccLength=%d after FIN, want 0 and 0",
+				l.currentDataFrameCount, l.currentDataAccLength)
+		}
+		// Left behind, the next message would open as a continuation of this one
+		// and validateFrame would refuse its opening frame.
+		if l.currentDataFrameOpcode != OpcodeContinuation {
+			t.Errorf("currentDataFrameOpcode = %#x after FIN, want 0", l.currentDataFrameOpcode)
+		}
+	})
+
+	/*
+		A continuation frame does not carry the message's type, so without this
+		the hook cannot tell a text message from a binary one — and only text
+		owes RFC 6455 5.6 a UTF-8 check. It has to answer for the FIN frame too,
+		which is where a caller would run that check.
+	*/
+	t.Run("GetCurrentMsgOpcode through the message", func(t *testing.T) {
+		var got []byte
+		l := &Listener{}
+		l.config.Data = func(*Frame) { got = append(got, l.GetCurrentMsgOpcode()) }
+
+		l.routeFrame(&Frame{Opcode: OpcodeBinary, PayloadData: []byte{0x00}})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte{0x01}})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte{0x02}})
+
+		for i, opcode := range got {
+			if opcode != OpcodeBinary {
+				t.Errorf("frame %d saw opcode %#x, want OpcodeBinary", i, opcode)
+			}
+		}
+		if len(got) != 3 {
+			t.Errorf("Data called %d times, want 3", len(got))
+		}
+		// Between messages there is no type to report.
+		if l.GetCurrentMsgOpcode() != OpcodeContinuation {
+			t.Errorf("GetCurrentMsgOpcode = %#x after FIN, want 0", l.GetCurrentMsgOpcode())
+		}
+	})
+
+	// 5.6 can only be judged on the joined bytes, and nothing here joins them.
+	// Checking is the caller's, and so is answering 1007.
+	t.Run("no UTF-8 check", func(t *testing.T) {
+		called := 0
+		l := &Listener{}
+		l.config.Data = func(*Frame) { called++ }
+
+		err := l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte{0xFF, 0xFE}})
+
+		if err != nil {
+			t.Errorf("err = %v, want nil", err)
+		}
+		if called != 1 {
+			t.Errorf("Data called %d times, want 1", called)
+		}
+	})
+
+	// Control frames have their own hooks and never joined the message anyway.
+	t.Run("control frames are untouched", func(t *testing.T) {
+		dataCalled, pingCalled := 0, 0
+		l := &Listener{}
+		l.config.Data = func(*Frame) { dataCalled++ }
+		l.config.Ping = func(*Frame) { pingCalled++ }
+
+		l.routeFrame(&Frame{Opcode: OpcodePing, FIN: true})
+
+		if pingCalled != 1 || dataCalled != 0 {
+			t.Errorf("Ping called %d times and Data %d, want 1 and 0", pingCalled, dataCalled)
+		}
+	})
+
+	// Both messages below are 6 bytes in 3 frames against a budget of 4 bytes or
+	// 2 frames, so the third frame busts it and is refused with the same error
+	// Text would have got — the hook sees the first two and never the third.
+	t.Run("MaxMsgPayloadByteLen and MaxMsgFrameCount still refuse the message", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			config func(*ListenerConfig)
+			want   error
+		}{
+			{"MaxMsgPayloadByteLen", func(c *ListenerConfig) { c.MaxMsgPayloadByteLen = 4 }, ErrFrameByteLengthExceeded},
+			{"MaxMsgFrameCount", func(c *ListenerConfig) { c.MaxMsgFrameCount = 2 }, ErrMsgFrameCountExceeded},
+		}
+		for _, testCase := range tests {
+			t.Run(testCase.name, func(t *testing.T) {
+				called := 0
+				l := &Listener{}
+				l.config.Data = func(*Frame) { called++ }
+				testCase.config(&l.config)
+
+				l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("ab")})
+				l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("cd")})
+				err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("ef")})
+
+				if !errors.Is(err, testCase.want) {
+					t.Errorf("err = %v, want %v", err, testCase.want)
+				}
+				if called != 2 {
+					t.Errorf("Data called %d times, want 2 — the frame over budget must not reach it", called)
+				}
+				// It can never complete, so the state reopens for the next one.
+				if l.currentDataFrameCount != 0 || l.currentDataAccLength != 0 {
+					t.Error("the assembly state should have been reset")
+				}
+			})
+		}
+	})
+
+	// Dropped the same way as with Text, so the frames the hook sees are exactly
+	// the ones the message is made of.
+	t.Run("empty continuation is dropped", func(t *testing.T) {
+		called := 0
+		l := &Listener{}
+		l.config.Data = func(*Frame) { called++ }
+
+		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("hi")})
+		for i := 0; i < 100; i++ {
+			l.routeFrame(&Frame{Opcode: OpcodeContinuation})
+		}
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("!")})
+
+		if called != 2 {
+			t.Errorf("Data called %d times, want 2", called)
+		}
+	})
+}
+
+/*
 resetCurrentDataFrames reopens the assembly state for the next message.
 
 The fresh slice is the part worth pinning: reslicing to [:0] would zero the
@@ -181,16 +362,29 @@ length while keeping the array, so the next message's frames would land on top
 of the ones a hook is still holding.
 */
 func TestListenerResetCurrentDataFrames(t *testing.T) {
-	t.Run("zeroes both fields", func(t *testing.T) {
+	t.Run("zeroes every field", func(t *testing.T) {
 		l := &Listener{
-			currentDataFrames:    Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
-			currentDataAccLength: 2,
+			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
+			currentDataFrameCount:  1,
+			currentDataAccLength:   2,
+			currentDataFrameOpcode: OpcodeText,
 		}
 
 		l.resetCurrentDataFrames()
 
+		// 0 is OpcodeContinuation, which no message can be, so it reads as "none
+		// open" — and GetCurrentMsgOpcode hands it to the caller as exactly that.
+		if l.currentDataFrameOpcode != OpcodeContinuation {
+			t.Errorf("currentDataFrameOpcode = %#x, want 0", l.currentDataFrameOpcode)
+		}
+
 		if len(l.currentDataFrames) != 0 {
 			t.Errorf("currentDataFrames = %d, want 0", len(l.currentDataFrames))
+		}
+		// Both totals are budgets spent by the message just finished, so leaving
+		// either behind charges the next message for it.
+		if l.currentDataFrameCount != 0 {
+			t.Errorf("currentDataFrameCount = %d, want 0", l.currentDataFrameCount)
 		}
 		if l.currentDataAccLength != 0 {
 			t.Errorf("currentDataAccLength = %d, want 0", l.currentDataAccLength)
@@ -496,8 +690,49 @@ func TestListenerRouteFrameMaxMsgFrameCount(t *testing.T) {
 			t.Error("a message over the frame limit must not reach its hook")
 		}
 		// It can never complete, so holding its frames serves nothing.
-		if len(l.currentDataFrames) != 0 || l.currentDataAccLength != 0 {
+		if len(l.currentDataFrames) != 0 || l.currentDataFrameCount != 0 || l.currentDataAccLength != 0 {
 			t.Error("the assembly state should have been reset")
+		}
+	})
+
+	// An empty continuation never joins the message, so it must not spend the
+	// frame budget either — currentDataFrameCount is counted on the way in, and
+	// counting one here would refuse a message whose frames all fit.
+	t.Run("empty continuations do not count", func(t *testing.T) {
+		var got Frames
+		l := &Listener{}
+		l.config.MaxMsgFrameCount = 2
+		l.config.Text = func(frames Frames) { got = frames }
+
+		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("he")})
+		for i := 0; i < 100; i++ {
+			if err := l.routeFrame(&Frame{Opcode: OpcodeContinuation}); err != nil {
+				t.Fatalf("empty continuation %d: %v", i, err)
+			}
+		}
+		err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("llo")})
+
+		if err != nil {
+			t.Fatalf("2 counting frames against a limit of 2: %v", err)
+		}
+		if got.String() != "hello" {
+			t.Errorf("Text got %q, want hello", got.String())
+		}
+	})
+
+	// The count is kept beside the frames instead of read off them, so nothing
+	// stops the two from drifting apart except this.
+	t.Run("counts what is held", func(t *testing.T) {
+		l := &Listener{}
+
+		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("a")})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation})    // dropped
+		l.routeFrame(&Frame{Opcode: OpcodePing, FIN: true}) // never joins
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("b")})
+
+		if l.currentDataFrameCount != uint64(len(l.currentDataFrames)) {
+			t.Errorf("currentDataFrameCount = %d, but %d frames are held",
+				l.currentDataFrameCount, len(l.currentDataFrames))
 		}
 	})
 

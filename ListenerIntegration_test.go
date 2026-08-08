@@ -51,7 +51,7 @@ func TestListenerIntegration(t *testing.T) {
 	conn := NewConn(netConn, nil, nil, false)
 	defer conn.Close()
 
-	listener := &Listener{}
+	listener := NewListener()
 	var got []string
 
 	err := listener.SetConfig(ListenerConfig{

@@ -31,14 +31,60 @@ type Listener struct {
 	// received. A continuation arriving after a restart still finds its message
 	// open.
 	//
-	// Never nil once Listen has started: empty means no message is open, and
-	// the frames of one being assembled otherwise. So the state is always ready
-	// for the next frame and nothing has to allocate it on the way in.
-	currentDataFrames    Frames
-	currentDataAccLength uint64
+	// Never nil once Listen has started, so nothing has to allocate it on the
+	// way in. A Data hook leaves it empty — that hook takes each frame, so
+	// nothing is ever appended.
+	currentDataFrames Frames
+	// Counted as frames arrive rather than read back off currentDataFrames, so
+	// the budgets are two running totals kept the same way and neither depends
+	// on what the slice happens to hold. It is also what says a message is open
+	// at all, which the frames cannot answer with a Data hook set.
+	currentDataFrameCount uint64
+	currentDataAccLength  uint64
+	// The message's type, from its first frame — 5.4 makes it the type of every
+	// fragment after it. See GetCurrentMsgOpcode.
+	currentDataFrameOpcode byte
 
-	mu        sync.Mutex
-	pauseChan chan struct{}
+	// Guards pauseChan, so Listen, PauseListen and SetConfig can be called from
+	// different goroutines without two loops starting on one connection or a
+	// closed channel being closed twice.
+	//
+	// An interface rather than a sync.Mutex so a test can substitute one and see
+	// the ordering. That is also why NewListener exists: a nil Locker panics on
+	// the first Lock, so the zero Listener is not usable.
+	listenLocker sync.Locker
+	pauseChan    chan struct{}
+}
+
+/*
+NewListener builds a Listener ready to be configured.
+
+The zero value is not usable — listenLocker would be nil and panic on the first Lock —
+so this is the only way to make one. SetConfig is still required before Listen.
+
+	listener := wlgows.NewListener()
+	if err := listener.SetConfig(config); err != nil {
+		return err
+	}
+	err := listener.Listen()
+*/
+func NewListener() *Listener {
+	return &Listener{
+		listenLocker: &sync.Mutex{},
+	}
+}
+
+/*
+GetCurrentMsgOpcode is the type of the message in flight: OpcodeText or
+OpcodeBinary. OpcodeContinuation, which is 0, means none is open.
+
+It is for the Data hook, where a continuation frame does not carry the type and
+only text owes RFC 6455 5.6 a UTF-8 check. Call it from inside the hook: the
+read loop is parked there, so the answer is the type of the frame you were
+handed, FIN frame included.
+*/
+func (l *Listener) GetCurrentMsgOpcode() byte {
+	return l.currentDataFrameOpcode
 }
 
 /*
@@ -115,7 +161,10 @@ func (l *Listener) validateFrame(f *Frame) error {
 	// 5.4: a data opcode opens a message and every frame after it carries
 	// opcode 0, so the frame's type has to agree with whether one is open.
 	// Neither way of breaking that leaves anything sensible to assemble.
-	if len(l.currentDataFrames) > 0 {
+	//
+	// The count, not the frames: a Data hook retains none, so an open message
+	// leaves currentDataFrames empty.
+	if l.currentDataFrameCount > 0 {
 		if f.Opcode != OpcodeContinuation {
 			return ErrDataFrameDuringMsg
 		}

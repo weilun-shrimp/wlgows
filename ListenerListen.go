@@ -1,9 +1,6 @@
 package wlgows
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
 /*
 Listen reads frames and routes them to the hooks, blocking until a read fails, a
@@ -17,7 +14,6 @@ half assembled when you paused is still open, so SetConfig may be called in
 between without losing frames.
 */
 func (l *Listener) Listen() error {
-	claimDI := claimListenDI{locker: &l.mu}
 	framesDI := listenFramesDI{
 		timeNow:            time.Now,
 		nextFrameByteLimit: l.nextFrameByteLimit,
@@ -25,9 +21,7 @@ func (l *Listener) Listen() error {
 		routeFrame:         l.routeFrame,
 	}
 	return l.listen(listenDI{
-		claimListen: func() (chan struct{}, error) {
-			return l.claimListen(claimDI)
-		},
+		claimListen: l.claimListen,
 		pauseListen: l.PauseListen,
 		listenFrames: func(pauseChan <-chan struct{}) error {
 			return l.listenFrames(pauseChan, framesDI)
@@ -52,13 +46,6 @@ func (l *Listener) listen(di listenDI) error {
 	return di.listenFrames(pauseChan)
 }
 
-// claimListenDI is what claiming reaches outside itself. Taking the lock and
-// releasing it leaves no trace of its own, so a counting Locker is how a test
-// sees it happened, and happened once on every path out.
-type claimListenDI struct {
-	locker sync.Locker
-}
-
 /*
 claimListen takes the Listener for one run and hands back the channel that run
 watches.
@@ -67,9 +54,9 @@ Two loops on one connection would each take an arbitrary subset of the frames,
 so the second is refused. pauseChan doubles as the flag saying one is already
 running.
 */
-func (l *Listener) claimListen(di claimListenDI) (chan struct{}, error) {
-	di.locker.Lock()
-	defer di.locker.Unlock()
+func (l *Listener) claimListen() (chan struct{}, error) {
+	l.listenLocker.Lock()
+	defer l.listenLocker.Unlock()
 
 	if l.pauseChan != nil {
 		return nil, ErrListenerIsListening
@@ -143,16 +130,14 @@ that is yours to do.
 */
 func (l *Listener) PauseListen() {
 	l.pauseListen(pauseListenDI{
-		locker:    &l.mu,
 		closeChan: func(pauseChan chan struct{}) { close(pauseChan) },
 	})
 }
 
-// pauseListenDI is what pausing reaches outside itself. Taking the lock and
-// releasing it leaves no trace of its own, so a counting Locker is how a test
-// sees it happened, and happened once.
+// pauseListenDI is what pausing reaches outside itself — the lock is no longer
+// part of it, since listenLocker is on the Listener and a test substitutes it
+// there.
 type pauseListenDI struct {
-	locker sync.Locker
 	// close is a builtin, so it cannot be a field value on its own — this wraps
 	// it. Substituting it is how a test sees the close happen without the
 	// channel being closed for real.
@@ -166,8 +151,8 @@ Clearing is what releases the claim, so nil means nothing is running and a
 second call has nothing to do — closing an already closed channel would panic.
 */
 func (l *Listener) pauseListen(di pauseListenDI) {
-	di.locker.Lock()
-	defer di.locker.Unlock()
+	l.listenLocker.Lock()
+	defer l.listenLocker.Unlock()
 
 	if l.pauseChan == nil {
 		return

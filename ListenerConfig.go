@@ -1,9 +1,6 @@
 package wlgows
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
 /*
 ListenerConfig is everything a Listener reads from. Hand it over with
@@ -92,9 +89,29 @@ type ListenerConfig struct {
 	// ordering TCP and RFC 6455 5.4 hand us for free.
 	//
 	// A nil hook drops those frames.
-	Ping    func(ping_frame *Frame)    // RFC 6455 5.5.2: MUST answer with a pong echoing the payload.
-	Pong    func(pong_frame *Frame)    // RFC 6455 5.5.3: MUST NOT answer.
-	Close   func(close_frame *Frame)   // RFC 6455 5.5.1: MUST answer with a close, then close. GetClosePayload decodes it.
+	Ping  func(ping_frame *Frame)  // RFC 6455 5.5.2: MUST answer with a pong echoing the payload.
+	Pong  func(pong_frame *Frame)  // RFC 6455 5.5.3: MUST NOT answer.
+	Close func(close_frame *Frame) // RFC 6455 5.5.1: MUST answer with a close, then close. GetClosePayload decodes it.
+
+	// Data takes each data frame instead of the message they assemble into. Set
+	// it and Text and Binary never run.
+	//
+	// It is the sharp edge of this config. Take it only when you want the frames
+	// themselves — a transmission too large to hold, a stream you forward on —
+	// and only knowing exactly what comes with them, which is the rest of this.
+	// A message that fits in memory belongs to Text or Binary, which discharge
+	// all of it for you.
+	//
+	// Nothing is retained, so FIN is yours to watch for, and 5.6 UTF-8 validity
+	// is not checked — a frame may end mid rune, so only the joined bytes can be
+	// judged. That check is yours, and so is answering 1007.
+	// GetCurrentMsgOpcode says whether the message is text and needs one.
+	//
+	// The budgets, 5.4 and the empty continuation drop are unchanged: these are
+	// the frames the message is made of. Set it between messages, not during
+	// one — frames already assembled are dropped when that message ends.
+	Data func(data_frame *Frame)
+
 	Text    func(text_frames Frames)   // A whole text message, already checked as valid UTF-8 (5.6, 8.1).
 	Binary  func(binary_frames Frames) // A whole binary message. Arbitrary bytes, no encoding rules.
 	Unknown func(unknown_frame *Frame) // An opcode RFC 6455 5.2 reserves. A protocol error: answer 1002 and close.
@@ -119,25 +136,15 @@ Listener: nothing can write it between two frames, so there is no race to guard
 against and no copy to take. Pause, set, start again.
 */
 func (l *Listener) SetConfig(config ListenerConfig) error {
-	return l.setConfig(config, setConfigDI{locker: &l.mu})
-}
-
-// setConfigDI is what setting reaches outside itself. Taking the lock and
-// releasing it leaves no trace of its own, so a counting Locker is how a test
-// sees it happened, and sees a refused config never took it at all.
-type setConfigDI struct {
-	locker sync.Locker
-}
-
-func (l *Listener) setConfig(config ListenerConfig, di setConfigDI) error {
 	// Before the lock: a config that could never run has no business making a
-	// running loop wait.
+	// running loop wait. listenLocker being an interface is what lets a test see
+	// that a refused config never took the lock at all.
 	if err := config.validate(); err != nil {
 		return err
 	}
 
-	di.locker.Lock()
-	defer di.locker.Unlock()
+	l.listenLocker.Lock()
+	defer l.listenLocker.Unlock()
 
 	if l.pauseChan != nil {
 		return ErrListenerIsListening

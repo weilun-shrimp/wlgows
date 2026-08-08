@@ -135,41 +135,29 @@ func TestListenerValidateFrame(t *testing.T) {
 	// 5.4: a data opcode opens a message and every frame after it carries
 	// opcode 0, so the frame has to agree with whether one is open.
 	t.Run("fragmentation", func(t *testing.T) {
+		// The count is what says a message is open, since a Data hook retains no
+		// frames to read that off — the last case is that Listener.
 		tests := []struct {
-			name              string
-			currentDataFrames Frames
-			frame             *Frame
-			want              error
+			name                  string
+			currentDataFrameCount uint64
+			frame                 *Frame
+			want                  error
 		}{
-			{"opens a message", nil, &Frame{Opcode: OpcodeText}, nil},
-			{
-				"continues one",
-				Frames{{Opcode: OpcodeText}},
-				&Frame{Opcode: OpcodeContinuation},
-				nil,
-			},
+			{"opens a message", 0, &Frame{Opcode: OpcodeText}, nil},
+			{"continues one", 1, &Frame{Opcode: OpcodeContinuation}, nil},
 			{
 				"continuation with none open",
-				nil,
+				0,
 				&Frame{Opcode: OpcodeContinuation},
 				ErrContinuationFrameWithoutMsg,
 			},
-			{
-				"data opcode during one",
-				Frames{{Opcode: OpcodeText}},
-				&Frame{Opcode: OpcodeBinary},
-				ErrDataFrameDuringMsg,
-			},
-			{
-				"same data opcode during one",
-				Frames{{Opcode: OpcodeText}},
-				&Frame{Opcode: OpcodeText},
-				ErrDataFrameDuringMsg,
-			},
+			{"data opcode during one", 1, &Frame{Opcode: OpcodeBinary}, ErrDataFrameDuringMsg},
+			{"same data opcode during one", 1, &Frame{Opcode: OpcodeText}, ErrDataFrameDuringMsg},
+			{"open with nothing retained", 3, &Frame{Opcode: OpcodeText}, ErrDataFrameDuringMsg},
 		}
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
-				l := &Listener{currentDataFrames: testCase.currentDataFrames}
+				l := &Listener{currentDataFrameCount: testCase.currentDataFrameCount}
 
 				if err := l.validateFrame(testCase.frame); !errors.Is(err, testCase.want) {
 					t.Errorf("err = %v, want %v", err, testCase.want)
