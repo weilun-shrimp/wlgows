@@ -6,9 +6,12 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/v2"
-	"github.com/weilun-shrimp/wlgows/v2/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v3/example_helpers"
 )
+
+// Refused at the frame header before anything is allocated. 0 would mean no limit.
+const maxFrameByteLength = 10 << 20 // 10 MB
 
 func main() {
 	server_crt_path, server_key_path, err := example_helpers.LoadServerTlsInfo()
@@ -49,22 +52,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println(serverConn.ServerResponse)
 
 	for {
-		msg, err := serverConn.GetNextMsg()
+		msg, err := example_helpers.ReadNextFrames(serverConn, maxFrameByteLength)
 		if err != nil {
 			fmt.Printf("%+v\n", err.Error())
 			break
 		}
-		if msg.Frames[0].Opcode == 8 { // disconnect by client
+		if msg[0].Opcode == 8 { // disconnect by client
 			fmt.Printf("%+v\n", "Disconnect by cleint")
-			fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg.Frames)))
-			fmt.Printf("%+v\n", *msg.Frames[0])
+			fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg)))
+			fmt.Printf("%+v\n", *msg[0])
 			break
 		}
-		str := msg.GetStr()
-		fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg.Frames)))
+		str := msg.String()
+		fmt.Printf("%+v\n", "f:"+strconv.Itoa(len(msg)))
 		fmt.Printf("%+v\n", "str len: "+strconv.Itoa(len(str)))
 		fmt.Printf("%+v\n", "utf-8 len: "+strconv.Itoa(utf8.RuneCountInString(str)))
-		fmt.Printf("%+v\n", "msg: "+msg.GetStr())
+		fmt.Printf("%+v\n", "msg: "+msg.String())
 		serverConn.SendText([]byte(str))
 	}
 }

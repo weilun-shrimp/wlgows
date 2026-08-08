@@ -14,8 +14,7 @@ type Conn struct {
 }
 
 type connDI struct {
-	getFrameFromTCPConn func(conn net.Conn) (*Frame, error)
-	getMsgFromTCPConn   func(conn net.Conn) (Msg, error)
+	getFrameFromTCPConn func(conn net.Conn, maxByteLength uint64) (*Frame, error)
 	writeLocker         sync.Locker
 	readLocker          sync.Locker
 }
@@ -27,46 +26,44 @@ func NewConn(c net.Conn, req *http.Request, res *http.Response) *Conn {
 		ServerResponse: res,
 		di: connDI{
 			getFrameFromTCPConn: GetFrameFromTCPConn,
-			getMsgFromTCPConn:   GetMsgFromTCPConn,
 			writeLocker:         &sync.Mutex{},
 			readLocker:          &sync.Mutex{},
 		},
 	}
 }
 
-func (c *Conn) GetNextFrame() (*Frame, error) {
-	c.di.readLocker.Lock()
-	defer c.di.readLocker.Unlock()
-	f, err := c.di.getFrameFromTCPConn(c.Conn)
-	return f, err
-}
+/*
+GetNextFrame reads one frame, refusing any whose header declares a payload
+larger than maxByteLength. Pass 0 for no limit.
 
-func (c *Conn) GetNextMsg() (Msg, error) {
-	c.di.readLocker.Lock()
-	defer c.di.readLocker.Unlock()
-	m, err := c.di.getMsgFromTCPConn(c.Conn)
-	return m, err
-}
+One frame is the whole unit this returns: a message split across frames is
+assembled by the caller, appending into a Frames until a frame with FIN set
+arrives. That is what lets a caller stream a huge message somewhere else instead
+of holding it:
 
-func (c *Conn) SendMsg(m *Msg) error {
-	c.di.writeLocker.Lock()
-	defer c.di.writeLocker.Unlock()
-	for _, f := range m.Frames {
-		// net TCP conn 方法
-		_, err := c.Conn.Write(f.Seal())
+	var frames wlgows.Frames
+	for {
+		f, err := conn.GetNextFrame(10 << 20)
 		if err != nil {
-			// fmt.Println("Error writing:", err.Error())
 			return err
 		}
-
-		// io 方法
-		// _, err := io.WriteString(this.TCP_connection, string(f.Seal()))
-		// if err != nil {
-		// 	fmt.Println("Error writing:", err.Error())
-		// 	return err
-		// }
+		if f.Opcode == 0x8 { // close
+			return nil
+		}
+		frames = append(frames, f)
+		if f.FIN {
+			break
+		}
 	}
-	return nil
+
+Exceeding maxByteLength leaves the payload unread and the stream desynced, so
+the connection cannot be reused — see GetFrameFromTCPConn.
+*/
+func (c *Conn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
+	c.di.readLocker.Lock()
+	defer c.di.readLocker.Unlock()
+	f, err := c.di.getFrameFromTCPConn(c.Conn, maxByteLength)
+	return f, err
 }
 
 func (c *Conn) Close() error {

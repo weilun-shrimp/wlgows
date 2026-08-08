@@ -3,6 +3,7 @@ package wlgows
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -27,7 +28,7 @@ func TestNewServerConn(t *testing.T) {
 	if serverConn.ClientRequest != request {
 		t.Error("ClientRequest was not set on the embedded Conn")
 	}
-	if serverConn.Conn.di.getMsgFromTCPConn == nil {
+	if serverConn.Conn.di.getFrameFromTCPConn == nil {
 		t.Error("the embedded Conn must get its own di")
 	}
 	for name, constructor := range map[string]any{
@@ -38,7 +39,6 @@ func TestNewServerConn(t *testing.T) {
 		"responseToPlainHTTPMsg":   serverConn.di.responseToPlainHTTPMsg,
 		"bufioNewReader":           serverConn.di.bufioNewReader,
 		"httpReadRequest":          serverConn.di.httpReadRequest,
-		"newMsg":                   serverConn.di.newMsg,
 		"fmtPrintln":               serverConn.di.fmtPrintln,
 	} {
 		if constructor == nil {
@@ -67,7 +67,7 @@ func TestServerConnHandShake(t *testing.T) {
 			writer = NewResponseWriter()
 			return writer
 		}
-		serverConn.di.readRequest = func() (*http.Request, *Error) {
+		serverConn.di.readRequest = func() (*http.Request, error) {
 			t.Fatal("readRequest must not run when ClientRequest is already set")
 			return nil, nil
 		}
@@ -95,7 +95,7 @@ func TestServerConnHandShake(t *testing.T) {
 	t.Run("reads the request when none is set yet", func(t *testing.T) {
 		serverConn := NewServerConn(newFakeConn(nil), nil)
 		called := false
-		serverConn.di.readRequest = func() (*http.Request, *Error) {
+		serverConn.di.readRequest = func() (*http.Request, error) {
 			called = true
 			serverConn.ClientRequest = validClientHandShakeRequest(t)
 			return serverConn.ClientRequest, nil
@@ -113,9 +113,9 @@ func TestServerConnHandShake(t *testing.T) {
 
 	t.Run("declines when reading the request fails", func(t *testing.T) {
 		serverConn := NewServerConn(newFakeConn(nil), nil)
-		invalid := &Error{Type: HttpMsgFormationInvalid, Msg: "bad http"}
-		serverConn.di.readRequest = func() (*http.Request, *Error) { return nil, invalid }
-		serverConn.di.validateHandShakeRequest = func(*http.Request) *Error {
+		invalid := fmt.Errorf("bad http: %w", ErrHttpMsgFormationInvalid)
+		serverConn.di.readRequest = func() (*http.Request, error) { return nil, invalid }
+		serverConn.di.validateHandShakeRequest = func(*http.Request) error {
 			t.Fatal("validation must be skipped when the read already failed")
 			return nil
 		}
@@ -257,7 +257,7 @@ func TestServerConnReadRequest(t *testing.T) {
 		}
 
 		got, invalid := serverConn.ReadRequest()
-		if invalid == nil || invalid.Type != ClientRequestHasSet {
+		if !errors.Is(invalid, ErrClientRequestHasSet) {
 			t.Fatalf("invalid = %v, want ClientRequestHasSet", invalid)
 		}
 		// The existing request is handed back alongside the error.
@@ -278,11 +278,13 @@ func TestServerConnReadRequest(t *testing.T) {
 		if got != nil {
 			t.Error("no request should be returned")
 		}
-		if invalid == nil || invalid.Type != HttpMsgFormationInvalid {
+		if !errors.Is(invalid, ErrHttpMsgFormationInvalid) {
 			t.Fatalf("invalid = %v, want HttpMsgFormationInvalid", invalid)
 		}
-		if !strings.Contains(invalid.Msg, "garbage on the wire") {
-			t.Errorf("the raw error should be quoted, got %q", invalid.Msg)
+		// The underlying parse error is wrapped alongside the sentinel, so both
+		// the cause and the category survive.
+		if !strings.Contains(invalid.Error(), "garbage on the wire") {
+			t.Errorf("the raw error should be quoted, got %q", invalid.Error())
 		}
 		if !logged {
 			t.Error("the parse failure should go through di.fmtPrintln")
@@ -326,34 +328,34 @@ func TestValidateHandShakeRequest(t *testing.T) {
 	})
 
 	tests := []struct {
-		name     string
-		mutate   func(*http.Request)
-		wantType string
+		name    string
+		mutate  func(*http.Request)
+		wantErr error
 	}{
 		{
-			name:     "non GET method",
-			mutate:   func(r *http.Request) { r.Method = "POST" },
-			wantType: HttpMethodNotAllowed,
+			name:    "non GET method",
+			mutate:  func(r *http.Request) { r.Method = "POST" },
+			wantErr: ErrHttpMethodNotAllowed,
 		},
 		{
-			name:     "wrong protocol",
-			mutate:   func(r *http.Request) { r.Proto = "HTTP/2.0" },
-			wantType: HttpProtocolOrVersionNotAllowed,
+			name:    "wrong protocol",
+			mutate:  func(r *http.Request) { r.Proto = "HTTP/2.0" },
+			wantErr: ErrHttpProtocolOrVersionNotAllowed,
 		},
 		{
-			name:     "missing websocket key",
-			mutate:   func(r *http.Request) { r.Header.Del("Sec-WebSocket-Key") },
-			wantType: HttpSecWebSocketKeyHeaderNotSet,
+			name:    "missing websocket key",
+			mutate:  func(r *http.Request) { r.Header.Del("Sec-WebSocket-Key") },
+			wantErr: ErrHttpSecWebSocketKeyHeaderNotSet,
 		},
 		{
-			name:     "connection header not upgrade",
-			mutate:   func(r *http.Request) { r.Header.Set("Connection", "keep-alive") },
-			wantType: HttpConnectionHeaderNotUpgrade,
+			name:    "connection header not upgrade",
+			mutate:  func(r *http.Request) { r.Header.Set("Connection", "keep-alive") },
+			wantErr: ErrHttpConnectionHeaderNotUpgrade,
 		},
 		{
-			name:     "upgrade header not websocket",
-			mutate:   func(r *http.Request) { r.Header.Set("Upgrade", "h2c") },
-			wantType: HttpUpgradeHeaderNotWebsocket,
+			name:    "upgrade header not websocket",
+			mutate:  func(r *http.Request) { r.Header.Set("Upgrade", "h2c") },
+			wantErr: ErrHttpUpgradeHeaderNotWebsocket,
 		},
 	}
 	for _, testCase := range tests {
@@ -364,11 +366,12 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			if got == nil {
 				t.Fatal("expected an error")
 			}
-			if got.Type != testCase.wantType {
-				t.Errorf("Type = %q, want %q", got.Type, testCase.wantType)
+			if !errors.Is(got, testCase.wantErr) {
+				t.Errorf("err = %v, want it to wrap %v", got, testCase.wantErr)
 			}
-			if got.Msg == "" {
-				t.Error("Msg should explain the failure")
+			// Wrapping has to add context, not just relay the sentinel.
+			if got.Error() == testCase.wantErr.Error() {
+				t.Errorf("err = %q, want context around the sentinel", got.Error())
 			}
 		})
 	}
@@ -377,8 +380,8 @@ func TestValidateHandShakeRequest(t *testing.T) {
 	t.Run("reports the first failure it finds", func(t *testing.T) {
 		request := httptestRequest(t)
 		request.Method = "DELETE"
-		if got := ValidateHandShakeRequest(request); got.Type != HttpMethodNotAllowed {
-			t.Errorf("Type = %q, want the method error first", got.Type)
+		if got := ValidateHandShakeRequest(request); !errors.Is(got, ErrHttpMethodNotAllowed) {
+			t.Errorf("err = %v, want the method error first", got)
 		}
 	})
 }
@@ -456,70 +459,4 @@ func TestResponseToPlainHTTPMsg(t *testing.T) {
 			t.Errorf("result should be empty on error: %q", got)
 		}
 	})
-}
-
-// RFC 6455 forbids the server from masking its frames.
-func TestServerConnSendTextAndSendByteNeverMask(t *testing.T) {
-	tests := []struct {
-		name       string
-		send       func(*ServerConn, []byte) error
-		wantOpcode uint8
-	}{
-		{"SendText uses opcode 1", (*ServerConn).SendText, 1},
-		{"SendByte uses opcode 2", (*ServerConn).SendByte, 2},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			serverConn := NewServerConn(newFakeConn(nil), nil)
-			var gotOpcode uint8
-			var gotMask bool
-			serverConn.di.newMsg = func(_ []byte, opcode uint8, need_mask bool) (*Msg, error) {
-				gotOpcode, gotMask = opcode, need_mask
-				return &Msg{}, nil
-			}
-
-			if err := testCase.send(serverConn, []byte("payload")); err != nil {
-				t.Fatalf("send: %v", err)
-			}
-			if gotOpcode != testCase.wantOpcode {
-				t.Errorf("opcode = %d, want %d", gotOpcode, testCase.wantOpcode)
-			}
-			if gotMask {
-				t.Error("server frames must NOT be masked")
-			}
-		})
-	}
-}
-
-func TestServerConnSendTextWritesUnmaskedBytes(t *testing.T) {
-	netConn := newFakeConn(nil)
-	serverConn := NewServerConn(netConn, nil)
-	if err := serverConn.SendText([]byte("hi")); err != nil {
-		t.Fatalf("SendText: %v", err)
-	}
-	want := []byte{0x81, 0x02, 'h', 'i'}
-	got := netConn.written()
-	if string(got) != string(want) {
-		t.Errorf("written = % x, want % x", got, want)
-	}
-	if got[1]&0x80 != 0 {
-		t.Error("mask bit must be clear on a server frame")
-	}
-}
-
-func TestServerConnSendPropagatesNewMsgError(t *testing.T) {
-	sends := map[string]func(*ServerConn, []byte) error{
-		"SendText": (*ServerConn).SendText,
-		"SendByte": (*ServerConn).SendByte,
-	}
-	for name, send := range sends {
-		t.Run(name, func(t *testing.T) {
-			want := errors.New("cannot build message")
-			serverConn := NewServerConn(newFakeConn(nil), nil)
-			serverConn.di.newMsg = func([]byte, uint8, bool) (*Msg, error) { return nil, want }
-			if err := send(serverConn, []byte("x")); !errors.Is(err, want) {
-				t.Errorf("err = %v, want %v", err, want)
-			}
-		})
-	}
 }

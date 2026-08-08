@@ -27,7 +27,6 @@ type clientConnDI struct {
 	requestToPlainHTTPMsg     func(req *http.Request) (string, error)
 	bufioNewReader            func(rd io.Reader) *bufio.Reader
 	httpReadResponse          func(r *bufio.Reader, req *http.Request) (*http.Response, error)
-	newMsg                    func(data []byte, opcode uint8, need_mask bool) (*Msg, error)
 }
 
 func NewClientConn(c net.Conn, req *http.Request) *ClientConn {
@@ -40,7 +39,6 @@ func NewClientConn(c net.Conn, req *http.Request) *ClientConn {
 		requestToPlainHTTPMsg:     RequestToPlainHTTPMsg,
 		bufioNewReader:            bufio.NewReader,
 		httpReadResponse:          http.ReadResponse,
-		newMsg:                    NewMsg,
 	}
 	return cc
 }
@@ -225,20 +223,5 @@ func requestToPlainHTTPMsg(req *http.Request, di requestToPlainHTTPMsgDI) (strin
 	return buf.String(), nil
 }
 
-// client side is not allowed not to mask the payload
-func (cc *ClientConn) SendText(text []byte) error {
-	send_msg, err := cc.di.newMsg(text, 1, true)
-	if err != nil {
-		return err
-	}
-	return cc.SendMsg(send_msg)
-}
-
-// client side is not allowed not to mask the payload
-func (cc *ClientConn) SendByte(byte_data []byte) error {
-	send_msg, err := cc.di.newMsg(byte_data, 2, true)
-	if err != nil {
-		return err
-	}
-	return cc.SendMsg(send_msg)
-}
+// The send path is deliberately absent in v3 for now. Client frames must be
+// masked (RFC 6455 5.3), so whatever replaces it has to keep need_mask true.

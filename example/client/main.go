@@ -7,9 +7,12 @@ import (
 	"io"
 	"os"
 
-	"github.com/weilun-shrimp/wlgows/v2"
-	"github.com/weilun-shrimp/wlgows/v2/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v3/example_helpers"
 )
+
+// Refused at the frame header before anything is allocated. 0 would mean no limit.
+const maxFrameByteLength = 10 << 20 // 10 MB
 
 func main() {
 	fmt.Print("Please input the url (eg. ws://localhost:8001) :")
@@ -57,7 +60,7 @@ func main() {
 				break serverReaderLoop
 			default:
 			}
-			msg, err := conn.GetNextMsg()
+			msg, err := example_helpers.ReadNextFrames(conn, maxFrameByteLength)
 			if err != nil {
 				if err == io.EOF {
 					fmt.Println("read from server detect the server closed error")
@@ -67,7 +70,7 @@ func main() {
 				stopChan <- true
 				break serverReaderLoop
 			}
-			str_msg := msg.GetStr()
+			str_msg := msg.String()
 			fmt.Println("echo server return: ", str_msg)
 		}
 	}()

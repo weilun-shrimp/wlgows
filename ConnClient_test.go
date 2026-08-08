@@ -33,7 +33,6 @@ func TestNewClientConn(t *testing.T) {
 		"requestToPlainHTTPMsg":     clientConn.di.requestToPlainHTTPMsg,
 		"bufioNewReader":            clientConn.di.bufioNewReader,
 		"httpReadResponse":          clientConn.di.httpReadResponse,
-		"newMsg":                    clientConn.di.newMsg,
 	} {
 		if constructor == nil {
 			t.Errorf("NewClientConn left di.%s nil", name)
@@ -540,81 +539,4 @@ func TestRequestToPlainHTTPMsg(t *testing.T) {
 			t.Errorf("result should be empty on error, got %q", got)
 		}
 	})
-}
-
-// RFC 6455 requires every client-to-server frame to be masked.
-func TestClientConnSendTextAndSendByteAlwaysMask(t *testing.T) {
-	tests := []struct {
-		name       string
-		send       func(*ClientConn, []byte) error
-		wantOpcode uint8
-	}{
-		{"SendText uses opcode 1", (*ClientConn).SendText, 1},
-		{"SendByte uses opcode 2", (*ClientConn).SendByte, 2},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-			var gotOpcode uint8
-			var gotMask bool
-			var gotData []byte
-			clientConn.di.newMsg = func(data []byte, opcode uint8, need_mask bool) (*Msg, error) {
-				gotData, gotOpcode, gotMask = data, opcode, need_mask
-				return &Msg{}, nil
-			}
-
-			if err := testCase.send(clientConn, []byte("payload")); err != nil {
-				t.Fatalf("send: %v", err)
-			}
-			if gotOpcode != testCase.wantOpcode {
-				t.Errorf("opcode = %d, want %d", gotOpcode, testCase.wantOpcode)
-			}
-			if !gotMask {
-				t.Error("client frames must be masked")
-			}
-			if string(gotData) != "payload" {
-				t.Errorf("data = %q", gotData)
-			}
-		})
-	}
-}
-
-func TestClientConnSendPropagatesNewMsgError(t *testing.T) {
-	sends := map[string]func(*ClientConn, []byte) error{
-		"SendText": (*ClientConn).SendText,
-		"SendByte": (*ClientConn).SendByte,
-	}
-	for name, send := range sends {
-		t.Run(name, func(t *testing.T) {
-			want := errors.New("cannot build message")
-			clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-			clientConn.di.newMsg = func([]byte, uint8, bool) (*Msg, error) { return nil, want }
-			if err := send(clientConn, []byte("x")); !errors.Is(err, want) {
-				t.Errorf("err = %v, want %v", err, want)
-			}
-		})
-	}
-}
-
-// End to end through the real newMsg: the bytes on the wire are masked.
-func TestClientConnSendTextWritesMaskedBytes(t *testing.T) {
-	netConn := newFakeConn(nil)
-	clientConn := NewClientConn(netConn, httptestRequest(t))
-	if err := clientConn.SendText([]byte("hi")); err != nil {
-		t.Fatalf("SendText: %v", err)
-	}
-	got := netConn.written()
-	if len(got) != 8 {
-		t.Fatalf("wrote %d bytes, want 8 (2 header + 4 key + 2 payload)", len(got))
-	}
-	if got[0] != 0x81 {
-		t.Errorf("first byte = %#x, want 0x81 (FIN + opcode 1)", got[0])
-	}
-	if got[1]&0x80 == 0 {
-		t.Error("mask bit must be set on firstKey client frame")
-	}
-	key := got[2:6]
-	if string([]byte{got[6] ^ key[0], got[7] ^ key[1]}) != "hi" {
-		t.Error("payload does not unmask back to the original text")
-	}
 }

@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 )
@@ -47,8 +48,21 @@ func readTCPConn(conn net.Conn, maxLen uint64, di readTCPConnDI) ([]byte, error)
 	return bytes, nil
 }
 
-func GetFrameFromTCPConn(conn net.Conn) (*Frame, error) {
-	return getFrameFromTCPConn(conn, getFrameFromTCPConnDI{
+/*
+GetFrameFromTCPConn reads one frame, refusing any whose header declares a
+payload larger than maxByteLength. Pass 0 for no limit.
+
+The check happens after the header is parsed and before the payload is
+allocated, which is the only place it helps: a peer can claim a 10 GB payload in
+a 10 byte header, and without the guard that claim becomes a 10 GB make() before
+a single payload byte has arrived.
+
+Exceeding the limit returns an error wrapping ErrFrameByteLengthExceeded and
+leaves the payload unread, so the stream is desynced and the connection cannot
+be reused — send RFC 6455 close code 1009 and close it.
+*/
+func GetFrameFromTCPConn(conn net.Conn, maxByteLength uint64) (*Frame, error) {
+	return getFrameFromTCPConn(conn, maxByteLength, getFrameFromTCPConnDI{
 		readTCPConn: ReadTCPConn,
 	})
 }
@@ -57,7 +71,7 @@ type getFrameFromTCPConnDI struct {
 	readTCPConn func(conn net.Conn, maxLen uint64) ([]byte, error)
 }
 
-func getFrameFromTCPConn(conn net.Conn, di getFrameFromTCPConnDI) (*Frame, error) {
+func getFrameFromTCPConn(conn net.Conn, maxByteLength uint64, di getFrameFromTCPConnDI) (*Frame, error) {
 	f := new(Frame)
 	firstSec, err := di.readTCPConn(conn, 2)
 	if err != nil {
@@ -98,6 +112,15 @@ func getFrameFromTCPConn(conn net.Conn, di getFrameFromTCPConnDI) (*Frame, error
 			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn maskingKeyByte")
 			return f, err
 		}
+	}
+
+	// Guard before the allocation, never after: readTCPConn's first act is
+	// make([]byte, maxLen), so by the time it returns the damage is done.
+	if maxByteLength > 0 && f.GetMaxPayloadLength() > maxByteLength {
+		return f, fmt.Errorf(
+			"frame header declares %d bytes against a %d byte max, payload left unread: %w",
+			f.GetMaxPayloadLength(), maxByteLength, ErrFrameByteLengthExceeded,
+		)
 	}
 
 	f.PayloadData, err = di.readTCPConn(conn, f.GetMaxPayloadLength())

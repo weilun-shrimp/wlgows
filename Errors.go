@@ -1,31 +1,42 @@
 package wlgows
 
-type Error struct {
-	Type string
-	Msg  string
-}
+import "errors"
 
-func (e *Error) Error() string {
-	return e.Msg
-}
+/*
+Sentinel errors. Every error this package returns wraps one of these with
+fmt.Errorf and %w, so the caller gets a message with context and can still ask
+which failure it was:
 
-// type list
+	_, err := sc.HandShake()
+	if errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
+		// ...
+	}
 
-// base errors
-const (
-	ClientRequestHasSet = "ClientRequestHasSet"
+errors.Is unwraps to any depth, so wrapping again on the way up costs nothing.
+Compare with errors.Is rather than ==: a returned error is the wrapper, never
+the sentinel itself.
+*/
+
+// frame
+var (
+	// ErrFrameByteLengthExceeded is returned by GetFrameFromTCPConn before it
+	// allocates, when the frame header declares a payload larger than the max
+	// the caller allowed. RFC 6455 close code 1009 is the matching response.
+	ErrFrameByteLengthExceeded = errors.New("frame payload exceeds the max byte length")
 )
 
-// http
-const (
-	HttpMsgFormationInvalid = "HttpMsgFormationInvalid"
-	// attribute errors
-	HttpMethodNotAllowed            = "MethodNotAllowed"
-	HttpProtocolOrVersionNotAllowed = "HttpProtocolOrVersionNotAllowed"
-	// header item errors
-	HttpSecWebSocketKeyHeaderNotSet = "HttpSecWebSocketKeyHeaderNotSet"
-	HttpConnectionHeaderNotUpgrade  = "HttpSecConnectionNotUpgrade"
-	HttpUpgradeHeaderNotWebsocket   = "HttpSecUpgradeNotWebsocket"
-	// request response
-	HttpRequestHasResponse = "HttpRequestHasResponse"
+// connection state
+var (
+	ErrClientRequestHasSet = errors.New("client request has already been set")
+)
+
+// handshake
+var (
+	ErrHttpMsgFormationInvalid         = errors.New("invalid http message formation")
+	ErrHttpMethodNotAllowed            = errors.New("http method not allowed")
+	ErrHttpProtocolOrVersionNotAllowed = errors.New("http protocol or version not allowed")
+	ErrHttpSecWebSocketKeyHeaderNotSet = errors.New("Sec-WebSocket-Key header is not set")
+	ErrHttpConnectionHeaderNotUpgrade  = errors.New("Connection header is not Upgrade")
+	ErrHttpUpgradeHeaderNotWebsocket   = errors.New("Upgrade header is not websocket")
+	ErrHttpRequestHasResponse          = errors.New("http request already has a response")
 )

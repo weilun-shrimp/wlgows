@@ -14,7 +14,7 @@ A lightweight, low-level WebSocket implementation library for Go. Provides both 
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v2
+go get github.com/weilun-shrimp/wlgows/v3
 ```
 
 The import path carries the `/v2` suffix that Go requires for major version 2
@@ -26,7 +26,7 @@ and above, but the package name is still `wlgows` — call sites read
 **Single package.** Everything lives in the root `wlgows` package:
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v2"
+import "github.com/weilun-shrimp/wlgows/v3"
 
 conn, _ := wlgows.Dial(url, nil)
 s, _    := wlgows.Run(":8001")
@@ -111,7 +111,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v3"
 )
 
 func main() {
@@ -167,7 +167,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v3"
 )
 
 func main() {
@@ -204,7 +204,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"os"
-	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v3"
 )
 
 // Load CA certificate
@@ -224,7 +224,7 @@ conn, err := wlgows.Dial("wss://localhost:8001", tlsConfig)
 ```go
 import (
 	"net/http"
-	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v3"
 )
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -249,7 +249,7 @@ func main() {
 ```go
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/weilun-shrimp/wlgows/v2"
+	"github.com/weilun-shrimp/wlgows/v3"
 )
 
 func handler(c *gin.Context) {

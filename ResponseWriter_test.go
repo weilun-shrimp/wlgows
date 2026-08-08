@@ -1,6 +1,8 @@
 package wlgows
 
 import (
+	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"net/http"
@@ -140,28 +142,44 @@ func TestResponseWriterLargeBodyBypassesTheBufferAndSurvives(t *testing.T) {
 	}
 }
 
-func TestResponseWriterDeclineByErrorType(t *testing.T) {
+func TestResponseWriterDeclineByError(t *testing.T) {
 	tests := []struct {
-		errorType string
-		want      int
+		name string
+		err  error
+		want int
 	}{
-		{HttpMsgFormationInvalid, http.StatusBadRequest},
-		{HttpMethodNotAllowed, http.StatusMethodNotAllowed},
-		{HttpProtocolOrVersionNotAllowed, http.StatusHTTPVersionNotSupported},
-		{HttpSecWebSocketKeyHeaderNotSet, http.StatusBadRequest},
-		{HttpConnectionHeaderNotUpgrade, http.StatusBadRequest},
-		{HttpUpgradeHeaderNotWebsocket, http.StatusBadRequest},
-		{"something we never defined", http.StatusInternalServerError},
-		{"", http.StatusInternalServerError},
+		{"msg formation invalid", ErrHttpMsgFormationInvalid, http.StatusBadRequest},
+		{"method not allowed", ErrHttpMethodNotAllowed, http.StatusMethodNotAllowed},
+		{"protocol not allowed", ErrHttpProtocolOrVersionNotAllowed, http.StatusHTTPVersionNotSupported},
+		{"websocket key not set", ErrHttpSecWebSocketKeyHeaderNotSet, http.StatusBadRequest},
+		{"connection not upgrade", ErrHttpConnectionHeaderNotUpgrade, http.StatusBadRequest},
+		{"upgrade not websocket", ErrHttpUpgradeHeaderNotWebsocket, http.StatusBadRequest},
+		{"an error from outside this package", errors.New("something else"), http.StatusInternalServerError},
+		{"nil", nil, http.StatusInternalServerError},
 	}
 	for _, testCase := range tests {
-		t.Run(testCase.errorType, func(t *testing.T) {
+		t.Run(testCase.name, func(t *testing.T) {
 			writer := NewResponseWriter()
-			writer.DeclineByErrorType(testCase.errorType)
+			writer.DeclineByError(testCase.err)
 			if writer.statusCode != testCase.want {
 				t.Errorf("statusCode = %d, want %d", writer.statusCode, testCase.want)
 			}
 		})
+	}
+}
+
+// Routing must survive wrapping, or DeclineByError would only work on a bare
+// sentinel — which is never what the handshake path actually returns.
+func TestResponseWriterDeclineByErrorUnwraps(t *testing.T) {
+	wrapped := fmt.Errorf("handshake: %w",
+		fmt.Errorf("validate: %w", ErrHttpMethodNotAllowed))
+
+	writer := NewResponseWriter()
+	writer.DeclineByError(wrapped)
+
+	if writer.statusCode != http.StatusMethodNotAllowed {
+		t.Errorf("statusCode = %d, want %d — errors.Is should have unwrapped two layers",
+			writer.statusCode, http.StatusMethodNotAllowed)
 	}
 }
 

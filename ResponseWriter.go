@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"hash"
 	"io"
 	"net/http"
@@ -76,18 +77,27 @@ Set the ResponseWriter appropriate status code and body by error_type
 
 empty error type means valid request, will put 101 for websocket
 */
-func (w *ResponseWriter) DeclineByErrorType(error_type string) {
-	switch error_type {
-	case HttpMsgFormationInvalid:
+// DeclineByError picks the status a failed handshake should answer with.
+// errors.Is unwraps, so an error carrying context still routes on the sentinel
+// it wraps; anything unrecognised is a 500.
+func (w *ResponseWriter) DeclineByError(err error) {
+	switch {
+	case errors.Is(err, ErrHttpMsgFormationInvalid):
 		w.WriteHeader(http.StatusBadRequest)
-	case HttpMethodNotAllowed:
+
+	case errors.Is(err, ErrHttpMethodNotAllowed):
 		w.WriteHeader(http.StatusMethodNotAllowed)
-	case HttpProtocolOrVersionNotAllowed:
+
+	case errors.Is(err, ErrHttpProtocolOrVersionNotAllowed):
 		w.WriteHeader(http.StatusHTTPVersionNotSupported)
-	case HttpSecWebSocketKeyHeaderNotSet, HttpConnectionHeaderNotUpgrade, HttpUpgradeHeaderNotWebsocket:
+
+	case errors.Is(err, ErrHttpSecWebSocketKeyHeaderNotSet),
+		errors.Is(err, ErrHttpConnectionHeaderNotUpgrade),
+		errors.Is(err, ErrHttpUpgradeHeaderNotWebsocket):
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(string(error_type)))
-	default: // other undefined type value
+		w.Write([]byte(err.Error()))
+
+	default: // nil, or an error this package did not produce
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 }

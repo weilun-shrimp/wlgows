@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 )
 
@@ -67,4 +68,100 @@ func (f *Frame) Seal() []byte {
 	}
 
 	return result
+}
+
+/*
+NewFrameConfig is everything NewFrame needs. A struct rather than positional
+arguments so the two booleans cannot be swapped at a call site.
+
+FIN marks the last frame of a message. Its zero value is false, so a caller who
+omits it gets a frame the peer will wait for a continuation of — set it on every
+single frame message.
+*/
+type NewFrameConfig struct {
+	// Data is the payload, carried whole. Empty is legal: a zero length frame
+	// is how an empty text message or a bare close goes out.
+	Data []byte
+	// Opcode is 1 text, 2 binary, 8 close, 9 ping, 0xA pong, 0 continuation.
+	Opcode uint8
+	// Mask must be true on a frame a client sends and may be false on one a
+	// server sends (RFC 6455 5.1).
+	Mask bool
+	// FIN marks this as the final frame of its message.
+	FIN bool
+}
+
+/*
+NewFrame builds one frame, encoding the payload length the way RFC 6455 5.2
+requires: inline up to 125 bytes, a 16 bit extended length up to 65535, a 64 bit
+one above that.
+
+A single frame message sets FIN:
+
+	f, _ := wlgows.NewFrame(wlgows.NewFrameConfig{
+		Data: []byte("hello"), Opcode: 1, Mask: true, FIN: true,
+	})
+
+Fragmenting means leaving FIN off every frame but the last, and giving the
+continuation frames opcode 0:
+
+	head, _ := wlgows.NewFrame(wlgows.NewFrameConfig{Data: a, Opcode: 1, Mask: true})
+	tail, _ := wlgows.NewFrame(wlgows.NewFrameConfig{Data: b, Opcode: 0, Mask: true, FIN: true})
+
+Masking is applied by Seal, not here — MaskingKey is generated and stored while
+PayloadData stays readable.
+*/
+func NewFrame(config NewFrameConfig) (*Frame, error) {
+	return newFrame(config, newFrameDI{
+		generateMaskingKey: GenerateMaskingKey,
+	})
+}
+
+type newFrameDI struct {
+	generateMaskingKey func() ([]byte, error)
+}
+
+func newFrame(config NewFrameConfig, di newFrameDI) (*Frame, error) {
+	f := &Frame{FIN: config.FIN, Opcode: config.Opcode, PayloadData: config.Data}
+	if config.Mask {
+		f.Mask = true
+		key, err := di.generateMaskingKey()
+		if err != nil {
+			return f, err
+		}
+		f.MaskingKey = key
+	}
+
+	dataLength := uint64(len(config.Data))
+	switch {
+	case dataLength <= uint64(125):
+		f.PayloadLength = uint8(dataLength)
+	case dataLength <= uint64(65535):
+		f.PayloadLength = uint8(126)
+		f.ExtendedPayloadLength = dataLength
+	default:
+		f.PayloadLength = uint8(127)
+		f.ExtendedPayloadLength = dataLength
+	}
+	return f, nil
+}
+
+// 生成WebSocket的掩码密钥
+func GenerateMaskingKey() ([]byte, error) {
+	return generateMaskingKey(generateMaskingKeyDI{
+		randRead: rand.Read,
+	})
+}
+
+type generateMaskingKeyDI struct {
+	randRead func(b []byte) (n int, err error)
+}
+
+func generateMaskingKey(di generateMaskingKeyDI) ([]byte, error) {
+	key := make([]byte, 4) // WebSocket规范要求4个字节的掩码密钥
+	_, err := di.randRead(key)
+	if err != nil {
+		return nil, err
+	}
+	return key, nil
 }
