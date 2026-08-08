@@ -24,7 +24,7 @@ func TestNewConn(t *testing.T) {
 		t.Error("ServerResponse was not set")
 	}
 	// Constructors are mandatory precisely because they populate di.
-	if wsConn.di.getFrameFromTCPConn == nil {
+	if wsConn.di.getFrameFromTCPConn == nil || wsConn.di.newControlFrame == nil {
 		t.Error("NewConn must populate every di field")
 	}
 	if wsConn.di.writeLocker == nil || wsConn.di.readLocker == nil {

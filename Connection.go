@@ -15,6 +15,7 @@ type Conn struct {
 
 type connDI struct {
 	getFrameFromTCPConn func(conn net.Conn, maxByteLength uint64) (*Frame, error)
+	newControlFrame     func(config NewControlFrameConfig) (*Frame, error)
 	writeLocker         sync.Locker
 	readLocker          sync.Locker
 }
@@ -26,6 +27,7 @@ func NewConn(c net.Conn, req *http.Request, res *http.Response) *Conn {
 		ServerResponse: res,
 		di: connDI{
 			getFrameFromTCPConn: GetFrameFromTCPConn,
+			newControlFrame:     NewControlFrame,
 			writeLocker:         &sync.Mutex{},
 			readLocker:          &sync.Mutex{},
 		},
@@ -47,7 +49,7 @@ of holding it:
 		if err != nil {
 			return err
 		}
-		if f.Opcode == 0x8 { // close
+		if !IsDataOpcode(f.Opcode) { // control or reserved, never message payload
 			return nil
 		}
 		frames = append(frames, f)
@@ -64,6 +66,15 @@ func (c *Conn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
 	defer c.di.readLocker.Unlock()
 	f, err := c.di.getFrameFromTCPConn(c.Conn, maxByteLength)
 	return f, err
+}
+
+// writeFrame seals a frame and puts it on the socket, holding writeLocker for
+// the whole write so frames from concurrent senders cannot interleave.
+func (c *Conn) writeFrame(f *Frame) error {
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+	_, err := c.Conn.Write(f.Seal())
+	return err
 }
 
 func (c *Conn) Close() error {

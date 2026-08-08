@@ -3,86 +3,106 @@ package wlgows
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"os"
 	"testing"
 )
 
 /*
-The sentinels are the package's error API: callers switch on them with
-errors.Is. These pin the two properties that make that work — every sentinel is
-a distinct value, and wrapping preserves identity at any depth.
+StandardClosePayloadFor is the table RFC 6455 7.4.1 fixes, so what it pins is
+the split between the three status codes and the errors that get none. The nil
+rows carry the whole point: an error reaching Listen is not evidence that a
+close frame can be sent, or that the connection should be closed.
 */
+func TestStandardClosePayloadFor(t *testing.T) {
+	tests := []struct {
+		name string
+		errs []error
+		want *ClosePayload
+	}{
+		{"a frame broke the framing rules", []error{
+			ErrReservedBitsSet,
+			ErrFrameNotMasked,
+			ErrFrameMasked,
+			ErrControlFrameFragmented,
+			ErrControlFramePayloadTooLong,
+			ErrContinuationFrameWithoutMsg,
+			ErrDataFrameDuringMsg,
+			ErrInvalidCloseStatusCode,
+			ErrClosePayloadTooShort,
+		}, &ClosePayload{StatusCode: CloseProtocolError}},
 
-func allSentinels() map[string]error {
-	return map[string]error{
-		"ErrFrameByteLengthExceeded":         ErrFrameByteLengthExceeded,
-		"ErrClientRequestHasSet":             ErrClientRequestHasSet,
-		"ErrHttpMsgFormationInvalid":         ErrHttpMsgFormationInvalid,
-		"ErrHttpMethodNotAllowed":            ErrHttpMethodNotAllowed,
-		"ErrHttpProtocolOrVersionNotAllowed": ErrHttpProtocolOrVersionNotAllowed,
-		"ErrHttpSecWebSocketKeyHeaderNotSet": ErrHttpSecWebSocketKeyHeaderNotSet,
-		"ErrHttpConnectionHeaderNotUpgrade":  ErrHttpConnectionHeaderNotUpgrade,
-		"ErrHttpUpgradeHeaderNotWebsocket":   ErrHttpUpgradeHeaderNotWebsocket,
-		"ErrHttpRequestHasResponse":          ErrHttpRequestHasResponse,
+		{"the payload did not match its opcode", []error{
+			ErrInvalidUTF8,
+		}, &ClosePayload{StatusCode: CloseInvalidFramePayloadData}},
+
+		{"a limit the caller set was passed", []error{
+			ErrFrameByteLengthExceeded,
+			ErrMsgFrameCountExceeded,
+		}, &ClosePayload{StatusCode: CloseMessageTooBig}},
+
+		// The connection is already gone, so there is nothing to send it. 7.4.1
+		// names this 1006 and forbids 1006 on the wire.
+		{"the connection failed", []error{
+			io.EOF,
+			io.ErrUnexpectedEOF,
+			os.ErrDeadlineExceeded,
+			net.ErrClosed,
+		}, nil},
+
+		// Returned before Listen reads anything. ErrListenerIsListening leaves a
+		// healthy connection in another goroutine's hands.
+		{"the caller misused the Listener", []error{
+			ErrListenerConnIsNil,
+			ErrListenerIsListening,
+		}, nil},
+
+		// A custom net.Conn or a wrapping layer can return anything at all
+		// through GetNextFrame. Guessing a status code would blame the peer for
+		// something nothing here can attribute to them.
+		{"an error this package has never seen", []error{
+			errors.New("XXXXX"),
+			fmt.Errorf("read failed: %w", errors.New("YYYYY")),
+		}, nil},
+
+		{"nothing failed", []error{nil}, nil},
 	}
-}
 
-func TestSentinelsAreNonNilWithAMessage(t *testing.T) {
-	for name, sentinel := range allSentinels() {
-		if sentinel == nil {
-			t.Errorf("%s is nil", name)
-			continue
-		}
-		if sentinel.Error() == "" {
-			t.Errorf("%s has an empty message", name)
-		}
-	}
-}
-
-// A duplicated variable would alias two names onto one value and make errors.Is
-// answer true for the wrong one.
-func TestSentinelsAreDistinct(t *testing.T) {
-	for nameA, a := range allSentinels() {
-		for nameB, b := range allSentinels() {
-			if nameA == nameB {
-				continue
-			}
-			if errors.Is(a, b) {
-				t.Errorf("%s and %s are the same error value", nameA, nameB)
-			}
-		}
-	}
-}
-
-// The whole point of the redesign: context in the message, identity preserved.
-func TestSentinelSurvivesWrapping(t *testing.T) {
-	for name, sentinel := range allSentinels() {
-		t.Run(name, func(t *testing.T) {
-			once := fmt.Errorf("layer one: %w", sentinel)
-			twice := fmt.Errorf("layer two: %w", once)
-
-			if !errors.Is(once, sentinel) {
-				t.Error("errors.Is failed through one layer")
-			}
-			if !errors.Is(twice, sentinel) {
-				t.Error("errors.Is failed through two layers")
-			}
-			// The context has to actually reach the message, or wrapping bought
-			// nothing over returning the sentinel bare.
-			if got := twice.Error(); got == sentinel.Error() {
-				t.Errorf("wrapped message lost its context: %q", got)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, err := range testCase.errs {
+				got := StandardClosePayloadFor(err)
+				switch {
+				case got == nil && testCase.want == nil:
+				case got == nil || testCase.want == nil:
+					t.Errorf("StandardClosePayloadFor(%v) = %+v, want %+v", err, got, testCase.want)
+				case *got != *testCase.want:
+					t.Errorf("StandardClosePayloadFor(%v) = %+v, want %+v", err, *got, *testCase.want)
+				}
 			}
 		})
 	}
 }
 
-// Comparing with == instead of errors.Is is the trap this design introduces:
-// what a caller receives is the wrapper, never the sentinel itself.
-func TestWrappedErrorIsNotEqualToTheSentinel(t *testing.T) {
-	wrapped := fmt.Errorf("context: %w", ErrHttpMethodNotAllowed)
-	if wrapped == ErrHttpMethodNotAllowed {
-		t.Error("a wrapped error must not compare equal with ==")
+/*
+Nothing in the package returns a bare sentinel — every one arrives wrapped with
+%w, sometimes twice. StandardClosePayloadFor is useless if it only matches the bare
+value.
+*/
+func TestStandardClosePayloadForWrapped(t *testing.T) {
+	wrapped := fmt.Errorf("listen: %w", fmt.Errorf("frame 3: %w", ErrInvalidUTF8))
+
+	got := StandardClosePayloadFor(wrapped)
+	if got == nil || got.StatusCode != CloseInvalidFramePayloadData {
+		t.Fatalf("StandardClosePayloadFor(%v) = %+v, want %d", wrapped, got, CloseInvalidFramePayloadData)
 	}
-	if !errors.Is(wrapped, ErrHttpMethodNotAllowed) {
-		t.Error("errors.Is is the supported comparison and it failed")
+}
+
+// The caller owns what the peer is told, so nothing is filled in for them.
+func TestStandardClosePayloadForLeavesReasonEmpty(t *testing.T) {
+	got := StandardClosePayloadFor(ErrReservedBitsSet)
+	if got.Reason != "" {
+		t.Errorf("Reason = %q, want empty", got.Reason)
 	}
 }
