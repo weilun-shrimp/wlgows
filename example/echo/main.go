@@ -26,6 +26,10 @@ const (
 	// Armed before each frame read. It fires when no bytes arrive, so it does
 	// not detect a peer that sends data while ignoring pings.
 	frameReadTimeout = 60 * time.Second
+
+	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
+	// deciding a silent peer is gone would be a deadline of our own.
+	pingInterval = 30 * time.Second
 )
 
 func main() {
@@ -106,6 +110,10 @@ func handleConn(conn *wlgows.ServerConn) {
 	}
 
 	listener.SetConfig(config)
+
+	// Answers the peer's pings by itself; this asks the peer in turn. It ends
+	// when the connection does, so nothing here has to stop it.
+	go conn.StartPingLoop(pingInterval, nil)
 
 	// Blocks until a read fails, a frame breaks a rule, or a hook pauses it.
 	// nil means PauseListen was called — here only the close and unknown hooks

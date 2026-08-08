@@ -28,6 +28,10 @@ const (
 
 	// Armed before each frame read, and only fires when no bytes arrive at all.
 	frameReadTimeout = 60 * time.Second
+
+	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
+	// deciding a silent peer is gone would be a deadline of our own.
+	pingInterval = 30 * time.Second
 )
 
 func main() {
@@ -95,6 +99,10 @@ func main() {
 	}
 
 	listener.SetConfig(config)
+
+	// Answers the server's pings by itself; this asks the server in turn. It
+	// ends when the connection does, so nothing here has to stop it.
+	go conn.StartPingLoop(pingInterval, nil)
 
 	go func() { // read from the server
 		defer stop()

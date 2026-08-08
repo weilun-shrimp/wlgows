@@ -47,6 +47,10 @@ const (
 	maxMsgPayloadByteLen = 2 * 1024 * 1024 * 1024 // 2 GB
 
 	frameReadTimeout = 60 * time.Second
+
+	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
+	// deciding a silent peer is gone would be a deadline of our own.
+	pingInterval = 30 * time.Second
 )
 
 func main() {
@@ -146,6 +150,11 @@ func handleConn(conn *wlgows.ServerConn) {
 	}
 
 	listener.SetConfig(config)
+
+	// A stream can be quiet for a long time between chunks, so the heartbeat
+	// runs beside it — 5.4 lets a control frame through mid message, and
+	// writeLocker keeps it from cutting into a fragment.
+	go conn.StartPingLoop(pingInterval, nil)
 
 	if err := listener.Listen(); err != nil {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
