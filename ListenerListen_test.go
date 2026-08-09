@@ -215,6 +215,27 @@ func (conn *fakeListenerConn) SetReadDeadline(t time.Time) error {
 }
 
 /*
+fakeListenFramesConn is the read side for the tests below, and nothing else. A
+read hands back whatever the test sent, and pauseDuringRead runs inside the read
+— the one moment a pause can meet the read error it caused, since a pause
+already waiting is caught before a read even starts.
+*/
+type fakeListenFramesConn struct {
+	frame           *Frame
+	err             error
+	pauseDuringRead func()
+}
+
+func (conn *fakeListenFramesConn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
+	if conn.pauseDuringRead != nil {
+		conn.pauseDuringRead()
+	}
+	return conn.frame, conn.err
+}
+
+func (conn *fakeListenFramesConn) SetReadDeadline(t time.Time) error { return nil }
+
+/*
 listenFrames is the read loop, so these drive it with every step stubbed: what
 it reads, what it validates, what it routes, and when it gives up.
 
@@ -248,6 +269,46 @@ func TestListenerListenFrames(t *testing.T) {
 		}
 		if len(conn.limits) != 0 {
 			t.Errorf("read %d times after being paused", len(conn.limits))
+		}
+	})
+
+	/*
+		A pause and a failed read are usually the same event — closing the
+		connection is what wakes the read — so both come back joined rather than
+		one hiding the other.
+	*/
+	t.Run("a pause joins the read error it caused", func(t *testing.T) {
+		readErr := errors.New("use of closed network connection")
+		pauseErr := errors.New("shutting down")
+		pauseChan := make(chan error, 1)
+		conn := &fakeListenFramesConn{err: readErr}
+		conn.pauseDuringRead = func() { // PauseListen, mirrored
+			pauseChan <- pauseErr
+			close(pauseChan)
+		}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+
+		err := l.listenFrames(pauseChan, workingDI())
+
+		if !errors.Is(err, pauseErr) {
+			t.Errorf("err = %v, want the pause reason in it", err)
+		}
+		if !errors.Is(err, readErr) {
+			t.Errorf("err = %v, want the read error in it too", err)
+		}
+	})
+
+	// Join drops nils, so a pause with nothing to report leaves the socket's own
+	// error rather than turning a dead connection into a clean stop.
+	t.Run("a nil pause leaves the read error alone", func(t *testing.T) {
+		readErr := errors.New("connection reset")
+		pauseChan := make(chan error, 1)
+		conn := &fakeListenFramesConn{err: readErr}
+		conn.pauseDuringRead = func() { close(pauseChan) } // PauseListen(nil)
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+
+		if err := l.listenFrames(pauseChan, workingDI()); !errors.Is(err, readErr) {
+			t.Errorf("err = %v, want %v", err, readErr)
 		}
 	})
 

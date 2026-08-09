@@ -300,11 +300,17 @@ must call `PauseListen`, or a message arriving after the close will still reach
 
 ## Errors
 
-`Listen` returns `nil` in exactly one case: `PauseListen(nil)`. Pause with an
-error instead and that is what comes back, so a run ended by your own code says
-why — a shutdown signal, a deadline your own timer kept, a rule this package
-does not know. Whoever pauses first wins; a second pause is dropped rather than
-overwriting the reason the run ended.
+`Listen` returns `nil` when `PauseListen(nil)` ended a run that had nothing else
+go wrong. Pause with an error instead and that is what comes back, so a run ended
+by your own code says why — a shutdown signal, a deadline your own timer kept, a
+rule this package does not know. Whoever pauses first wins; a second pause is
+dropped rather than overwriting the reason the run ended.
+
+A pause and a failed read are often the same event, since closing the connection
+is what wakes a parked read. Those come back **joined**, so `errors.Is` finds
+either the reason you passed or the socket's own error. A nil pause leaves just
+the read error — which is why a non-nil return does not always mean the peer or
+the protocol was at fault.
 
 Those are yours, and `StandardClosePayloadFor` will not recognise them: it
 answers for the protocol's errors and returns nil for everything else, so an

@@ -493,8 +493,9 @@ if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 ```
 
 `nil` 表示「無從歸責」，不是「請關閉連線」。你自己的 error 也會走到這裡 ——
-`PauseListen(err)` 會結束一次執行，而 `Listen` 就回傳它 —— 一樣會拿到 `nil`，因為
-這個 package 沒辦法替它不認識的規則作答。要的話請自己先對應。見
+`PauseListen(err)` 會結束一次執行，而 `Listen` 就回傳它；如果是關閉連線結束了那次
+讀取，它還會和 socket 自己的 error 合併回來 —— 一樣會拿到 `nil`，因為這個 package
+沒辦法替它不認識的規則作答。要的話請自己先對應。見
 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md) 的 Errors 章節。
 
 ## Testing

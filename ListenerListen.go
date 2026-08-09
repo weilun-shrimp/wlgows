@@ -1,6 +1,9 @@
 package wlgows
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 /*
 Listen reads frames and routes them to the hooks, blocking until a read fails, a
@@ -11,6 +14,11 @@ had nothing to report, and anything else is theirs rather than the protocol's �
 a shutdown signal, a deadline your own timer kept, a rule this package does not
 know about. Read errors and protocol errors come back the same way they always
 did.
+
+A pause and a failed read are often one event — closing the connection is what
+wakes the read — so those two come back joined, and errors.Is finds either. A nil
+pause leaves just the read error, since errors.Join drops nils: nil means the run
+ended as asked and nothing else went wrong.
 
 Every return leaves the connection open — see the type comment. A returned error
 is a reason to close, never a sign that Listen already did.
@@ -99,11 +107,15 @@ type listenFramesDI struct {
 }
 
 /*
-listenFrames reads and routes until a read fails, a frame breaks a rule, or
-pauseChan closes.
+listenFrames reads and routes until a read fails, a frame breaks a rule, or a
+pause arrives.
 
 The pause is only noticed between frames, since the rest of the time this is
-parked inside GetNextFrame.
+parked inside GetNextFrame. A frame already read is validated and routed first —
+the loop finishes what it started, and only then sees the pause.
+
+A read that failed is the one place the two compete, and there they are joined:
+the caller's reason and the socket's, both reachable with errors.Is.
 */
 func (l *Listener) listenFrames(pauseChan <-chan error, di listenFramesDI) error {
 	for {
@@ -125,6 +137,16 @@ func (l *Listener) listenFrames(pauseChan <-chan error, di listenFramesDI) error
 
 		f, err := l.conn.GetNextFrame(di.nextFrameByteLimit())
 		if err != nil {
+			select {
+			case pauseErr := <-pauseChan:
+				// A pause and the read error it caused are usually one event:
+				// closing the connection is what woke the read. Joining them
+				// keeps the caller's reason without hiding what the socket did,
+				// and errors.Is finds either. A nil pause leaves just the read
+				// error, since Join drops nils.
+				return errors.Join(pauseErr, err)
+			default:
+			}
 			return err
 		}
 		if err := di.validateFrame(f); err != nil {
@@ -144,6 +166,11 @@ is listening, where it does nothing at all — including with the error.
 Whoever pauses first is what Listen returns. A second pause finds the claim
 already released and is dropped, error and all, rather than overwriting the
 reason the run actually ended.
+
+err may not come back alone. Closing the connection is what wakes a parked read,
+so a pause and the read error it caused are often one event, and Listen returns
+them joined — errors.Is finds either. A hook's error is not joined: a frame that
+broke a rule is what Listen reports, since a pause cannot make it conforming.
 
 The pause is only noticed between frames, because the loop spends its time
 parked inside GetNextFrame. On a silent peer this returns at once while the read

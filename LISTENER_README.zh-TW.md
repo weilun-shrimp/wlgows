@@ -285,10 +285,16 @@ close 之後才到的 message 仍然會走進 `Text` 或 `Binary`。
 
 ## Errors
 
-`Listen` 只有一種情況會回 `nil`：`PauseListen(nil)`。改成帶一個 error 進去，回來
-的就是它，所以由你自己的程式結束的執行，會說得出原因 —— 一個關機訊號、一個你自己
-的計時器守著的 deadline、一條這個 package 不認識的規則。誰先 pause 誰算數；第二個
-pause 會被丟掉，而不是覆蓋掉這次執行真正結束的原因。
+`Listen` 回 `nil` 的情況是：`PauseListen(nil)` 結束了一次執行，而且沒有別的事出
+錯。改成帶一個 error 進去，回來的就是它，所以由你自己的程式結束的執行，會說得出原
+因 —— 一個關機訊號、一個你自己的計時器守著的 deadline、一條這個 package 不認識的
+規則。誰先 pause 誰算數；第二個 pause 會被丟掉，而不是覆蓋掉這次執行真正結束的原
+因。
+
+pause 和一個失敗的讀取常常是同一件事，因為把連線關掉正是喚醒卡住的讀取的方式。這
+兩者會**合併**回傳，所以 `errors.Is` 找得到你傳進去的原因，也找得到 socket 自己的
+error。nil 的 pause 則只留下讀取的 error —— 這也是為什麼「回傳不是 nil」並不一定
+代表是對端或協定的錯。
 
 那些是你的東西，`StandardClosePayloadFor` 認不得：它只替協定本身的 error 作答，其
 餘一律回 nil，所以你自己發明的 error 會落在下面的第 4 類，除非你先自己對應。
