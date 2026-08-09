@@ -1,8 +1,17 @@
+**English** · [繁體中文](./README.zh-TW.md)
+
 # WLGOWS
 
-A WebSocket library for Go that works in frames, not abstractions. Server and
-client, manual handshake, and every rule RFC 6455 puts on you kept where you can
-see it.
+A simple, intuitive and powerful WebSocket library for Go — quick to start, and
+honest about the protocol underneath.
+
+Paste the Quick Start below and you have a working echo server: one constructor,
+one hook, and `conn.NewStandardListener()` answering ping, pong and close for
+you. When you need more, it is all still there — stream a message larger than
+memory, take every data frame yourself, ping on your own schedule, or build and
+send a frame by hand. Nothing is hidden, because it works in frames rather than
+abstractions: server and client, manual handshake, and every rule RFC 6455 puts
+on you kept where you can see it.
 
 ## Features
 
@@ -19,7 +28,7 @@ see it.
 ## Contents
 
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
-- [Examples](#examples) — three servers and a client, ready to run
+- [Examples](#examples) — three echo servers, a client, and a streaming pair
 - [Coming from v2](#coming-from-v2)
 - [Design](#design)
 - [Reading](#reading) — `Listener`, or one frame at a time
@@ -179,8 +188,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 ## Examples
 
-Three servers and one client. The servers are the same echo program reached
-three different ways, so the client drives any of them:
+Six. Three servers are the same echo program reached three different ways, so
+the interactive client drives any of them, and the streaming pair drives itself.
 
 | Example | |
 |---|---|

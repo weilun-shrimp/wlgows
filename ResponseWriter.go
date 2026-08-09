@@ -91,6 +91,13 @@ func (w *ResponseWriter) DeclineByError(err error) {
 	case errors.Is(err, ErrHttpProtocolOrVersionNotAllowed):
 		w.WriteHeader(http.StatusHTTPVersionNotSupported)
 
+	// 4.4: the answer names the version this package speaks, so a client on an
+	// older draft can retry rather than guess.
+	case errors.Is(err, ErrHttpSecWebSocketVersionNotSupported):
+		w.WriteHeader(http.StatusUpgradeRequired)
+		w.Header().Add("Sec-WebSocket-Version", "13")
+		w.Write([]byte(err.Error()))
+
 	case errors.Is(err, ErrHttpSecWebSocketKeyHeaderNotSet),
 		errors.Is(err, ErrHttpConnectionHeaderNotUpgrade),
 		errors.Is(err, ErrHttpUpgradeHeaderNotWebsocket):

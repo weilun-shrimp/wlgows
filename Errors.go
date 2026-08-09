@@ -145,7 +145,14 @@ var (
 	ErrHttpSecWebSocketKeyHeaderNotSet = errors.New("Sec-WebSocket-Key header is not set")
 	ErrHttpConnectionHeaderNotUpgrade  = errors.New("Connection header is not Upgrade")
 	ErrHttpUpgradeHeaderNotWebsocket   = errors.New("Upgrade header is not websocket")
-	ErrHttpRequestHasResponse          = errors.New("http request already has a response")
+
+	// ErrHttpSecWebSocketVersionNotSupported is a handshake request whose
+	// Sec-WebSocket-Version is missing or is not 13. RFC 6455 4.2.1 requires the
+	// header and fixes the value at 13; 4.4 has the server answer 426 Upgrade
+	// Required, naming the versions it does support, so a client speaking an
+	// older draft learns what to retry with rather than guessing.
+	ErrHttpSecWebSocketVersionNotSupported = errors.New("Sec-WebSocket-Version is not 13")
+	ErrHttpRequestHasResponse              = errors.New("http request already has a response")
 )
 
 /*

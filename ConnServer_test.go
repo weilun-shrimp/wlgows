@@ -16,6 +16,7 @@ func validClientHandShakeRequest(t *testing.T) *http.Request {
 	request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Sec-WebSocket-Version", "13") // 4.2.1 requires it
 	return request
 }
 
@@ -356,6 +357,18 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			name:    "upgrade header not websocket",
 			mutate:  func(r *http.Request) { r.Header.Set("Upgrade", "h2c") },
 			wantErr: ErrHttpUpgradeHeaderNotWebsocket,
+		},
+		// 4.2.1 requires the header and fixes it at 13. A client on an older
+		// draft sends 8 or 7, and gets told which version to retry with.
+		{
+			name:    "missing websocket version",
+			mutate:  func(r *http.Request) { r.Header.Del("Sec-WebSocket-Version") },
+			wantErr: ErrHttpSecWebSocketVersionNotSupported,
+		},
+		{
+			name:    "an older draft version",
+			mutate:  func(r *http.Request) { r.Header.Set("Sec-WebSocket-Version", "8") },
+			wantErr: ErrHttpSecWebSocketVersionNotSupported,
 		},
 	}
 	for _, testCase := range tests {

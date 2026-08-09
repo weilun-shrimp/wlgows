@@ -1,3 +1,5 @@
+**English** · [繁體中文](./LISTENER_README.zh-TW.md)
+
 # Listener
 
 `Listener` runs the read loop for you. It reads frames off a connection,
@@ -130,12 +132,21 @@ sending data while ignoring your pings looks perfectly alive to it.
 safe from any goroutine and from a hook inside the read loop. The connection is
 not in it — that is `NewListener`'s, and fixed for the life of the Listener.
 
-| field | |
-|---|---|
-| `PeerIsClient` | which side the peer is on, which decides masking (5.1) |
-| `MaxMsgPayloadByteLen` | payload budget for one message |
-| `MaxMsgFrameCount` | how many frames one message may arrive in |
-| `FrameReadTimeout` | per frame, armed before each read |
+Every item, and what leaving it out means:
+
+| item | type | zero value | |
+|---|---|---|---|
+| `PeerIsClient` | `bool` | the peer is a **server** | which side the peer is on, which decides masking (5.1) |
+| `MaxMsgPayloadByteLen` | `uint64` | no limit | payload budget for one message, checked at each header |
+| `MaxMsgFrameCount` | `uint64` | no limit | how many frames one message may arrive in |
+| `FrameReadTimeout` | `time.Duration` | no timeout | per frame, armed before each read |
+| `Ping` | `func(*Frame)` | frames dropped | [5.5.2](#hooks): answer with a pong echoing the payload |
+| `Pong` | `func(*Frame)` | frames dropped | [5.5.3](#hooks): MUST NOT answer — nil is the conforming setting |
+| `Close` | `func(*Frame)` | frames dropped | [5.5.1](#hooks): answer with a close, then `PauseListen` |
+| `Text` | `func(Frames)` | messages dropped | a whole message, already checked as UTF-8 |
+| `Binary` | `func(Frames)` | messages dropped | a whole message, arbitrary bytes |
+| `Data` | `func(*Frame)` | `Text`/`Binary` assemble instead | [each data frame raw](#hooks), nothing retained |
+| `Unknown` | `func(*Frame)` | frames dropped | [5.2](#hooks) reserved opcode: answer 1002, then stop |
 
 **All of it, every time.** What you leave out is set to its zero value, not left
 alone, so changing one thing means reading the rest back first:
@@ -159,8 +170,24 @@ refuses every frame a client sends.
 payload in a 10 byte header, and without a limit that claim becomes a 10 GB
 allocation before a single payload byte arrives.
 
-Each item carries its own detail — what the zero value means, which frames it
-covers, and how to pick a number:
+**Picking `MaxMsgFrameCount`.** You do not control how the peer fragments, so
+start from the smallest fragment you are willing to accept:
+
+	MaxMsgFrameCount = MaxMsgPayloadByteLen / smallest fragment expected
+
+A 10 MB budget arriving in 4 KB fragments is 2560 frames, so 4000 leaves room.
+Err high: too high only weakens a bound on memory `MaxMsgPayloadByteLen` already
+caps, while too low refuses messages a conforming peer was entitled to send, and
+you will not see why. It exists because an empty continuation frame is dropped
+rather than kept, so it never spends the byte budget — a peer could otherwise
+hold a message open forever with frames that cost nothing.
+
+**With `Data` set, size the byte budget for the whole stream**, not one frame:
+it is still spent across the message, and nothing is retained between frames.
+See the `Data` part of [Hooks](#hooks) for what that costs you.
+
+Each item carries its own detail in full — which frames it covers, and the
+reasoning behind the numbers:
 
 ```bash
 go doc github.com/weilun-shrimp/wlgows/v3.ListenerConfig

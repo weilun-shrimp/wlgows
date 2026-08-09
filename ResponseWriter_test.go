@@ -154,6 +154,7 @@ func TestResponseWriterDeclineByError(t *testing.T) {
 		{"websocket key not set", ErrHttpSecWebSocketKeyHeaderNotSet, http.StatusBadRequest},
 		{"connection not upgrade", ErrHttpConnectionHeaderNotUpgrade, http.StatusBadRequest},
 		{"upgrade not websocket", ErrHttpUpgradeHeaderNotWebsocket, http.StatusBadRequest},
+		{"websocket version not 13", ErrHttpSecWebSocketVersionNotSupported, http.StatusUpgradeRequired},
 		{"an error from outside this package", errors.New("something else"), http.StatusInternalServerError},
 		{"nil", nil, http.StatusInternalServerError},
 	}
@@ -165,6 +166,21 @@ func TestResponseWriterDeclineByError(t *testing.T) {
 				t.Errorf("statusCode = %d, want %d", writer.statusCode, testCase.want)
 			}
 		})
+	}
+}
+
+/*
+4.4 asks a 426 to name the versions the server does speak, so a client on an
+older draft learns what to retry with instead of guessing. The status alone
+would leave it no better off.
+*/
+func TestResponseWriterDeclineByErrorVersionNamesThirteen(t *testing.T) {
+	writer := NewResponseWriter()
+
+	writer.DeclineByError(ErrHttpSecWebSocketVersionNotSupported)
+
+	if got := writer.Header().Get("Sec-WebSocket-Version"); got != "13" {
+		t.Errorf("Sec-WebSocket-Version = %q, want 13", got)
 	}
 }
 

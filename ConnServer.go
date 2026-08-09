@@ -124,10 +124,12 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 	if val := strings.ToLower(client_request.Header.Get("Upgrade")); val != "websocket" {
 		return fmt.Errorf("validate handshake: Upgrade is %q: %w", val, ErrHttpUpgradeHeaderNotWebsocket)
 	}
-	// 13 is option for your app, but in general, we set it in 13
-	// if client_header["Sec-WebSocket-Version"] != "13" {
-	// 	return client_header, errors.New("Sec-WebSocket-Version is not set \"13\" in client handshake header for websocket")
-	// }
+	// 4.2.1: the header is required and 13 is the only version RFC 6455 defines.
+	// Missing and wrong are the same answer — a client that sends neither is
+	// speaking a draft this package does not implement.
+	if val := client_request.Header.Get("Sec-WebSocket-Version"); val != "13" {
+		return fmt.Errorf("validate handshake: Sec-WebSocket-Version is %q: %w", val, ErrHttpSecWebSocketVersionNotSupported)
+	}
 	return nil
 }
 
