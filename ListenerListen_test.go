@@ -16,20 +16,20 @@ claimListen and listenFrames actually do is tested where they live.
 func TestListenerListen(t *testing.T) {
 	t.Run("order", func(t *testing.T) {
 		var steps []string
-		claimed := make(chan struct{})
-		var looped <-chan struct{}
+		claimed := make(chan error, 1)
+		var looped <-chan error
 
 		err := (&Listener{configLocker: &sync.Mutex{}}).listen(listenDI{
-			claimListen: func() (chan struct{}, error) {
+			claimListen: func() (chan error, error) {
 				steps = append(steps, "claimListen")
 				return claimed, nil
 			},
-			listenFrames: func(pauseChan <-chan struct{}) error {
+			listenFrames: func(pauseChan <-chan error) error {
 				steps = append(steps, "listenFrames")
 				looped = pauseChan
 				return nil
 			},
-			pauseListen: func() { steps = append(steps, "pauseListen") },
+			pauseListen: func(error) { steps = append(steps, "pauseListen") },
 		})
 
 		if err != nil {
@@ -52,9 +52,9 @@ func TestListenerListen(t *testing.T) {
 		var steps []string
 
 		err := (&Listener{configLocker: &sync.Mutex{}}).listen(listenDI{
-			claimListen:  func() (chan struct{}, error) { return nil, want },
-			listenFrames: func(<-chan struct{}) error { steps = append(steps, "listenFrames"); return nil },
-			pauseListen:  func() { steps = append(steps, "pauseListen") },
+			claimListen:  func() (chan error, error) { return nil, want },
+			listenFrames: func(<-chan error) error { steps = append(steps, "listenFrames"); return nil },
+			pauseListen:  func(error) { steps = append(steps, "pauseListen") },
 		})
 
 		if !errors.Is(err, want) {
@@ -73,9 +73,9 @@ func TestListenerListen(t *testing.T) {
 		released := false
 
 		err := (&Listener{configLocker: &sync.Mutex{}}).listen(listenDI{
-			claimListen:  func() (chan struct{}, error) { return make(chan struct{}), nil },
-			listenFrames: func(<-chan struct{}) error { return want },
-			pauseListen:  func() { released = true },
+			claimListen:  func() (chan error, error) { return make(chan error, 1), nil },
+			listenFrames: func(<-chan error) error { return want },
+			pauseListen:  func(error) { released = true },
 		})
 
 		if !errors.Is(err, want) {
@@ -120,7 +120,7 @@ func TestListenerClaimListen(t *testing.T) {
 
 	// pauseChan being set is what says a run already has the Listener.
 	t.Run("already listening", func(t *testing.T) {
-		running := make(chan struct{})
+		running := make(chan error, 1)
 		locker := &fakeLocker{}
 		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: running, listenLocker: locker}
 
@@ -240,11 +240,30 @@ func TestListenerListenFrames(t *testing.T) {
 		conn := &fakeListenerConn{getNextFrameErr: drained}
 		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
-		pauseChan := make(chan struct{})
+		pauseChan := make(chan error, 1)
 		close(pauseChan)
 
 		if err := l.listenFrames(pauseChan, workingDI()); err != nil {
 			t.Errorf("err = %v, want nil", err)
+		}
+		if len(conn.limits) != 0 {
+			t.Errorf("read %d times after being paused", len(conn.limits))
+		}
+	})
+
+	// A pause carries the pauser's reason, which is what the run returns instead
+	// of nil — the whole point of the channel holding an error.
+	t.Run("pauseChan carrying an error", func(t *testing.T) {
+		want := errors.New("shutting down")
+		conn := &fakeListenerConn{getNextFrameErr: drained}
+		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+
+		pauseChan := make(chan error, 1)
+		pauseChan <- want
+		close(pauseChan)
+
+		if err := l.listenFrames(pauseChan, workingDI()); !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
 		}
 		if len(conn.limits) != 0 {
 			t.Errorf("read %d times after being paused", len(conn.limits))
@@ -263,7 +282,7 @@ func TestListenerListenFrames(t *testing.T) {
 		di.validateFrame = func(*Frame) error { steps = append(steps, "validateFrame"); return nil }
 		di.routeFrame = func(*Frame) error { steps = append(steps, "routeFrame"); return nil }
 
-		if err := l.listenFrames(make(chan struct{}), di); !errors.Is(err, drained) {
+		if err := l.listenFrames(make(chan error, 1), di); !errors.Is(err, drained) {
 			t.Fatalf("err = %v, want drained", err)
 		}
 		want := "validateFrame,routeFrame,validateFrame,routeFrame"
@@ -281,7 +300,7 @@ func TestListenerListenFrames(t *testing.T) {
 		di := workingDI()
 		di.nextFrameByteLimit = func() uint64 { return 4242 }
 
-		l.listenFrames(make(chan struct{}), di)
+		l.listenFrames(make(chan error, 1), di)
 		for _, limit := range conn.limits {
 			if limit != 4242 {
 				t.Errorf("GetNextFrame got %d, want 4242", limit)
@@ -298,7 +317,7 @@ func TestListenerListenFrames(t *testing.T) {
 		di := workingDI()
 		di.timeNow = func() time.Time { return fixed }
 
-		l.listenFrames(make(chan struct{}), di)
+		l.listenFrames(make(chan error, 1), di)
 		if len(conn.deadlines) != 1 {
 			t.Fatalf("SetReadDeadline called %d times, want 1", len(conn.deadlines))
 		}
@@ -313,7 +332,7 @@ func TestListenerListenFrames(t *testing.T) {
 		conn := &fakeListenerConn{getNextFrameErr: drained}
 		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
-		l.listenFrames(make(chan struct{}), workingDI())
+		l.listenFrames(make(chan error, 1), workingDI())
 		if len(conn.deadlines) != 0 {
 			t.Errorf("SetReadDeadline called %d times, want 0", len(conn.deadlines))
 		}
@@ -348,7 +367,7 @@ func TestListenerListenFrames(t *testing.T) {
 				l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 				l.config = ListenerConfig{FrameReadTimeout: time.Second}
 
-				if err := l.listenFrames(make(chan struct{}), di); !errors.Is(err, want) {
+				if err := l.listenFrames(make(chan error, 1), di); !errors.Is(err, want) {
 					t.Errorf("err = %v, want %v", err, want)
 				}
 			})
@@ -362,16 +381,27 @@ caller and a missed clear leaves the Listener claimed forever. Neither shows up
 as a wrong answer, which is what the counting Locker is for.
 */
 func TestListenerPauseListen(t *testing.T) {
-	t.Run("closes and clears pauseChan", func(t *testing.T) {
-		pauseChan := make(chan struct{})
+	t.Run("hands over the error, closes and clears pauseChan", func(t *testing.T) {
+		want := errors.New("shutting down")
+		pauseChan := make(chan error, 1)
 		locker := &fakeLocker{}
 		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: locker}
 
-		var closed []chan struct{}
-		l.pauseListen(pauseListenDI{
-			closeChan: func(c chan struct{}) { closed = append(closed, c) },
+		var closed []chan error
+		l.pauseListen(want, pauseListenDI{
+			closeChan: func(c chan error) { closed = append(closed, c) },
 		})
 
+		// The send comes before the close, so a run still parked in a read finds
+		// the error waiting rather than only a closed channel.
+		select {
+		case got := <-pauseChan:
+			if !errors.Is(got, want) {
+				t.Errorf("the run was handed %v, want %v", got, want)
+			}
+		default:
+			t.Error("nothing was handed to the run")
+		}
 		if len(closed) != 1 || closed[0] != pauseChan {
 			t.Errorf("closeChan called %d time(s) with the wrong channel", len(closed))
 		}
@@ -385,6 +415,19 @@ func TestListenerPauseListen(t *testing.T) {
 		}
 	})
 
+	// nil is a stop with nothing to report, so the run reads the closed channel
+	// and returns nil — sending would leave a value that says the same thing.
+	t.Run("nil error sends nothing", func(t *testing.T) {
+		pauseChan := make(chan error, 1)
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: &fakeLocker{}}
+
+		l.pauseListen(nil, pauseListenDI{closeChan: func(chan error) {}})
+
+		if len(pauseChan) != 0 {
+			t.Errorf("%d value(s) waiting, want none", len(pauseChan))
+		}
+	})
+
 	// Closing an already closed channel panics, so a nil pauseChan has to be a
 	// no-op — listen defers this on every path out, including ones where
 	// PauseListen already ran.
@@ -393,8 +436,8 @@ func TestListenerPauseListen(t *testing.T) {
 		l := &Listener{configLocker: &sync.Mutex{}, listenLocker: locker}
 
 		closes := 0
-		l.pauseListen(pauseListenDI{
-			closeChan: func(chan struct{}) { closes++ },
+		l.pauseListen(errors.New("dropped"), pauseListenDI{
+			closeChan: func(chan error) { closes++ },
 		})
 
 		if l.pauseChan != nil {
@@ -409,18 +452,25 @@ func TestListenerPauseListen(t *testing.T) {
 		}
 	})
 
+	// Whoever pauses first is what the run returns. The second finds the claim
+	// released, so its error goes nowhere rather than replacing the first.
 	t.Run("twice", func(t *testing.T) {
-		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: make(chan struct{}), listenLocker: &fakeLocker{}}
+		first := errors.New("first")
+		pauseChan := make(chan error, 1)
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: &fakeLocker{}}
 		closes := 0
 		di := pauseListenDI{
-			closeChan: func(c chan struct{}) { closes++; close(c) },
+			closeChan: func(c chan error) { closes++; close(c) },
 		}
 
-		l.pauseListen(di)
-		l.pauseListen(di) // a real second close would panic
+		l.pauseListen(first, di)
+		l.pauseListen(errors.New("second"), di) // a real second close would panic
 
 		if closes != 1 {
 			t.Errorf("closeChan called %d time(s), want 1", closes)
+		}
+		if got := <-pauseChan; !errors.Is(got, first) {
+			t.Errorf("the run was handed %v, want the first pauser's error", got)
 		}
 	})
 }

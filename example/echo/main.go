@@ -116,8 +116,8 @@ func handleConn(conn *wlgows.ServerConn) {
 	go conn.StartPingLoop(pingInterval, nil)
 
 	// Blocks until a read fails, a frame breaks a rule, or a hook pauses it.
-	// nil means PauseListen was called — here only the close and unknown hooks
-	// do that, so it is the ordinary shutdown.
+	// nil means PauseListen(nil) — here only the close and unknown hooks pause,
+	// and neither has anything to report, so it is the ordinary shutdown.
 	if err := listener.Listen(); err != nil {
 		// No payload when no close frame can answer err: a dead socket, or
 		// something this package cannot attribute to the peer.

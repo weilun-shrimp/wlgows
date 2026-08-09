@@ -50,7 +50,7 @@ func TestConnRFC6455PongHook(t *testing.T) {
 func TestConnRFC6455CloseHook(t *testing.T) {
 	conn, sent := hookConn()
 	l := NewListener(conn)
-	l.pauseChan = make(chan struct{}) // a run to release
+	l.pauseChan = make(chan error, 1) // a run to release
 	body := (&ClosePayload{StatusCode: CloseNormalClosure, Reason: "bye"}).Bytes()
 
 	conn.RFC6455CloseHook(l)(&Frame{Opcode: OpcodeClose, FIN: true, PayloadData: body})
@@ -81,7 +81,7 @@ func TestConnRFC6455CloseHook(t *testing.T) {
 func TestConnRFC6455UnknownHook(t *testing.T) {
 	conn, sent := hookConn()
 	l := NewListener(conn)
-	l.pauseChan = make(chan struct{})
+	l.pauseChan = make(chan error, 1)
 
 	conn.RFC6455UnknownHook(l)(&Frame{Opcode: 0xB, FIN: true})
 

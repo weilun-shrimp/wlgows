@@ -107,7 +107,7 @@ func main() {
 	go func() { // read from the server
 		defer stop()
 
-		// nil means PauseListen was called — the Close or Unknown hook above.
+		// nil means PauseListen(nil) — the close or unknown hook above.
 		if err := listener.Listen(); err != nil {
 			if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 				conn.SendClose(payload)

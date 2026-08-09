@@ -496,8 +496,11 @@ if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 }
 ```
 
-`nil` is the absence of an attribution, not an instruction to close. See the
-Errors section of [LISTENER_README.md](./LISTENER_README.md).
+`nil` is the absence of an attribution, not an instruction to close. An error of
+your own reaches here the same way — `PauseListen(err)` ends a run and `Listen`
+returns it — and gets `nil` too, since this package cannot answer for a rule it
+does not know. Map yours before calling. See the Errors section of
+[LISTENER_README.md](./LISTENER_README.md).
 
 ## Testing
 

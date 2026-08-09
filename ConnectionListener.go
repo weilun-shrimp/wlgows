@@ -66,7 +66,7 @@ func (c *Conn) RFC6455CloseHook(l *Listener) func(close_frame *Frame) {
 	return func(close_frame *Frame) {
 		payload, _ := close_frame.GetClosePayload()
 		c.SendClose(payload) // ErrCloseAlreadySent if this side opened the handshake
-		l.PauseListen()
+		l.PauseListen(nil)   // the peer said why in its close payload
 	}
 }
 
@@ -82,6 +82,6 @@ RFC6455CloseHook.
 func (c *Conn) RFC6455UnknownHook(l *Listener) func(unknown_frame *Frame) {
 	return func(unknown_frame *Frame) {
 		c.SendClose(&ClosePayload{StatusCode: CloseProtocolError})
-		l.PauseListen()
+		l.PauseListen(nil)
 	}
 }

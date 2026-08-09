@@ -175,6 +175,10 @@ that the connection is healthy, and it never means "close the connection":
     it reads anything. ErrListenerIsListening means another goroutine holds a
     running Listen, so closing the connection would end a healthy session.
 
+  - An error of your own, handed to PauseListen and returned by Listen. This
+    package cannot answer for a rule it does not know, so map yours before
+    calling if it deserves a close code.
+
   - An error this package has never seen, which a custom net.Conn or a wrapping
     layer can return through GetNextFrame. Guessing 1002 would blame the peer
     for something nothing here can attribute to them. 7.1.1 permits closing with

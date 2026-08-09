@@ -52,18 +52,18 @@ func handleConn(conn *wlgows.ServerConn) {
 		Close: func(f *wlgows.Frame) {
 			payload, _ := f.GetClosePayload() // the Listener already validated it
 			// 5.5.1: answer with a close, whatever you want in it, then stop.
-			listener.PauseListen()
+			listener.PauseListen(nil) // nil: the peer said why, Listen returns nil
 		},
 		Unknown: func(f *wlgows.Frame) {
 			// An opcode 5.2 reserves: close 1002, then stop.
-			listener.PauseListen()
+			listener.PauseListen(errors.New("reserved opcode")) // Listen returns this
 		},
 	})
 
 	// Blocks until a read fails, a frame breaks a rule, or PauseListen is called.
 	switch err := listener.Listen(); {
-	// PauseListen was called. That says nothing about who called it — here the
-	// only callers are the Close and Unknown hooks, so this is a clean shutdown.
+	// PauseListen(nil) — here only the Close hook does that, so the peer closed
+	// and there is nothing to report.
 	case err == nil:
 
 	// Returned before a single byte was read, so the connection is not implicated.
@@ -85,7 +85,7 @@ func handleConn(conn *wlgows.ServerConn) {
 The Listener writes nothing and closes nothing, so every answer above is a
 comment rather than a call: what goes on the wire is yours, and the hooks only
 say when. `PauseListen` is the one thing it does for you there — it ends the run
-so this function can return.
+so this function can return, carrying whatever reason you hand it.
 
 ## Three things it will not do for you
 
@@ -230,12 +230,11 @@ listener.SetConfig(wlgows.ListenerConfig{
 		// bytes, which is why the opcode is worth asking for.
 		if listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
 			// Refuse it — close 1003, or whatever your protocol says.
-			listener.PauseListen()
+			listener.PauseListen(errors.New("peer streamed text"))
 			return
 		}
 		if _, err := out.Write(f.PayloadData); err != nil {
-			log.Println("write:", err)
-			listener.PauseListen()
+			listener.PauseListen(err) // your disk, not the peer's fault
 			return
 		}
 		if f.FIN { // nothing else marks the end
@@ -247,10 +246,11 @@ listener.SetConfig(wlgows.ListenerConfig{
 	},
 	Close: func(f *wlgows.Frame) {
 		// 5.5.1: answer with a close, then stop.
-		listener.PauseListen()
+		listener.PauseListen(nil)
 	},
 })
 
+// Whatever ended it: a read error, a rule broken, or one of the pauses above.
 return listener.Listen()
 ```
 
@@ -273,12 +273,17 @@ must call `PauseListen`, or a message arriving after the close will still reach
 
 ## Errors
 
-`Listen` returns `nil` in exactly one case: `PauseListen` was called. It does
-not say **who** called it. If more than one place in your code pauses — a close
-frame in one, a shutdown signal in another — `nil` cannot tell them apart, and
-recording the reason is yours to do.
+`Listen` returns `nil` in exactly one case: `PauseListen(nil)`. Pause with an
+error instead and that is what comes back, so a run ended by your own code says
+why — a shutdown signal, a deadline your own timer kept, a rule this package
+does not know. Whoever pauses first wins; a second pause is dropped rather than
+overwriting the reason the run ended.
 
-Every other return carries an error. `io.EOF` is not the polite goodbye it
+Those are yours, and `StandardClosePayloadFor` will not recognise them: it
+answers for the protocol's errors and returns nil for everything else, so an
+error you invented lands in group 4 below unless you map it yourself first.
+
+Every other return carries an error this package raised. `io.EOF` is not the polite goodbye it
 looks like: it means the peer dropped the TCP connection **without** a close
 frame, which is what §7.4.1 calls 1006.
 
@@ -351,7 +356,7 @@ the connection* — groups 2 and 4 want a close, group 3 must not get one:
 ```go
 err := listener.Listen()
 switch {
-case err == nil: // PauseListen, nothing to answer
+case err == nil: // PauseListen(nil), nothing to answer
 
 case errors.Is(err, wlgows.ErrListenerConnIsNil),
 	errors.Is(err, wlgows.ErrListenerIsListening):
@@ -374,8 +379,10 @@ the `Unknown` hook untouched, and answering 1002 there is yours to do.
 
 ## Pausing and resuming
 
-`PauseListen` ends the run. It is safe from another goroutine and safe to call
-when nothing is listening.
+`PauseListen(err)` ends the run, and `Listen` returns `err`. Pass nil to stop
+without reporting anything. It is safe from another goroutine and safe to call
+when nothing is listening, where it does nothing at all — including with the
+error.
 
 The pause is only noticed **between frames**, because the loop spends its time
 parked inside `GetNextFrame`. On a silent peer `PauseListen` returns at once

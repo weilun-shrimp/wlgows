@@ -65,7 +65,10 @@ type Listener struct {
 	// the ordering. That is also why NewListener exists: a nil Locker panics on
 	// the first Lock, so the zero Listener is not usable.
 	listenLocker sync.Locker
-	pauseChan    chan struct{}
+	// Buffered by one and carrying whatever PauseListen was given, so the run
+	// returns the pauser's error rather than only the fact of a pause. Cleared
+	// on release, which is what says nothing is running.
+	pauseChan chan error
 }
 
 // ListenerConn is what a Listener reads from: an already handshaken *ServerConn

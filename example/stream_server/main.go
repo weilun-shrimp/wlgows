@@ -24,6 +24,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -113,15 +114,17 @@ func handleConn(conn *wlgows.ServerConn) {
 		// only way to know what is arriving. Text would owe a 5.6 check on the
 		// joined bytes, which is exactly what streaming refuses to hold.
 		if listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
-			fmt.Println("refusing a text stream: 5.6 cannot be checked frame by frame")
 			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseUnsupportedData})
-			listener.PauseListen()
+			// The reason travels out through Listen, so the one place that
+			// reports a stopped connection reports this too.
+			listener.PauseListen(errors.New("peer streamed text: 5.6 cannot be checked frame by frame"))
 			return
 		}
 
 		if _, err := sink.Write(f.PayloadData); err != nil {
-			fmt.Println("write:", err)
-			listener.PauseListen()
+			// Nothing the peer did wrong — our disk. Ending the run with it
+			// beats printing it here and returning nil from Listen.
+			listener.PauseListen(fmt.Errorf("writing %s: %w", outPath, err))
 			return
 		}
 		frameCount++

@@ -68,7 +68,7 @@ func TestListenerIntegration(t *testing.T) {
 				t.Errorf("GetClosePayload: %v", err)
 			}
 			got = append(got, fmt.Sprintf("Close:%d:%s", payload.StatusCode, payload.Reason))
-			listener.PauseListen()
+			listener.PauseListen(nil)
 		},
 	})
 

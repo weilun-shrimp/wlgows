@@ -6,6 +6,12 @@ import "time"
 Listen reads frames and routes them to the hooks, blocking until a read fails, a
 frame breaks a rule, or PauseListen is called.
 
+A pause returns whatever it was given, so nil means someone ended the run and
+had nothing to report, and anything else is theirs rather than the protocol's —
+a shutdown signal, a deadline your own timer kept, a rule this package does not
+know about. Read errors and protocol errors come back the same way they always
+did.
+
 Every return leaves the connection open — see the type comment. A returned error
 is a reason to close, never a sign that Listen already did.
 
@@ -25,7 +31,7 @@ func (l *Listener) Listen() error {
 	return l.listen(listenDI{
 		claimListen: l.claimListen,
 		pauseListen: l.PauseListen,
-		listenFrames: func(pauseChan <-chan struct{}) error {
+		listenFrames: func(pauseChan <-chan error) error {
 			return l.listenFrames(pauseChan, framesDI)
 		},
 	})
@@ -34,9 +40,9 @@ func (l *Listener) Listen() error {
 // listenDI is the two halves listen puts together, so a test can watch it claim
 // before it loops and release however the loop ends.
 type listenDI struct {
-	claimListen  func() (chan struct{}, error)
-	pauseListen  func()
-	listenFrames func(pauseChan <-chan struct{}) error
+	claimListen  func() (chan error, error)
+	pauseListen  func(err error)
+	listenFrames func(pauseChan <-chan error) error
 }
 
 func (l *Listener) listen(di listenDI) error {
@@ -44,7 +50,10 @@ func (l *Listener) listen(di listenDI) error {
 	if err != nil {
 		return err
 	}
-	defer di.pauseListen()
+	// Nothing to report from here: a run ending on its own carries its reason
+	// back as listenFrames' return, and one ending on a pause has already had
+	// the claim released by the pauser.
+	defer di.pauseListen(nil)
 	return di.listenFrames(pauseChan)
 }
 
@@ -56,7 +65,7 @@ Two loops on one connection would each take an arbitrary subset of the frames,
 so the second is refused. pauseChan doubles as the flag saying one is already
 running.
 */
-func (l *Listener) claimListen() (chan struct{}, error) {
+func (l *Listener) claimListen() (chan error, error) {
 	l.listenLocker.Lock()
 	defer l.listenLocker.Unlock()
 
@@ -68,7 +77,7 @@ func (l *Listener) claimListen() (chan struct{}, error) {
 	if l.conn == nil {
 		return nil, ErrListenerConnIsNil
 	}
-	l.pauseChan = make(chan struct{})
+	l.pauseChan = make(chan error, 1) // one error, from whoever pauses first
 
 	// The zero value is a nil slice, which appends and reads as empty just the
 	// same — this only makes "never nil" true literally, so the rest never has
@@ -96,11 +105,11 @@ pauseChan closes.
 The pause is only noticed between frames, since the rest of the time this is
 parked inside GetNextFrame.
 */
-func (l *Listener) listenFrames(pauseChan <-chan struct{}, di listenFramesDI) error {
+func (l *Listener) listenFrames(pauseChan <-chan error, di listenFramesDI) error {
 	for {
 		select {
-		case <-pauseChan:
-			return nil
+		case err := <-pauseChan:
+			return err
 		default:
 		}
 
@@ -128,17 +137,22 @@ func (l *Listener) listenFrames(pauseChan <-chan struct{}, di listenFramesDI) er
 }
 
 /*
-PauseListen ends the read loop. Safe from another goroutine, and safe to call
-when nothing is listening.
+PauseListen ends the read loop, and Listen returns err. Pass nil to stop without
+reporting anything. Safe from another goroutine, and safe to call when nothing
+is listening, where it does nothing at all — including with the error.
+
+Whoever pauses first is what Listen returns. A second pause finds the claim
+already released and is dropped, error and all, rather than overwriting the
+reason the run actually ended.
 
 The pause is only noticed between frames, because the loop spends its time
 parked inside GetNextFrame. On a silent peer this returns at once while the read
 stays blocked; closing the connection is the only thing that unblocks it, and
 that is yours to do.
 */
-func (l *Listener) PauseListen() {
-	l.pauseListen(pauseListenDI{
-		closeChan: func(pauseChan chan struct{}) { close(pauseChan) },
+func (l *Listener) PauseListen(err error) {
+	l.pauseListen(err, pauseListenDI{
+		closeChan: func(pauseChan chan error) { close(pauseChan) },
 	})
 }
 
@@ -149,21 +163,29 @@ type pauseListenDI struct {
 	// close is a builtin, so it cannot be a field value on its own — this wraps
 	// it. Substituting it is how a test sees the close happen without the
 	// channel being closed for real.
-	closeChan func(pauseChan chan struct{})
+	closeChan func(pauseChan chan error)
 }
 
 /*
-pauseListen closes the channel the run is watching and clears it.
+pauseListen hands err to the run, closes the channel it is watching, and clears
+it.
+
+The send comes first and cannot block: the channel holds one error and the loop
+may still be parked in a read, so a value waiting there is what it finds when it
+next looks. Closing after that ends a run that was never given one.
 
 Clearing is what releases the claim, so nil means nothing is running and a
 second call has nothing to do — closing an already closed channel would panic.
 */
-func (l *Listener) pauseListen(di pauseListenDI) {
+func (l *Listener) pauseListen(err error, di pauseListenDI) {
 	l.listenLocker.Lock()
 	defer l.listenLocker.Unlock()
 
 	if l.pauseChan == nil {
 		return
+	}
+	if err != nil {
+		l.pauseChan <- err // buffered by one, and this is the only sender
 	}
 	di.closeChan(l.pauseChan)
 	l.pauseChan = nil
