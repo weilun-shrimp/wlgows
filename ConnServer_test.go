@@ -328,6 +328,29 @@ func TestValidateHandShakeRequest(t *testing.T) {
 		}
 	})
 
+	// 4.1 asks for the token, not the whole field: a client behind a proxy
+	// sends "keep-alive, Upgrade" and is conforming.
+	t.Run("Connection and Upgrade are read as token lists", func(t *testing.T) {
+		lists := []string{"keep-alive, Upgrade", "Upgrade, keep-alive", "Keep-Alive,upgrade"}
+		for _, list := range lists {
+			request := validClientHandShakeRequest(t)
+			request.Header.Set("Connection", list)
+			if err := ValidateHandShakeRequest(request); err != nil {
+				t.Errorf("ValidateHandShakeRequest with Connection %q: %v", list, err)
+			}
+		}
+	})
+
+	t.Run("a field split across two lines", func(t *testing.T) {
+		request := validClientHandShakeRequest(t)
+		request.Header.Del("Connection")
+		request.Header.Add("Connection", "keep-alive")
+		request.Header.Add("Connection", "Upgrade")
+		if err := ValidateHandShakeRequest(request); err != nil {
+			t.Errorf("ValidateHandShakeRequest: %v", err)
+		}
+	})
+
 	tests := []struct {
 		name    string
 		mutate  func(*http.Request)
@@ -353,9 +376,21 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			mutate:  func(r *http.Request) { r.Header.Set("Connection", "keep-alive") },
 			wantErr: ErrHttpConnectionHeaderNotUpgrade,
 		},
+		// A token list is matched token by token, so a value merely containing
+		// "upgrade" is still refused.
+		{
+			name:    "connection header only contains the token as a substring",
+			mutate:  func(r *http.Request) { r.Header.Set("Connection", "keep-alive, no-upgrade") },
+			wantErr: ErrHttpConnectionHeaderNotUpgrade,
+		},
 		{
 			name:    "upgrade header not websocket",
 			mutate:  func(r *http.Request) { r.Header.Set("Upgrade", "h2c") },
+			wantErr: ErrHttpUpgradeHeaderNotWebsocket,
+		},
+		{
+			name:    "upgrade header only contains the token as a substring",
+			mutate:  func(r *http.Request) { r.Header.Set("Upgrade", "websocket2") },
 			wantErr: ErrHttpUpgradeHeaderNotWebsocket,
 		},
 		// 4.2.1 requires the header and fixes it at 13. A client on an older

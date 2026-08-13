@@ -128,16 +128,19 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 	if res.Proto != "HTTP/1.1" {
 		return errors.New("invalid handshake response proto " + res.Proto + ". The valid proto is HTTP/1.1")
 	}
-	if strings.ToLower(res.Header.Get("Connection")) != "upgrade" {
+	// Read as a token list, not compared whole — a server answering
+	// "Connection: keep-alive, Upgrade" is conforming (RFC 7230 3.2.2). See
+	// headerHasToken.
+	if !headerHasToken(res.Header, "Connection", "upgrade") {
 		return fmt.Errorf(
-			"invalid handshake response header Connection %s. The valid value should be Upgrade",
-			res.Header.Get("Connection"),
+			"invalid handshake response header Connection %s. The valid value should contain the Upgrade token",
+			strings.Join(res.Header.Values("Connection"), ", "),
 		)
 	}
-	if strings.ToLower(res.Header.Get("Upgrade")) != "websocket" {
+	if !headerHasToken(res.Header, "Upgrade", "websocket") {
 		return fmt.Errorf(
-			"invalid handshake response header Upgrade %s. The valid value should be websocket",
-			res.Header.Get("Upgrade"),
+			"invalid handshake response header Upgrade %s. The valid value should contain the websocket token",
+			strings.Join(res.Header.Values("Upgrade"), ", "),
 		)
 	}
 	if res.Header.Get("Sec-WebSocket-Accept") == "" {

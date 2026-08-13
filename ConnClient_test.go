@@ -330,6 +330,26 @@ func TestValidateHandShakeResponse(t *testing.T) {
 		}
 	})
 
+	// The server side of the same rule: a response carrying the token among
+	// others is conforming, and refusing it would fail a working connection.
+	t.Run("Connection and Upgrade are read as token lists", func(t *testing.T) {
+		response := validHandShakeResponse(key)
+		response.Header.Set("Connection", "keep-alive, Upgrade")
+		if err := ValidateHandShakeResponse(response, key); err != nil {
+			t.Errorf("ValidateHandShakeResponse: %v", err)
+		}
+	})
+
+	t.Run("a field split across two lines", func(t *testing.T) {
+		response := validHandShakeResponse(key)
+		response.Header.Del("Connection")
+		response.Header.Add("Connection", "keep-alive")
+		response.Header.Add("Connection", "Upgrade")
+		if err := ValidateHandShakeResponse(response, key); err != nil {
+			t.Errorf("ValidateHandShakeResponse: %v", err)
+		}
+	})
+
 	tests := []struct {
 		name    string
 		mutate  func(*http.Response)

@@ -106,6 +106,17 @@ func (sc *ServerConn) ReadRequest() (*http.Request, error) {
 	return req, nil
 }
 
+/*
+ValidateHandShakeRequest checks a client's opening request against RFC 6455 4.1,
+returning the first rule it breaks wrapped around the sentinel for it, which is
+what DeclineByError routes on to pick a status code.
+
+Connection and Upgrade are read as token lists rather than compared whole — see
+headerHasToken. The rest are single values the RFC fixes exactly.
+
+The failing value is reported as it arrived, joined across lines if it came on
+more than one, so a rejected handshake says what the peer actually sent.
+*/
 func ValidateHandShakeRequest(client_request *http.Request) error {
 	// top validation
 	if client_request.Method != "GET" {
@@ -118,11 +129,15 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 	if val := client_request.Header.Get("Sec-WebSocket-Key"); val == "" {
 		return fmt.Errorf("validate handshake: %w", ErrHttpSecWebSocketKeyHeaderNotSet)
 	}
-	if val := strings.ToLower(client_request.Header.Get("Connection")); val != "upgrade" {
-		return fmt.Errorf("validate handshake: Connection is %q: %w", val, ErrHttpConnectionHeaderNotUpgrade)
+	if !headerHasToken(client_request.Header, "Connection", "upgrade") {
+		return fmt.Errorf("validate handshake: Connection is %q: %w",
+			strings.Join(client_request.Header.Values("Connection"), ", "),
+			ErrHttpConnectionHeaderNotUpgrade)
 	}
-	if val := strings.ToLower(client_request.Header.Get("Upgrade")); val != "websocket" {
-		return fmt.Errorf("validate handshake: Upgrade is %q: %w", val, ErrHttpUpgradeHeaderNotWebsocket)
+	if !headerHasToken(client_request.Header, "Upgrade", "websocket") {
+		return fmt.Errorf("validate handshake: Upgrade is %q: %w",
+			strings.Join(client_request.Header.Values("Upgrade"), ", "),
+			ErrHttpUpgradeHeaderNotWebsocket)
 	}
 	// 4.2.1: the header is required and 13 is the only version RFC 6455 defines.
 	// Missing and wrong are the same answer — a client that sends neither is
