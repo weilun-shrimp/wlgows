@@ -4,20 +4,19 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net"
 )
 
-func ReadTCPConn(conn net.Conn, maxLen uint64) ([]byte, error) {
-	return readTCPConn(conn, maxLen, readTCPConnDI{
+func ReadFromReader(r io.Reader, maxLen uint64) ([]byte, error) {
+	return readFromReader(r, maxLen, readFromReaderDI{
 		ioReadFull: io.ReadFull,
 	})
 }
 
-type readTCPConnDI struct {
+type readFromReaderDI struct {
 	ioReadFull func(r io.Reader, buf []byte) (n int, err error)
 }
 
-func readTCPConn(conn net.Conn, maxLen uint64, di readTCPConnDI) ([]byte, error) {
+func readFromReader(r io.Reader, maxLen uint64, di readFromReaderDI) ([]byte, error) {
 	/*
 		Reference: https://zhuanlan.zhihu.com/p/455921908
 		用net包裡原生的conn.Read方法會造成io不同步問題，會發生確實拿到如此多的資料但是因為io阻塞後面read會錯亂
@@ -40,8 +39,8 @@ func readTCPConn(conn net.Conn, maxLen uint64, di readTCPConnDI) ([]byte, error)
 
 	// io.ReadFull
 	bytes := make([]byte, maxLen)
-	_, err := di.ioReadFull(conn, bytes)
-	// fmt.Printf("%+v\n", "readTCPConn n: "+strconv.FormatInt(int64(n), 10))
+	_, err := di.ioReadFull(r, bytes)
+	// fmt.Printf("%+v\n", "readFromReader n: "+strconv.FormatInt(int64(n), 10))
 	if err != nil {
 		return bytes, err
 	}
@@ -49,7 +48,7 @@ func readTCPConn(conn net.Conn, maxLen uint64, di readTCPConnDI) ([]byte, error)
 }
 
 /*
-GetFrameFromTCPConn reads one frame, refusing any whose header declares a
+GetFrameFromReader reads one frame, refusing any whose header declares a
 payload larger than maxByteLength. Pass 0 for no limit.
 
 The check happens after the header is parsed and before the payload is
@@ -61,21 +60,21 @@ Exceeding the limit returns an error wrapping ErrFrameByteLengthExceeded and
 leaves the payload unread, so the stream is desynced and the connection cannot
 be reused — send RFC 6455 close code 1009 and close it.
 */
-func GetFrameFromTCPConn(conn net.Conn, maxByteLength uint64) (*Frame, error) {
-	return getFrameFromTCPConn(conn, maxByteLength, getFrameFromTCPConnDI{
-		readTCPConn: ReadTCPConn,
+func GetFrameFromReader(r io.Reader, maxByteLength uint64) (*Frame, error) {
+	return getFrameFromReader(r, maxByteLength, getFrameFromReaderDI{
+		readFromReader: ReadFromReader,
 	})
 }
 
-type getFrameFromTCPConnDI struct {
-	readTCPConn func(conn net.Conn, maxLen uint64) ([]byte, error)
+type getFrameFromReaderDI struct {
+	readFromReader func(r io.Reader, maxLen uint64) ([]byte, error)
 }
 
-func getFrameFromTCPConn(conn net.Conn, maxByteLength uint64, di getFrameFromTCPConnDI) (*Frame, error) {
+func getFrameFromReader(r io.Reader, maxByteLength uint64, di getFrameFromReaderDI) (*Frame, error) {
 	f := new(Frame)
-	firstSec, err := di.readTCPConn(conn, 2)
+	firstSec, err := di.readFromReader(r, 2)
 	if err != nil {
-		// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn first")
+		// fmt.Printf("%+v\n", "Error GetFrameFromReader first")
 		return f, err
 	}
 	f.FIN = firstSec[0]>>7 == 1
@@ -90,16 +89,16 @@ func getFrameFromTCPConn(conn net.Conn, maxByteLength uint64, di getFrameFromTCP
 
 	switch f.PayloadLength {
 	case 126:
-		extendedPayloadLength, err := di.readTCPConn(conn, 2)
+		extendedPayloadLength, err := di.readFromReader(r, 2)
 		if err != nil {
-			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn PayloadLength 126")
+			// fmt.Printf("%+v\n", "Error GetFrameFromReader PayloadLength 126")
 			return f, err
 		}
 		f.ExtendedPayloadLength = uint64(binary.BigEndian.Uint16(extendedPayloadLength))
 	case 127:
-		extendedPayloadLength, err := di.readTCPConn(conn, 8)
+		extendedPayloadLength, err := di.readFromReader(r, 8)
 		if err != nil {
-			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn PayloadLength 127")
+			// fmt.Printf("%+v\n", "Error GetFrameFromReader PayloadLength 127")
 			return f, err
 		}
 		f.ExtendedPayloadLength = uint64(binary.BigEndian.Uint64(extendedPayloadLength))
@@ -107,14 +106,14 @@ func getFrameFromTCPConn(conn net.Conn, maxByteLength uint64, di getFrameFromTCP
 	}
 
 	if f.Mask {
-		f.MaskingKey, err = di.readTCPConn(conn, 4)
+		f.MaskingKey, err = di.readFromReader(r, 4)
 		if err != nil {
-			// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn maskingKeyByte")
+			// fmt.Printf("%+v\n", "Error GetFrameFromReader maskingKeyByte")
 			return f, err
 		}
 	}
 
-	// Guard before the allocation, never after: readTCPConn's first act is
+	// Guard before the allocation, never after: readFromReader's first act is
 	// make([]byte, maxLen), so by the time it returns the damage is done.
 	if maxByteLength > 0 && f.GetMaxPayloadLength() > maxByteLength {
 		return f, fmt.Errorf(
@@ -123,9 +122,9 @@ func getFrameFromTCPConn(conn net.Conn, maxByteLength uint64, di getFrameFromTCP
 		)
 	}
 
-	f.PayloadData, err = di.readTCPConn(conn, f.GetMaxPayloadLength())
+	f.PayloadData, err = di.readFromReader(r, f.GetMaxPayloadLength())
 	if err != nil {
-		// fmt.Printf("%+v\n", "Error GetFrameFromTCPConn payloadByte")
+		// fmt.Printf("%+v\n", "Error GetFrameFromReader payloadByte")
 		return f, err
 	}
 

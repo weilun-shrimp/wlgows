@@ -23,14 +23,17 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
 const (
@@ -64,22 +67,30 @@ func main() {
 
 	fmt.Println("stream server listening on " + service)
 	for {
-		conn, err := server.Accept()
+		netConn, err := server.Accept()
 		if err != nil {
 			fmt.Println("accept:", err)
 			continue
 		}
-		go handleConn(conn)
+		go handleConn(netConn)
 	}
 }
 
-func handleConn(conn *wlgows.ServerConn) {
-	defer conn.Close()
+func handleConn(netConn net.Conn) {
+	defer netConn.Close()
 
-	if _, err := conn.HandShake(); err != nil {
+	r := bufio.NewReader(netConn)
+	req, err := http.ReadRequest(r)
+	if err != nil {
+		fmt.Println("reading request:", err)
+		return
+	}
+	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}
+
 	fmt.Println("connected:", conn.RemoteAddr())
 
 	out, err := os.Create(outPath)

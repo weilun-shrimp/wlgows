@@ -22,7 +22,8 @@ library 的其他部分 —— 送出、streaming、存活偵測、handshake、l
 
 ## Quick start
 
-`conn` 是一條已經 handshake 完成的 `*wlgows.ServerConn`。這段從頭到尾處理一條連
+`conn` 是一條已經 handshake 完成的 `*wlgows.Conn` —— 怎麼拿到它，見 main README
+的 [`ServerHandShake`](./README.zh-TW.md#從-v3-過來)。這段從頭到尾處理一條連
 線，也涵蓋了 `Listen` 所有可能的回傳方式。`Pong` 是唯一刻意留 nil 的 hook ——
 5.5.3 說收到 pong 時 MUST NOT 回應，而 nil hook 做的正好就是這件事。
 
@@ -30,7 +31,7 @@ library 的其他部分 —— 送出、streaming、存活偵測、handshake、l
 間，或在某個 hook 裡面。
 
 ```go
-func handleConn(conn *wlgows.ServerConn) {
+func handleConn(conn *wlgows.Conn) {
 	defer conn.Close() // 你的責任：Listener 什麼都不會關
 
 	listener := wlgows.NewListener(conn)
@@ -181,7 +182,7 @@ message 一起扣的，而 frame 之間什麼都不留。那代價是什麼，�
 每一項都有自己的完整細節 —— 涵蓋哪些 frame，以及那些數字背後的理由：
 
 ```bash
-go doc github.com/weilun-shrimp/wlgows/v3.ListenerConfig
+go doc github.com/weilun-shrimp/wlgows/v4.ListenerConfig
 ```
 
 ## Hooks

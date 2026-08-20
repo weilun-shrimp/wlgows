@@ -14,8 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/v3"
-	"github.com/weilun-shrimp/wlgows/v3/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v4/example_helpers"
 )
 
 const (
@@ -56,7 +56,7 @@ func main() {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	conn, err := wlgows.HijackFromHttp(w, r)
+	netConn, bufReader, err := wlgows.HijackFromHttp(w)
 	if err != nil {
 		// Still an ordinary response: the hijack failed, so nothing was taken.
 		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
@@ -65,12 +65,15 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	// The only close in this handler. The hooks pause the loop and let this
 	// function return rather than closing underneath it.
-	defer conn.Close()
+	defer netConn.Close()
 
-	if _, err := conn.HandShake(); err != nil {
+	// r is already parsed by net/http, so no read step is needed here.
+	conn, _, err := wlgows.ServerHandShake(netConn, bufReader, r)
+	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}
+
 	fmt.Println("connected:", conn.RemoteAddr())
 
 	// Ping, pong, close and reserved opcodes are answered for you, and masking

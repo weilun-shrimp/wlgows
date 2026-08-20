@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"testing"
@@ -13,7 +14,7 @@ func TestConnSendText(t *testing.T) {
 	t.Run("builds one whole text message", func(t *testing.T) {
 		var got NewFrameConfig
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 		wsConn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) {
 			got = config
 			return NewDataFrame(config)
@@ -39,7 +40,7 @@ func TestConnSendText(t *testing.T) {
 	t.Run("takes the mask from the Conn", func(t *testing.T) {
 		for _, maskSendFrame := range []bool{false, true} {
 			var got NewFrameConfig
-			wsConn := NewConn(newFakeConn(nil), nil, nil, maskSendFrame)
+			wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), maskSendFrame)
 			wsConn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) {
 				got = config
 				return NewDataFrame(config)
@@ -62,7 +63,7 @@ func TestConnSendText(t *testing.T) {
 	t.Run("holds the data lock around the frame write", func(t *testing.T) {
 		dataLocker, frameLocker := &fakeLocker{}, &fakeLocker{}
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 		wsConn.di.dataFramesWriteLocker = dataLocker
 		wsConn.di.writeLocker = frameLocker
 
@@ -97,7 +98,7 @@ func TestConnSendText(t *testing.T) {
 	*/
 	t.Run("refuses a payload that is not valid UTF-8", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 		if err := wsConn.SendText([]byte{0xe4, 0xb8}); !errors.Is(err, ErrInvalidUTF8) {
 			t.Errorf("SendText = %v, want ErrInvalidUTF8", err)
@@ -111,7 +112,7 @@ func TestConnSendText(t *testing.T) {
 	// just refusing anything non ASCII.
 	t.Run("accepts multi byte UTF-8", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 		if err := wsConn.SendText([]byte("中文字")); err != nil {
 			t.Fatalf("SendText: %v", err)
@@ -124,7 +125,7 @@ func TestConnSendText(t *testing.T) {
 	t.Run("propagates a build error with nothing written", func(t *testing.T) {
 		wantErr := errors.New("cannot build")
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 		wsConn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
 
 		if err := wsConn.SendText([]byte("hello")); !errors.Is(err, wantErr) {
@@ -140,7 +141,7 @@ func TestConnSendBinary(t *testing.T) {
 	t.Run("builds one whole binary message", func(t *testing.T) {
 		var got NewFrameConfig
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 		wsConn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) {
 			got = config
 			return NewDataFrame(config)
@@ -167,7 +168,7 @@ func TestConnSendBinary(t *testing.T) {
 	t.Run("takes the mask from the Conn", func(t *testing.T) {
 		for _, maskSendFrame := range []bool{false, true} {
 			var got NewFrameConfig
-			wsConn := NewConn(newFakeConn(nil), nil, nil, maskSendFrame)
+			wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), maskSendFrame)
 			wsConn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) {
 				got = config
 				return NewDataFrame(config)
@@ -185,7 +186,7 @@ func TestConnSendBinary(t *testing.T) {
 	t.Run("holds the data lock around the frame write", func(t *testing.T) {
 		dataLocker, frameLocker := &fakeLocker{}, &fakeLocker{}
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 		wsConn.di.dataFramesWriteLocker = dataLocker
 		wsConn.di.writeLocker = frameLocker
 
@@ -215,7 +216,7 @@ func TestConnSendBinary(t *testing.T) {
 	t.Run("sends bytes SendText refuses", func(t *testing.T) {
 		payload := []byte{0xe4, 0xb8}
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 		if err := wsConn.SendText(payload); !errors.Is(err, ErrInvalidUTF8) {
 			t.Fatalf("SendText = %v, want ErrInvalidUTF8 — the premise of this test", err)
@@ -231,7 +232,7 @@ func TestConnSendBinary(t *testing.T) {
 	t.Run("propagates a build error with nothing written", func(t *testing.T) {
 		wantErr := errors.New("cannot build")
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 		wsConn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
 
 		if err := wsConn.SendBinary([]byte{0x01}); !errors.Is(err, wantErr) {
@@ -250,7 +251,7 @@ program actually takes.
 */
 func TestConnSendTextAfterClose(t *testing.T) {
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 	if err := wsConn.SendClose(nil); err != nil {
 		t.Fatalf("SendClose: %v", err)
 	}
@@ -268,7 +269,7 @@ func TestConnSendTextAfterClose(t *testing.T) {
 
 func TestConnSendBinaryAfterClose(t *testing.T) {
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 	if err := wsConn.SendClose(nil); err != nil {
 		t.Fatalf("SendClose: %v", err)
 	}

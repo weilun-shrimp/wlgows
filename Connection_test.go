@@ -1,8 +1,10 @@
 package wlgows
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -10,22 +12,18 @@ import (
 
 func TestNewConn(t *testing.T) {
 	netConn := newFakeConn(nil)
-	request := httptestRequest(t)
-	response := &http.Response{StatusCode: 101}
+	r := bufio.NewReader(netConn)
 
-	wsConn := NewConn(netConn, request, response, false)
+	wsConn := NewConn(netConn, r, false)
 
 	if wsConn.Conn != net.Conn(netConn) {
 		t.Error("embedded net.Conn was not set")
 	}
-	if wsConn.ClientRequest != request {
-		t.Error("ClientRequest was not set")
-	}
-	if wsConn.ServerResponse != response {
-		t.Error("ServerResponse was not set")
+	if wsConn.reader != r {
+		t.Error("reader was not set")
 	}
 	// Constructors are mandatory precisely because they populate di.
-	if wsConn.di.getFrameFromTCPConn == nil || wsConn.di.newControlFrame == nil {
+	if wsConn.di.getFrameFromReader == nil || wsConn.di.newControlFrame == nil {
 		t.Error("NewConn must populate every di field")
 	}
 	if wsConn.di.writeLocker == nil || wsConn.di.readLocker == nil {
@@ -38,9 +36,9 @@ func TestNewConn(t *testing.T) {
 func TestConnLocking(t *testing.T) {
 	t.Run("GetNextFrame locks", func(t *testing.T) {
 		locker := &fakeLocker{}
-		wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 		wsConn.di.readLocker = locker
-		wsConn.di.getFrameFromTCPConn = func(net.Conn, uint64) (*Frame, error) {
+		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) {
 			if !locker.held {
 				t.Error("the frame was read outside the lock")
 			}
@@ -58,9 +56,9 @@ func TestConnLocking(t *testing.T) {
 
 	t.Run("GetNextFrame unlocks after a read error", func(t *testing.T) {
 		locker := &fakeLocker{}
-		wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 		wsConn.di.readLocker = locker
-		wsConn.di.getFrameFromTCPConn = func(net.Conn, uint64) (*Frame, error) {
+		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) {
 			return nil, errors.New("boom")
 		}
 
@@ -77,10 +75,10 @@ func TestConnLocking(t *testing.T) {
 func TestConnGetNextFrame(t *testing.T) {
 	t.Run("delegates to di", func(t *testing.T) {
 		want := &Frame{FIN: true, Opcode: 1, PayloadData: []byte("x")}
-		wsConn := NewConn(newFakeConn(nil), nil, nil, false)
-		var gotConn net.Conn
-		wsConn.di.getFrameFromTCPConn = func(conn net.Conn, _ uint64) (*Frame, error) {
-			gotConn = conn
+		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
+		var gotConn io.Reader
+		wsConn.di.getFrameFromReader = func(r io.Reader, _ uint64) (*Frame, error) {
+			gotConn = r
 			return want, nil
 		}
 
@@ -91,17 +89,17 @@ func TestConnGetNextFrame(t *testing.T) {
 		if got != want {
 			t.Error("GetNextFrame did not return the di result")
 		}
-		if gotConn != wsConn.Conn {
-			t.Error("GetNextFrame must pass the embedded conn through")
+		if gotConn != wsConn.reader {
+			t.Error("GetNextFrame must pass Conn's reader through")
 		}
 	})
 
 	// The limit is the caller's, per call — nothing on Conn remembers it, so it
 	// has to arrive at the frame reader untouched.
 	t.Run("passes the max byte length straight through", func(t *testing.T) {
-		wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 		var got uint64
-		wsConn.di.getFrameFromTCPConn = func(_ net.Conn, maxByteLength uint64) (*Frame, error) {
+		wsConn.di.getFrameFromReader = func(_ io.Reader, maxByteLength uint64) (*Frame, error) {
 			got = maxByteLength
 			return &Frame{}, nil
 		}
@@ -118,8 +116,8 @@ func TestConnGetNextFrame(t *testing.T) {
 
 	t.Run("propagates the error", func(t *testing.T) {
 		want := errors.New("read failed")
-		wsConn := NewConn(newFakeConn(nil), nil, nil, false)
-		wsConn.di.getFrameFromTCPConn = func(net.Conn, uint64) (*Frame, error) { return nil, want }
+		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
+		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) { return nil, want }
 		if _, err := wsConn.GetNextFrame(0); !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
 		}
@@ -127,29 +125,10 @@ func TestConnGetNextFrame(t *testing.T) {
 }
 
 func TestConnClose(t *testing.T) {
-	t.Run("closes the socket and marks both messages closed", func(t *testing.T) {
+	t.Run("closes the socket", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		request := httptestRequest(t)
-		response := &http.Response{StatusCode: 101}
-		wsConn := NewConn(netConn, request, response, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
-		if err := wsConn.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		if !netConn.closed {
-			t.Error("underlying conn was not closed")
-		}
-		if !request.Close {
-			t.Error("ClientRequest.Close should be true")
-		}
-		if !response.Close {
-			t.Error("ServerResponse.Close should be true")
-		}
-	})
-
-	t.Run("tolerates nil request and response", func(t *testing.T) {
-		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
 		if err := wsConn.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
@@ -158,18 +137,14 @@ func TestConnClose(t *testing.T) {
 		}
 	})
 
-	t.Run("returns early when the socket fails to close", func(t *testing.T) {
+	t.Run("propagates a close error", func(t *testing.T) {
 		want := errors.New("close failed")
 		netConn := newFakeConn(nil)
 		netConn.closeErr = want
-		request := httptestRequest(t)
-		wsConn := NewConn(netConn, request, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 		if err := wsConn.Close(); !errors.Is(err, want) {
 			t.Fatalf("err = %v, want %v", err, want)
-		}
-		if request.Close {
-			t.Error("ClientRequest.Close must not be set when the socket close failed")
 		}
 	})
 }
@@ -197,7 +172,7 @@ func TestConnSendFrameMatchesTheConnsMasking(t *testing.T) {
 			t.Fatalf("NewFrame: %v", err)
 		}
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, true)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), true)
 
 		if err := wsConn.SendFrame(f); err != nil {
 			t.Fatalf("SendFrame: %v", err)
@@ -223,7 +198,7 @@ func TestConnSendFrameMatchesTheConnsMasking(t *testing.T) {
 			t.Fatalf("NewFrame: %v", err)
 		}
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 		if err := wsConn.SendFrame(f); err != nil {
 			t.Fatalf("SendFrame: %v", err)
@@ -249,7 +224,7 @@ func TestConnSendFrameMatchesTheConnsMasking(t *testing.T) {
 				t.Fatalf("NewFrame: %v", err)
 			}
 			wantKey := f.MaskingKey
-			wsConn := NewConn(newFakeConn(nil), nil, nil, maskSendFrame)
+			wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), maskSendFrame)
 
 			if err := wsConn.SendFrame(f); err != nil {
 				t.Fatalf("SendFrame: %v", err)
@@ -278,7 +253,7 @@ func TestConnSendFrameStopsWhenTheKeyCannotBeMade(t *testing.T) {
 	}
 
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, true)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), true)
 	wsConn.di.generateMaskingKey = func() ([]byte, error) { return nil, wantErr }
 
 	if err := wsConn.SendFrame(f); !errors.Is(err, wantErr) {

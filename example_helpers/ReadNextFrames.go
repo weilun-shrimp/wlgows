@@ -1,11 +1,10 @@
 package example_helpers
 
 import (
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
-// FrameReader is what both *wlgows.ServerConn and *wlgows.ClientConn satisfy,
-// so one helper serves every example.
+// FrameReader is what *wlgows.Conn satisfies, so one helper serves every example.
 type FrameReader interface {
 	GetNextFrame(maxByteLength uint64) (*wlgows.Frame, error)
 }

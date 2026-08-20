@@ -4,20 +4,19 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"net"
 	"testing"
 )
 
-func TestReadTCPConnInjected(t *testing.T) {
+func TestReadFromReaderInjected(t *testing.T) {
 	t.Run("fills the buffer from ioReadFull", func(t *testing.T) {
-		got, err := readTCPConn(newFakeConn(nil), 4, readTCPConnDI{
+		got, err := readFromReader(newFakeConn(nil), 4, readFromReaderDI{
 			ioReadFull: func(r io.Reader, buf []byte) (int, error) {
 				copy(buf, []byte{1, 2, 3, 4})
 				return len(buf), nil
 			},
 		})
 		if err != nil {
-			t.Fatalf("readTCPConn: %v", err)
+			t.Fatalf("readFromReader: %v", err)
 		}
 		if !bytes.Equal(got, []byte{1, 2, 3, 4}) {
 			t.Errorf("got % x, want 01 02 03 04", got)
@@ -26,7 +25,7 @@ func TestReadTCPConnInjected(t *testing.T) {
 
 	t.Run("propagates the ioReadFull error", func(t *testing.T) {
 		want := errors.New("short read")
-		got, err := readTCPConn(newFakeConn(nil), 4, readTCPConnDI{
+		got, err := readFromReader(newFakeConn(nil), 4, readFromReaderDI{
 			ioReadFull: func(io.Reader, []byte) (int, error) { return 0, want },
 		})
 		if !errors.Is(err, want) {
@@ -40,7 +39,7 @@ func TestReadTCPConnInjected(t *testing.T) {
 
 	t.Run("allocates exactly maxLen", func(t *testing.T) {
 		var seen int
-		_, _ = readTCPConn(newFakeConn(nil), 7, readTCPConnDI{
+		_, _ = readFromReader(newFakeConn(nil), 7, readFromReaderDI{
 			ioReadFull: func(_ io.Reader, buf []byte) (int, error) {
 				seen = len(buf)
 				return len(buf), nil
@@ -52,22 +51,22 @@ func TestReadTCPConnInjected(t *testing.T) {
 	})
 }
 
-func TestReadTCPConnRealWiring(t *testing.T) {
+func TestReadFromReaderRealWiring(t *testing.T) {
 	conn := newFakeConn([]byte("hello world"))
-	got, err := ReadTCPConn(conn, 5)
+	got, err := ReadFromReader(conn, 5)
 	if err != nil {
-		t.Fatalf("ReadTCPConn: %v", err)
+		t.Fatalf("ReadFromReader: %v", err)
 	}
 	if string(got) != "hello" {
 		t.Errorf("got %q, want %q", got, "hello")
 	}
 
-	if _, err := ReadTCPConn(newFakeConn([]byte("ab")), 10); err == nil {
-		t.Error("expected an error when the conn has fewer bytes than maxLen")
+	if _, err := ReadFromReader(newFakeConn([]byte("ab")), 10); err == nil {
+		t.Error("expected an error when the reader has fewer bytes than maxLen")
 	}
 }
 
-func TestGetFrameFromTCPConnParsesWireBytes(t *testing.T) {
+func TestGetFrameFromReaderParsesWireBytes(t *testing.T) {
 	tests := []struct {
 		name  string
 		wire  []byte
@@ -146,24 +145,24 @@ func TestGetFrameFromTCPConnParsesWireBytes(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			f, err := GetFrameFromTCPConn(newFakeConn(testCase.wire), 0)
+			f, err := GetFrameFromReader(newFakeConn(testCase.wire), 0)
 			if err != nil {
-				t.Fatalf("GetFrameFromTCPConn: %v", err)
+				t.Fatalf("GetFrameFromReader: %v", err)
 			}
 			testCase.check(t, f)
 		})
 	}
 }
 
-// Seal and GetFrameFromTCPConn are inverses.
-func TestFrameSealRoundTripsThroughGetFrameFromTCPConn(t *testing.T) {
+// Seal and GetFrameFromReader are inverses.
+func TestFrameSealRoundTripsThroughGetFrameFromReader(t *testing.T) {
 	original := &Frame{
 		FIN: true, Opcode: 1, Mask: true, PayloadLength: 5,
 		MaskingKey: []byte{9, 8, 7, 6}, PayloadData: []byte("round"),
 	}
-	got, err := GetFrameFromTCPConn(newFakeConn(original.Seal()), 0)
+	got, err := GetFrameFromReader(newFakeConn(original.Seal()), 0)
 	if err != nil {
-		t.Fatalf("GetFrameFromTCPConn: %v", err)
+		t.Fatalf("GetFrameFromReader: %v", err)
 	}
 	if string(got.PayloadData) != "round" {
 		t.Errorf("PayloadData = %q, want %q", got.PayloadData, "round")
@@ -173,7 +172,7 @@ func TestFrameSealRoundTripsThroughGetFrameFromTCPConn(t *testing.T) {
 	}
 }
 
-func TestGetFrameFromTCPConnReadErrors(t *testing.T) {
+func TestGetFrameFromReaderReadErrors(t *testing.T) {
 	tests := []struct {
 		name   string
 		chunks [][]byte
@@ -186,8 +185,8 @@ func TestGetFrameFromTCPConnReadErrors(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := getFrameFromTCPConn(newFakeConn(nil), 0, getFrameFromTCPConnDI{
-				readTCPConn: scriptedReadTCPConn(testCase.chunks...),
+			_, err := getFrameFromReader(newFakeConn(nil), 0, getFrameFromReaderDI{
+				readFromReader: scriptedReadFromReader(testCase.chunks...),
 			})
 			if !errors.Is(err, io.EOF) {
 				t.Errorf("err = %v, want io.EOF", err)
@@ -196,10 +195,10 @@ func TestGetFrameFromTCPConnReadErrors(t *testing.T) {
 	}
 }
 
-func TestGetFrameFromTCPConnUsesInjectedReader(t *testing.T) {
+func TestGetFrameFromReaderUsesInjectedReader(t *testing.T) {
 	var lengths []uint64
-	_, err := getFrameFromTCPConn(newFakeConn(nil), 0, getFrameFromTCPConnDI{
-		readTCPConn: func(_ net.Conn, maxLen uint64) ([]byte, error) {
+	_, err := getFrameFromReader(newFakeConn(nil), 0, getFrameFromReaderDI{
+		readFromReader: func(_ io.Reader, maxLen uint64) ([]byte, error) {
 			lengths = append(lengths, maxLen)
 			switch len(lengths) {
 			case 1:
@@ -212,7 +211,7 @@ func TestGetFrameFromTCPConnUsesInjectedReader(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("getFrameFromTCPConn: %v", err)
+		t.Fatalf("getFrameFromReader: %v", err)
 	}
 	want := []uint64{2, 4, 2}
 	if len(lengths) != len(want) {
@@ -228,14 +227,14 @@ func TestGetFrameFromTCPConnUsesInjectedReader(t *testing.T) {
 /*
 The v3 guard. A peer can claim a 10 GB payload in a 10 byte header, and the
 only useful place to refuse is between parsing that header and allocating for
-it — readTCPConn's first act is make([]byte, maxLen), so a check after the fact
-protects nothing.
+it — readFromReader's first act is make([]byte, maxLen), so a check after the
+fact protects nothing.
 
-These drive getFrameFromTCPConn through the di seam so the payload read can be
+These drive getFrameFromReader through the di seam so the payload read can be
 observed directly: the assertion is not merely that an error comes back, but
 that the oversized read was never attempted.
 */
-func TestGetFrameFromTCPConnMaxByteLength(t *testing.T) {
+func TestGetFrameFromReaderMaxByteLength(t *testing.T) {
 	// A header declaring 70000 bytes, forcing the 64 bit extended length path.
 	// PayloadData is nil, so Seal emits the header and nothing else.
 	const declared = 70000
@@ -243,10 +242,10 @@ func TestGetFrameFromTCPConnMaxByteLength(t *testing.T) {
 		FIN: true, Opcode: 2, PayloadLength: 127, ExtendedPayloadLength: declared,
 	}).Seal()
 
-	// readTCPConn replaying that header, recording every length it is asked for.
-	scriptedHeader := func(asked *[]uint64) func(net.Conn, uint64) ([]byte, error) {
+	// readFromReader replaying that header, recording every length it is asked for.
+	scriptedHeader := func(asked *[]uint64) func(io.Reader, uint64) ([]byte, error) {
 		offset := 0
-		return func(_ net.Conn, maxLen uint64) ([]byte, error) {
+		return func(_ io.Reader, maxLen uint64) ([]byte, error) {
 			*asked = append(*asked, maxLen)
 			if offset+int(maxLen) > len(header) {
 				// Past the header: this is the payload read the guard must prevent.
@@ -260,8 +259,8 @@ func TestGetFrameFromTCPConnMaxByteLength(t *testing.T) {
 
 	t.Run("refuses a header over the max without reading the payload", func(t *testing.T) {
 		var asked []uint64
-		_, err := getFrameFromTCPConn(newFakeConn(nil), 1000, getFrameFromTCPConnDI{
-			readTCPConn: scriptedHeader(&asked),
+		_, err := getFrameFromReader(newFakeConn(nil), 1000, getFrameFromReaderDI{
+			readFromReader: scriptedHeader(&asked),
 		})
 		if err == nil {
 			t.Fatal("a 70000 byte claim against a 1000 byte max must fail")
@@ -272,7 +271,7 @@ func TestGetFrameFromTCPConnMaxByteLength(t *testing.T) {
 		// The whole point: the payload read never happened.
 		for _, length := range asked {
 			if length == declared {
-				t.Fatalf("readTCPConn was asked for the full %d bytes — the guard "+
+				t.Fatalf("readFromReader was asked for the full %d bytes — the guard "+
 					"ran after the allocation, which defeats it", declared)
 			}
 		}
@@ -280,8 +279,8 @@ func TestGetFrameFromTCPConnMaxByteLength(t *testing.T) {
 
 	t.Run("0 means no limit", func(t *testing.T) {
 		var asked []uint64
-		_, err := getFrameFromTCPConn(newFakeConn(nil), 0, getFrameFromTCPConnDI{
-			readTCPConn: scriptedHeader(&asked),
+		_, err := getFrameFromReader(newFakeConn(nil), 0, getFrameFromReaderDI{
+			readFromReader: scriptedHeader(&asked),
 		})
 		if err != nil {
 			t.Fatalf("0 should impose no limit, got %v", err)
@@ -305,8 +304,8 @@ func TestGetFrameFromTCPConnMaxByteLength(t *testing.T) {
 		} {
 			t.Run(testCase.name, func(t *testing.T) {
 				var asked []uint64
-				_, err := getFrameFromTCPConn(newFakeConn(nil), testCase.max, getFrameFromTCPConnDI{
-					readTCPConn: scriptedHeader(&asked),
+				_, err := getFrameFromReader(newFakeConn(nil), testCase.max, getFrameFromReaderDI{
+					readFromReader: scriptedHeader(&asked),
 				})
 				if testCase.wantErr && err == nil {
 					t.Errorf("max=%d should have refused a %d byte claim", testCase.max, declared)

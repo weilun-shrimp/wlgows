@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"testing"
@@ -10,7 +11,7 @@ import (
 func transmitting(t *testing.T, opcode uint8) (*Conn, *fakeConn, *fakeLocker) {
 	t.Helper()
 	netConn, locker := newFakeConn(nil), &fakeLocker{}
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 	wsConn.di.dataFramesWriteLocker = locker
 
 	if err := wsConn.StartLongDataTransmission(opcode); err != nil {
@@ -26,7 +27,7 @@ func framesOn(t *testing.T, netConn *fakeConn) Frames {
 	wire := newFakeConn(netConn.written())
 	var frames Frames
 	for {
-		f, err := GetFrameFromTCPConn(wire, 0)
+		f, err := GetFrameFromReader(wire, 0)
 		if err != nil {
 			return frames
 		}
@@ -54,7 +55,7 @@ func TestConnStartLongDataTransmission(t *testing.T) {
 			{0x3, ErrNotDataFrameOpcode}, // reserved by 5.2
 		} {
 			locker := &fakeLocker{}
-			wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+			wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 			wsConn.di.dataFramesWriteLocker = locker
 
 			if err := wsConn.StartLongDataTransmission(testCase.opcode); !errors.Is(err, testCase.want) {
@@ -84,7 +85,7 @@ func TestConnTransmitData(t *testing.T) {
 	// sender on the connection.
 	t.Run("refuses with no transmission open", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, nil, nil, false)
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 		if err := wsConn.TransmitData([]byte("hello")); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
 			t.Errorf("TransmitData = %v, want ErrLongDataTransmissionNotStarted", err)
@@ -200,7 +201,7 @@ func TestConnEndLongDataTransmission(t *testing.T) {
 	// release.
 	t.Run("refuses with nothing open", func(t *testing.T) {
 		locker := &fakeLocker{}
-		wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 		wsConn.di.dataFramesWriteLocker = locker
 
 		if err := wsConn.EndLongDataTransmission(); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
@@ -360,7 +361,7 @@ where a close arriving mid message is the ordinary thing rather than a race.
 */
 func TestConnStartLongDataTransmissionAfterClose(t *testing.T) {
 	locker := &fakeLocker{}
-	wsConn := NewConn(newFakeConn(nil), nil, nil, false)
+	wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 	wsConn.di.dataFramesWriteLocker = locker
 	if err := wsConn.SendClose(nil); err != nil {
 		t.Fatalf("SendClose: %v", err)

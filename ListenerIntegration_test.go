@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"testing"
@@ -48,7 +49,7 @@ func TestListenerIntegration(t *testing.T) {
 		})
 	}()
 
-	conn := NewConn(netConn, nil, nil, false)
+	conn := NewConn(netConn, bufio.NewReader(netConn), false)
 	defer conn.Close()
 
 	listener := NewListener(conn)

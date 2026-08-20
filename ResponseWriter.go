@@ -1,7 +1,6 @@
 package wlgows
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
@@ -13,12 +12,10 @@ import (
 )
 
 type ResponseWriter struct {
-	http.ResponseWriter
-	statusCode  int
-	header      http.Header
-	body_buff   *bytes.Buffer
-	body_writer bufio.Writer
-	di          responseWriterDI
+	statusCode int
+	header     http.Header
+	body       []byte
+	di         responseWriterDI
 }
 
 type responseWriterDI struct {
@@ -26,11 +23,9 @@ type responseWriterDI struct {
 }
 
 func NewResponseWriter() *ResponseWriter {
-	buf := bytes.NewBufferString("")
 	return &ResponseWriter{
-		header:      http.Header{},
-		body_buff:   buf,
-		body_writer: *bufio.NewWriter(buf),
+		header: http.Header{},
+		body:   make([]byte, 0),
 		di: responseWriterDI{
 			generateSecWebsocketAccept: GenerateSecWebsocketAccept,
 		},
@@ -42,7 +37,8 @@ func (w *ResponseWriter) Header() http.Header {
 }
 
 func (w *ResponseWriter) Write(data_append []byte) (int, error) {
-	return w.body_writer.Write(data_append)
+	w.body = append(w.body, data_append...)
+	return len(data_append), nil
 }
 
 func (w *ResponseWriter) WriteHeader(statusCode int) {
@@ -56,9 +52,9 @@ Will set Content-Type to text/plain automatically if body is not empty and Conte
 */
 func (w *ResponseWriter) GenerateResponse() *http.Response {
 	if w.header.Get("Content-Length") == "" {
-		w.header.Set("Content-Length", strconv.Itoa(w.body_buff.Len()))
+		w.header.Set("Content-Length", strconv.Itoa(len(w.body)))
 	}
-	if w.body_buff.Len() > 0 && w.header.Get("Content-Type") == "" {
+	if len(w.body) > 0 && w.header.Get("Content-Type") == "" {
 		w.header.Set("Content-Type", "text/plain")
 	}
 	response := &http.Response{
@@ -67,7 +63,7 @@ func (w *ResponseWriter) GenerateResponse() *http.Response {
 		ProtoMinor: 1,
 		StatusCode: w.statusCode,
 		Header:     w.header,
-		Body:       io.NopCloser(bytes.NewReader(w.body_buff.Bytes())),
+		Body:       io.NopCloser(bytes.NewReader(w.body)),
 	}
 	return response
 }

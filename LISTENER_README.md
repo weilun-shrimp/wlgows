@@ -23,7 +23,8 @@ in the [main README](./README.md).
 
 ## Quick start
 
-`conn` is an already handshaken `*wlgows.ServerConn`. This handles one of them
+`conn` is an already handshaken `*wlgows.Conn` — see [`ServerHandShake`](./README.md#coming-from-v3)
+in the main README for how to get one. This handles one connection
 start to finish, and covers every way `Listen` can return. `Pong` is the one
 hook left nil on purpose — 5.5.3 says MUST NOT answer a pong, which is exactly
 what a nil hook does.
@@ -32,7 +33,7 @@ what a nil hook does.
 — before `Listen`, between two runs, or from inside a hook.
 
 ```go
-func handleConn(conn *wlgows.ServerConn) {
+func handleConn(conn *wlgows.Conn) {
 	defer conn.Close() // yours: the Listener never closes anything
 
 	listener := wlgows.NewListener(conn)
@@ -190,7 +191,7 @@ Each item carries its own detail in full — which frames it covers, and the
 reasoning behind the numbers:
 
 ```bash
-go doc github.com/weilun-shrimp/wlgows/v3.ListenerConfig
+go doc github.com/weilun-shrimp/wlgows/v4.ListenerConfig
 ```
 
 ## Hooks

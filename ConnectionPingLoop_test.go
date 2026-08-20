@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"testing"
@@ -37,7 +38,7 @@ func scriptedLoop(t *testing.T, cap int, gotInterval *time.Duration, runs *int) 
 
 func TestConnStartPingLoop(t *testing.T) {
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 	writes, runs := 0, 0
 	var gotInterval time.Duration
@@ -82,7 +83,7 @@ func TestConnStartPingLoop(t *testing.T) {
 // nil is the ordinary heartbeat, and it must not turn into a payload of its own.
 func TestConnStartPingLoopNilPayload(t *testing.T) {
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 
 	runs := 0
 	var gotInterval time.Duration
@@ -105,7 +106,7 @@ func TestConnStartPingLoopNilPayload(t *testing.T) {
 // it a heartbeat outlives the conversation it was there to check.
 func TestConnStartPingLoopStopsOnceCloseSent(t *testing.T) {
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 	if err := wsConn.SendClose(nil); err != nil {
 		t.Fatalf("SendClose: %v", err)
 	}

@@ -71,9 +71,10 @@ type Listener struct {
 	pauseChan chan error
 }
 
-// ListenerConn is what a Listener reads from: an already handshaken *ServerConn
-// or *ClientConn, or anything else that can hand over the next frame — a
-// wrapper of your own, or a scripted one in a test.
+// ListenerConn is what a Listener reads from: an already handshaken *Conn
+// (from Dial, Server.Accept or HijackFromHttp), or anything else that can
+// hand over the next frame — a wrapper of your own, or a scripted one in a
+// test.
 type ListenerConn interface {
 	GetNextFrame(maxByteLength uint64) (*Frame, error)
 

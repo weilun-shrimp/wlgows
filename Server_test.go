@@ -3,7 +3,6 @@ package wlgows
 import (
 	"errors"
 	"net"
-	"net/http"
 	"testing"
 )
 
@@ -37,9 +36,6 @@ func TestRun(t *testing.T) {
 		}
 		if server.TCPAddr != wantAddr || server.TCPListener != wantListener {
 			t.Error("the server should carry the resolved address and listener")
-		}
-		if server.di.newServerConn == nil {
-			t.Error("run must build the Server through its constructor")
 		}
 	})
 
@@ -82,26 +78,15 @@ func TestNewServer(t *testing.T) {
 	if server.TCPAddr != addr || server.TCPListener != listener {
 		t.Error("fields were not set")
 	}
-	if server.di.newServerConn == nil {
-		t.Error("newServer must populate di")
-	}
 }
 
-func TestServerAcceptBuildsAServerConn(t *testing.T) {
-	server, err := Run("127.0.0.1:0")
+func TestServerAccept(t *testing.T) {
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("net.ListenTCP: %v", err)
 	}
+	server := newServer(listener.Addr().(*net.TCPAddr), listener)
 	defer server.Close()
-
-	// Route Accept'server result through a recording constructor.
-	var gotRequest *http.Request
-	called := false
-	server.di.newServerConn = func(c net.Conn, req *http.Request) *ServerConn {
-		called = true
-		gotRequest = req
-		return NewServerConn(c, req)
-	}
 
 	go func() {
 		c, err := net.Dial("tcp", server.TCPListener.Addr().String())
@@ -110,20 +95,14 @@ func TestServerAcceptBuildsAServerConn(t *testing.T) {
 		}
 	}()
 
-	sc, err := server.Accept()
+	conn, err := server.Accept()
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	defer sc.Close()
+	defer conn.Close()
 
-	if !called {
-		t.Error("Accept must build the connection through di.newServerConn")
-	}
-	if gotRequest != nil {
-		t.Error("Accept has no request yet, it should pass nil")
-	}
-	if sc.di.readRequest == nil {
-		t.Error("the accepted ServerConn must have its di populated")
+	if conn == nil {
+		t.Error("Accept should return the accepted net.Conn")
 	}
 }
 

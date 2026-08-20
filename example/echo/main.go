@@ -8,11 +8,14 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"net"
+	"net/http"
 	"time"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
 const (
@@ -42,24 +45,32 @@ func main() {
 
 	fmt.Println("echo server listening on " + service)
 	for {
-		conn, err := server.Accept()
+		netConn, err := server.Accept()
 		if err != nil {
 			fmt.Println("accept:", err)
 			continue
 		}
-		go handleConn(conn)
+		go handleConn(netConn)
 	}
 }
 
-func handleConn(conn *wlgows.ServerConn) {
+func handleConn(netConn net.Conn) {
 	// The only close in this program. The hooks pause the loop and let this
 	// function return rather than closing underneath it.
-	defer conn.Close()
+	defer netConn.Close()
 
-	if _, err := conn.HandShake(); err != nil {
+	r := bufio.NewReader(netConn)
+	req, err := http.ReadRequest(r)
+	if err != nil {
+		fmt.Println("reading request:", err)
+		return
+	}
+	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}
+
 	fmt.Println("connected:", conn.RemoteAddr())
 
 	// Ping, pong, close and reserved opcodes are answered for you, and masking

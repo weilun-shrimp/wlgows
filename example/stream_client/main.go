@@ -17,14 +17,15 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
-	"github.com/weilun-shrimp/wlgows/v3/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v4/example_helpers"
 )
 
 const (
@@ -70,14 +71,16 @@ func main() {
 	}
 	defer file.Close()
 
-	conn, err := wlgows.Dial(url, nil)
+	netConn, req, err := wlgows.Dial(url, nil)
 	if err != nil {
 		fmt.Println("dial:", err)
 		return
 	}
-	defer conn.Close()
+	defer netConn.Close()
 
-	if err := conn.HandShake(); err != nil {
+	r := bufio.NewReader(netConn)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}
@@ -124,7 +127,7 @@ func main() {
 	<-reading
 }
 
-func stream(conn *wlgows.ClientConn, r io.Reader) (sum []byte, chunks int, bytes int64, err error) {
+func stream(conn *wlgows.Conn, r io.Reader) (sum []byte, chunks int, bytes int64, err error) {
 	if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
 		return nil, 0, 0, err
 	}

@@ -10,13 +10,25 @@ import (
 	"slices"
 )
 
-func Dial(raw_url string, tls_config *tls.Config) (*ClientConn, error) {
+/*
+Dial connects to raw_url and builds the opening request — nothing more. It
+does not run the handshake or build a *Conn, so you're free to add headers to
+req before sending it:
+
+	netConn, req, err := wlgows.Dial(url, tlsConfig)
+	r := bufio.NewReader(netConn)
+	res, err := wlgows.ClientHandShake(netConn, r, req)
+	conn := wlgows.NewConn(netConn, r, true)
+
+r must be the same *bufio.Reader you pass to both ClientHandShake and
+NewConn — see ClientHandShake's doc comment for why.
+*/
+func Dial(raw_url string, tls_config *tls.Config) (net.Conn, *http.Request, error) {
 	return dial(raw_url, tls_config, dialDI{
 		httpNewRequest:       http.NewRequest,
 		validateWebsocketUrl: ValidateWebsocketUrl,
 		netDial:              net.Dial,
 		tlsDial:              tls.Dial,
-		newClientConn:        NewClientConn,
 	})
 }
 
@@ -25,16 +37,15 @@ type dialDI struct {
 	validateWebsocketUrl func(parsedUrl *url.URL) error
 	netDial              func(network string, address string) (net.Conn, error)
 	tlsDial              func(network string, addr string, config *tls.Config) (*tls.Conn, error)
-	newClientConn        func(c net.Conn, req *http.Request) *ClientConn
 }
 
-func dial(raw_url string, tls_config *tls.Config, di dialDI) (*ClientConn, error) {
+func dial(raw_url string, tls_config *tls.Config, di dialDI) (net.Conn, *http.Request, error) {
 	req, err := di.httpNewRequest("GET", raw_url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := di.validateWebsocketUrl(req.URL); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var conn net.Conn
 	switch req.URL.Scheme {
@@ -44,9 +55,9 @@ func dial(raw_url string, tls_config *tls.Config, di dialDI) (*ClientConn, error
 		conn, err = di.tlsDial("tcp", req.URL.Host, tls_config)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return di.newClientConn(conn, req), nil
+	return conn, req, nil
 }
 
 func ValidateWebsocketUrl(parsedUrl *url.URL) error {

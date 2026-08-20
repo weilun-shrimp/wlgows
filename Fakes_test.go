@@ -11,7 +11,7 @@ import (
 Shared test doubles.
 
 fakeConn is an in-memory net.Conn: reads drain readBuf, writes accumulate in
-writeBuf. It lets every Conn/ClientConn/ServerConn path run without a socket.
+writeBuf. It lets every Conn path run without a socket.
 */
 type fakeConn struct {
 	readBuf  *bytes.Buffer
@@ -106,6 +106,37 @@ func (locker *fakeLocker) ok(want int) bool {
 	return locker.locks == want && locker.unlocks == want && locker.misuse == 0 && !locker.held
 }
 
+// fakeIOWriter is a plain io.Writer double: it records what it's given and can
+// be told to fail, for callers that only need io.Writer rather than the
+// net.Conn-shaped fakeConn.
+type fakeIOWriter struct {
+	bytes.Buffer
+	err error
+}
+
+func (w *fakeIOWriter) Write(p []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	return w.Buffer.Write(p)
+}
+
+// fakeIOReader is a plain io.Reader double: it reads from an embedded
+// bytes.Reader and can be told to fail, for callers that only need io.Reader
+// rather than the net.Conn-shaped fakeConn. Its zero value reads io.EOF
+// immediately, same as fakeConn with nil read data.
+type fakeIOReader struct {
+	bytes.Reader
+	err error
+}
+
+func (r *fakeIOReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	return r.Reader.Read(p)
+}
+
 // fixedRandRead builds a randRead replacement that fills the buffer with a
 // repeating pattern, making every key/mask deterministic.
 func fixedRandRead(pattern ...byte) func(data []byte) (int, error) {
@@ -117,10 +148,10 @@ func fixedRandRead(pattern ...byte) func(data []byte) (int, error) {
 	}
 }
 
-// scriptedReadTCPConn returns each chunk in order, then io.EOF.
-func scriptedReadTCPConn(chunks ...[]byte) func(net.Conn, uint64) ([]byte, error) {
+// scriptedReadFromReader returns each chunk in order, then io.EOF.
+func scriptedReadFromReader(chunks ...[]byte) func(io.Reader, uint64) ([]byte, error) {
 	i := 0
-	return func(_ net.Conn, _ uint64) ([]byte, error) {
+	return func(_ io.Reader, _ uint64) ([]byte, error) {
 		if i >= len(chunks) {
 			return nil, io.EOF
 		}

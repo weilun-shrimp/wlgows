@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -17,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
-	"github.com/weilun-shrimp/wlgows/v3/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v4/example_helpers"
 )
 
 const (
@@ -53,14 +54,16 @@ func main() {
 		tlsConfig = loadCA(caPath)
 	}
 
-	conn, err := wlgows.Dial(url, tlsConfig)
+	netConn, req, err := wlgows.Dial(url, tlsConfig)
 	if err != nil {
 		fmt.Println("dial:", err)
 		return
 	}
-	defer conn.Close()
+	defer netConn.Close()
 
-	if err := conn.HandShake(); err != nil {
+	r := bufio.NewReader(netConn)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}

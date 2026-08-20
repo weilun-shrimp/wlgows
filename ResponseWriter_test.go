@@ -6,6 +6,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -15,8 +16,8 @@ func TestNewResponseWriter(t *testing.T) {
 	if writer.header == nil {
 		t.Error("header must be initialised")
 	}
-	if writer.body_buff == nil {
-		t.Error("body_buff must be initialised")
+	if len(writer.body) != 0 {
+		t.Error("body must start empty")
 	}
 	if writer.di.generateSecWebsocketAccept == nil {
 		t.Error("NewResponseWriter must populate di")
@@ -77,17 +78,7 @@ func TestResponseWriterGenerateResponseKeepsExplicitContentLength(t *testing.T) 
 	}
 }
 
-/*
-Documents a known defect carried over from v1, listed as out of scope for the
-v2 restructure: Write goes into body_writer (a bufio.Writer) but
-GenerateResponse reads body_buff, and nothing ever calls Flush. So a written
-body never reaches the response, Content-Length stays 0, and Content-Type is
-never auto-set.
-
-When the flush bug is fixed, this test should start failing — that is the
-signal to update it to assert the corrected behaviour.
-*/
-func TestResponseWriterWrittenBodyIsLostWithoutFlush(t *testing.T) {
+func TestResponseWriterWrittenBodyAppearsInResponse(t *testing.T) {
 	writer := NewResponseWriter()
 	writer.WriteHeader(http.StatusBadRequest)
 	n, err := writer.Write([]byte("some error detail"))
@@ -103,21 +94,21 @@ func TestResponseWriterWrittenBodyIsLostWithoutFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(body) != 0 {
-		t.Errorf("body = %q; the unflushed-buffer bug appears to be fixed, update this test", body)
+	if string(body) != "some error detail" {
+		t.Errorf("body = %q, want %q", body, "some error detail")
 	}
-	if response.Header.Get("Content-Length") != "0" {
-		t.Errorf("Content-Length = %q, want 0 while the bug stands", response.Header.Get("Content-Length"))
+	if response.Header.Get("Content-Length") != strconv.Itoa(len("some error detail")) {
+		t.Errorf("Content-Length = %q, want %d", response.Header.Get("Content-Length"), len("some error detail"))
+	}
+	if response.Header.Get("Content-Type") != "text/plain" {
+		t.Errorf("Content-Type = %q, want text/plain", response.Header.Get("Content-Type"))
 	}
 }
 
-/*
-The flush bug is size-dependent, which is the nastiest part of it. bufio.Writer
-passes a write larger than its 4096 byte buffer straight through to the
-underlying buffer, so a large body DOES survive while a small one is swallowed.
-That asymmetry is why the Content-Type branch is reachable at all.
-*/
-func TestResponseWriterLargeBodyBypassesTheBufferAndSurvives(t *testing.T) {
+// A v1 defect (fixed here) only lost a written body under 4096 bytes, since it
+// went through a bufio.Writer that was never flushed. body is a plain []byte
+// now, so there's no threshold left to regress on — this pins that down.
+func TestResponseWriterLargeBodySurvives(t *testing.T) {
 	writer := NewResponseWriter()
 	writer.WriteHeader(http.StatusOK)
 	big := strings.Repeat("x", 5000)
@@ -136,9 +127,23 @@ func TestResponseWriterLargeBodyBypassesTheBufferAndSurvives(t *testing.T) {
 	if response.Header.Get("Content-Length") != "5000" {
 		t.Errorf("Content-Length = %q, want 5000", response.Header.Get("Content-Length"))
 	}
-	// Only reached when the body actually made it into body_buff.
 	if response.Header.Get("Content-Type") != "text/plain" {
 		t.Errorf("Content-Type = %q, want text/plain", response.Header.Get("Content-Type"))
+	}
+}
+
+func TestResponseWriterMultipleWritesAccumulate(t *testing.T) {
+	writer := NewResponseWriter()
+	writer.Write([]byte("hello "))
+	writer.Write([]byte("world"))
+
+	response := writer.GenerateResponse()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(body) != "hello world" {
+		t.Errorf("body = %q, want %q", body, "hello world")
 	}
 }
 

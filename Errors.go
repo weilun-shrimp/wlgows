@@ -19,7 +19,7 @@ the sentinel itself.
 
 // frame
 var (
-	// ErrFrameByteLengthExceeded is returned by GetFrameFromTCPConn before it
+	// ErrFrameByteLengthExceeded is returned by GetFrameFromReader before it
 	// allocates, when the frame header declares a payload larger than the max
 	// the caller allowed. RFC 6455 close code 1009 is the matching response.
 	ErrFrameByteLengthExceeded = errors.New("frame payload exceeds the max byte length")
@@ -116,8 +116,6 @@ var (
 
 // connection state
 var (
-	ErrClientRequestHasSet = errors.New("client request has already been set")
-
 	// ErrLongDataTransmissionNotStarted is TransmitData or
 	// EndLongDataTransmission called with no transmission open. Both rely on
 	// StartLongDataTransmission having taken dataFramesWriteLocker, so acting
@@ -153,6 +151,29 @@ var (
 	// older draft learns what to retry with rather than guessing.
 	ErrHttpSecWebSocketVersionNotSupported = errors.New("Sec-WebSocket-Version is not 13")
 	ErrHttpRequestHasResponse              = errors.New("http request already has a response")
+)
+
+// client handshake
+var (
+	// ErrHandshakeRequestNil is UpgradeRequest, SendHandShakeRequest or
+	// ReadHandShakeResponse called with a nil *http.Request.
+	ErrHandshakeRequestNil = errors.New("handshake request is nil")
+
+	// The following are ValidateHandShakeResponse rejecting the server's
+	// opening handshake response against RFC 6455 4.1.
+	ErrHandshakeResponseStatusCodeInvalid       = errors.New("handshake response status code is not 101")
+	ErrHandshakeResponseProtoInvalid            = errors.New("handshake response protocol is not HTTP/1.1")
+	ErrHandshakeResponseConnectionHeaderInvalid = errors.New("handshake response Connection header does not contain the Upgrade token")
+	ErrHandshakeResponseUpgradeHeaderInvalid    = errors.New("handshake response Upgrade header does not contain the websocket token")
+	ErrHandshakeResponseAcceptHeaderMissing     = errors.New("handshake response Sec-WebSocket-Accept header is not set")
+	ErrHandshakeResponseAcceptHeaderMismatch    = errors.New("handshake response Sec-WebSocket-Accept header does not match the request's key")
+)
+
+// server handshake
+var (
+	// ErrHandshakeResponseNil is SendHandShakeResponse called with a nil
+	// *http.Response.
+	ErrHandshakeResponseNil = errors.New("handshake response is nil")
 )
 
 /*

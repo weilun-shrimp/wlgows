@@ -1,22 +1,29 @@
 package wlgows
 
 import (
+	"bufio"
+	"io"
 	"net"
-	"net/http"
 	"sync"
 	"time"
 )
 
 type Conn struct {
 	net.Conn
-	ClientRequest  *http.Request
-	ServerResponse *http.Response
+
+	// Frame reads go through this, never through the embedded net.Conn
+	// directly. It must be the same *bufio.Reader used to read the handshake
+	// off this connection — http.ReadRequest/http.ReadResponse can buffer
+	// bytes past the header block (the start of the first frame), and a
+	// fresh reader here would strand them. See HandShakeClient.go's
+	// ClientHandShake doc comment.
+	reader *bufio.Reader
 
 	// Whether the frames this Conn builds are masked. RFC 6455 5.1 leaves no
 	// choice — a client masks every frame it sends, a server masks none, and a
 	// peer must fail the connection on the wrong one — so it is settled once at
-	// construction rather than at each send. NewClientConn passes true,
-	// NewServerConn false.
+	// construction rather than at each send. Dial passes true, Server.Accept
+	// and HijackFromHttp false.
 	//
 	// Today only SendClose, SendPing and SendPong reach it, since they are the
 	// only things here that build a frame. The rule is not about control
@@ -49,7 +56,7 @@ type Conn struct {
 }
 
 type connDI struct {
-	getFrameFromTCPConn   func(conn net.Conn, maxByteLength uint64) (*Frame, error)
+	getFrameFromReader    func(r io.Reader, maxByteLength uint64) (*Frame, error)
 	newControlFrame       func(config NewControlFrameConfig) (*Frame, error)
 	newDataFrame          func(config NewFrameConfig) (*Frame, error)
 	generateMaskingKey    func() ([]byte, error)
@@ -62,18 +69,20 @@ type connDI struct {
 /*
 NewConn wraps an already handshaken connection.
 
+r must be the same *bufio.Reader the handshake was read through, so any bytes
+it buffered past the header block are not stranded — see Conn.reader.
+
 maskSendFrame is RFC 6455 5.1 and follows from which side this is: pass true
-from a client, false from a server. NewClientConn and NewServerConn fill it in,
-so it is only yours to answer when you build a Conn directly.
+from a client, false from a server. Dial, Server.Accept and HijackFromHttp
+fill it in, so it is only yours to answer when you build a Conn directly.
 */
-func NewConn(c net.Conn, req *http.Request, res *http.Response, maskSendFrame bool) *Conn {
+func NewConn(c net.Conn, r *bufio.Reader, maskSendFrame bool) *Conn {
 	return &Conn{
-		Conn:           c,
-		ClientRequest:  req,
-		ServerResponse: res,
-		maskSendFrame:  maskSendFrame,
+		Conn:          c,
+		reader:        r,
+		maskSendFrame: maskSendFrame,
 		di: connDI{
-			getFrameFromTCPConn:   GetFrameFromTCPConn,
+			getFrameFromReader:    GetFrameFromReader,
 			newControlFrame:       NewControlFrame,
 			newDataFrame:          NewDataFrame,
 			generateMaskingKey:    GenerateMaskingKey,
@@ -110,12 +119,12 @@ of holding it:
 	}
 
 Exceeding maxByteLength leaves the payload unread and the stream desynced, so
-the connection cannot be reused — see GetFrameFromTCPConn.
+the connection cannot be reused — see GetFrameFromReader.
 */
 func (c *Conn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
 	c.di.readLocker.Lock()
 	defer c.di.readLocker.Unlock()
-	f, err := c.di.getFrameFromTCPConn(c.Conn, maxByteLength)
+	f, err := c.di.getFrameFromReader(c.reader, maxByteLength)
 	return f, err
 }
 
@@ -181,17 +190,4 @@ func (c *Conn) sendFrame(f *Frame) error {
 
 	_, err := c.Conn.Write(f.Seal())
 	return err
-}
-
-func (c *Conn) Close() error {
-	if err := c.Conn.Close(); err != nil {
-		return err
-	}
-	if c.ClientRequest != nil {
-		c.ClientRequest.Close = true
-	}
-	if c.ServerResponse != nil {
-		c.ServerResponse.Close = true
-	}
-	return nil
 }

@@ -29,8 +29,9 @@ on you kept where you can see it.
 
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
-- [Coming from v2](#coming-from-v2)
+- [Coming from v3](#coming-from-v3)
 - [Design](#design)
+- [Memory vs. speed](#memory-vs-speed-sizing-the-reader-yourself) — sizing the reader yourself
 - [Reading](#reading) — `Listener`, or one frame at a time
 - [Sending](#sending) — whole messages, control frames, streaming, raw frames
 - [Keepalive](#keepalive) — pinging on an interval, and noticing silence
@@ -43,10 +44,10 @@ The `Listener` has a guide of its own: **[LISTENER_README.md](./LISTENER_README.
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v3
+go get github.com/weilun-shrimp/wlgows/v4
 ```
 
-The import path carries the `/v3` suffix Go requires for major version 2 and
+The import path carries the `/v4` suffix Go requires for major version 2 and
 above; the package name is still `wlgows`, so call sites read `wlgows.Dial(...)`.
 
 ## Quick Start
@@ -57,9 +58,13 @@ above; the package name is still `wlgows`, so call sites read `wlgows.Dial(...)`
 package main
 
 import (
+	"bufio"
 	"log"
+	"net"
+	"net/http"
+	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
 func main() {
@@ -70,18 +75,26 @@ func main() {
 	defer server.Close()
 
 	for {
-		conn, err := server.Accept()
+		netConn, err := server.Accept()
 		if err != nil {
 			continue
 		}
-		go handle(conn)
+		go handle(netConn)
 	}
 }
 
-func handle(conn *wlgows.ServerConn) {
-	defer conn.Close()
+func handle(netConn net.Conn) {
+	defer netConn.Close()
 
-	if _, err := conn.HandShake(); err != nil {
+	// Accept only takes the TCP connection — reading the request and running
+	// the handshake are yours, so nothing hides which bytes reach the wire.
+	r := bufio.NewReader(netConn) // 4096 bytes/conn; see Memory vs. speed to shrink it
+	req, err := http.ReadRequest(r)
+	if err != nil {
+		return
+	}
+	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	if err != nil {
 		return
 	}
 
@@ -120,19 +133,25 @@ but nothing here says so: a `Conn` knows which side it is, and
 package main
 
 import (
+	"bufio"
 	"log"
+	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
 func main() {
-	conn, err := wlgows.Dial("ws://localhost:8001", nil)
+	// Dial only connects and builds the request — running the handshake is
+	// yours, so you can still add headers to req before it goes out.
+	netConn, req, err := wlgows.Dial("ws://localhost:8001", nil)
 	if err != nil {
 		panic(err)
 	}
-	defer conn.Close()
+	defer netConn.Close()
 
-	if err := conn.HandShake(); err != nil {
+	r := bufio.NewReader(netConn) // 4096 bytes/conn; see Memory vs. speed to shrink it
+	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	if err != nil {
 		panic(err)
 	}
 
@@ -158,8 +177,9 @@ func main() {
 }
 ```
 
-Masking needs no attention on either side: `Dial` and `NewClientConn` set
-`maskSendFrame`, so `SendText` and `SendPong` mask, and the server's do not.
+Masking needs no attention on either side: `ClientHandShake` and
+`ServerHandShake` set `maskSendFrame` when they build the returned `Conn`, so
+`SendText` and `SendPong` mask on the client and the server's do not.
 
 ### TLS (wss://)
 
@@ -168,20 +188,24 @@ caCert, _ := os.ReadFile("ca.crt")
 caCertPool := x509.NewCertPool()
 caCertPool.AppendCertsFromPEM(caCert)
 
-conn, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: caCertPool})
+netConn, req, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: caCertPool})
 ```
 
 ### HTTP Hijacking
 
 ```go
 func handler(w http.ResponseWriter, r *http.Request) {
-	conn, err := wlgows.HijackFromHttp(w, r) // or HijackFromGin(c)
+	netConn, bufReader, err := wlgows.HijackFromHttp(w) // or HijackFromGin(c)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer netConn.Close()
 
-	conn.HandShake()
+	// r is already parsed by net/http, so no read step is needed here.
+	conn, _, err := wlgows.ServerHandShake(netConn, bufReader, r)
+	if err != nil {
+		return
+	}
 	// ... read and send
 }
 ```
@@ -221,53 +245,98 @@ pings, echo the close handshake, and reject frames RFC 6455 forbids without any
 of that appearing in the example. What is left in each file is the part you
 would write yourself: the hooks.
 
-## Coming from v2
+## Coming from v3
 
-`Msg` is gone. A message is a `Frames`, which is `[]*Frame`, so what you hold is
-what arrived.
+`ClientConn` and `ServerConn` are gone. There is one `Conn`, for both sides,
+and it carries no handshake state — the handshake is a function call, not a
+stored `ClientRequest`/`ServerResponse`.
 
-| v2 | v3 |
+| v3 | v4 |
 |---|---|
-| `conn.GetNextMsg()` | `conn.GetNextFrame(max)`, or a `Listener` that assembles for you |
-| `msg.GetStr()` / `msg.GetBytes()` | `frames.String()` / `frames.Bytes()` |
-| `conn.SendByte(b)` | `conn.SendBinary(b)` |
-| `Error{Type, Msg}` | sentinel errors — `errors.Is(err, wlgows.ErrInvalidUTF8)` |
-| `NewConn(c, req, res)` | `NewConn(c, req, res, maskSendFrame)` |
+| `conn, err := wlgows.Dial(url, tls)` then `conn.HandShake()` | `netConn, req, err := wlgows.Dial(url, tls)` then `conn, res, err := wlgows.ClientHandShake(netConn, r, req)` |
+| `conn, err := server.Accept()` then `conn.HandShake()` | `netConn, err := server.Accept()`, read the request yourself, then `conn, res, err := wlgows.ServerHandShake(netConn, r, req)` |
+| `sc, err := wlgows.HijackFromHttp(w, r)` then `sc.HandShake()` | `netConn, r, err := wlgows.HijackFromHttp(w)` then `conn, res, err := wlgows.ServerHandShake(netConn, r, req)` |
+| `wlgows.NewClientConn(c, req)` / `wlgows.NewServerConn(c, req)` | gone — build a `Conn` via a handshake func above, or `wlgows.NewConn(c, r, maskSendFrame)` directly |
+| `conn.ClientRequest` / `conn.ServerResponse` | gone — the handshake funcs return the response directly instead of storing it |
 
-`GetNextFrame` takes a byte limit, which `GetNextMsg` had no way to express: a
-peer can claim a 10 GB payload in a 10 byte header, and the limit refuses it at
-the header before anything is allocated.
+The point of the split is the `*bufio.Reader`: `http.ReadRequest` and
+`http.ReadResponse` can buffer bytes past the header block — the start of the
+first frame — so the handshake and the `Conn` that reads frames afterward
+must share the exact same reader. `ClientHandShake`/`ServerHandShake` take it
+as a parameter and build the returned `Conn` from it, so this can no longer be
+gotten wrong by accident. `Dial`/`Server.Accept`/`HijackFromHttp` stay thin —
+connect (or accept, or hijack) and hand back the raw materials — so you still
+decide when the handshake actually runs, and can still add headers to a
+request before it goes out.
 
 ## Design
 
 **Single package.** Everything is in the root `wlgows` package:
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v3"
+import "github.com/weilun-shrimp/wlgows/v4"
 
-conn, _ := wlgows.Dial(url, nil)
-s, _    := wlgows.Run(":8001")
-sc, _   := wlgows.HijackFromHttp(w, r)
+netConn, req, _ := wlgows.Dial(url, nil)
+s, _             := wlgows.Run(":8001")
+hjConn, r, _     := wlgows.HijackFromHttp(w)
 ```
 
-**Connections must be built by their constructors.** `Conn`, `ClientConn`,
-`ServerConn` and `Server` carry unexported dependency fields, so a hand-written
-struct literal panics on first use. `Dial`, `Run`, `Accept` and `HijackFrom*`
-already do the right thing; only direct construction needs care:
+**`Conn` must be built by a constructor.** It carries unexported dependency
+fields, so a hand-written struct literal panics on first use. `ClientHandShake`
+and `ServerHandShake` already do the right thing — connect (or accept, or
+hijack) with `Dial`/`Server.Accept`/`HijackFromHttp`, then run one of those two
+funcs to get a ready `Conn` back; only building one directly needs care:
 
 ```go
-cc := wlgows.NewClientConn(netConn, req)
-sc := wlgows.NewServerConn(netConn, req)
-c  := wlgows.NewConn(netConn, req, res, false) // false: a server does not mask (5.1)
+c := wlgows.NewConn(netConn, r, false) // false: a server does not mask (5.1)
 ```
 
 That last argument is RFC 6455 5.1 and follows from which side you are: a client
 masks every frame it sends, a server masks none, and a peer fails the connection
 on the wrong one. It is settled once, at construction, so no send call can pass
-it wrong. `NewClientConn` and `NewServerConn` fill it in.
+it wrong. `ClientHandShake` and `ServerHandShake` fill it in.
 
-Exported fields (`ClientRequest`, `ServerResponse`, `TCPAddr`, `TCPListener`)
-are readable and settable.
+`Server`'s exported fields (`TCPAddr`, `TCPListener`) are readable and
+settable.
+
+## Memory vs. speed: sizing the reader yourself
+
+`bufio.NewReader(netConn)` — what every example above uses — defaults to a
+4096 byte buffer per connection. `ClientHandShake`/`ServerHandShake`/`NewConn`
+don't care about that size; they just use whatever `*bufio.Reader` you hand
+them. If you'd rather trade a little speed for far less memory per
+connection, size it yourself:
+
+```go
+r := bufio.NewReaderSize(netConn, 16) // 16 is the floor — bufio clamps anything under it up to 16
+```
+
+16 is not an arbitrary minimum here: a frame's header (2 bytes) plus the
+largest extended length (8) plus a mask key (4) is 14 bytes, just under it —
+so the whole non-payload part of a frame still fills in one read either way.
+What a bigger buffer buys you beyond that is small payloads riding along in
+the same read; past 16 bytes, a large payload needs its own read regardless
+of buffer size, so the gap narrows the bigger the message.
+
+The memory side scales with however many connections are open at once:
+
+| | 16 bytes | 4096 bytes (default) |
+|---|---|---|
+| Per connection | 16 B | 4096 B |
+| 1,000 connections | ~16 KB | ~4 MB |
+| 100,000 connections | ~1.6 MB | ~400 MB |
+
+And the read-count side scales with frame size and how many arrive back to back:
+
+| | 16 bytes | 4096 bytes (default) |
+|---|---|---|
+| One 10 B frame | 1 read | 1 read |
+| 100 back-to-back 10 B frames (1000 B total) | ~63 reads | as few as 1 read |
+| One 1 MB frame | payload bypasses the buffer — same read count either way | payload bypasses the buffer — same read count either way |
+
+(the 100-frame row assumes the bytes have already arrived when `Read` is
+called, the normal case for a steady stream — a peer trickling data in slowly
+narrows the gap.)
 
 ## Reading
 
@@ -490,7 +559,7 @@ Every error wraps a package-level sentinel with `%w`, so compare with
 `errors.Is` rather than `==`:
 
 ```go
-if _, err := sc.HandShake(); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
+if _, _, err := wlgows.ServerHandShake(netConn, r, req); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
 	// ...
 }
 ```
@@ -517,7 +586,7 @@ not know. Map yours before calling. See the Errors section of
 ```bash
 go test ./...                              # full suite
 go test -race ./...                        # the integration tests spawn goroutines
-go test -cover .                           # 99.8% of statements
+go test -cover .                           # 99.7% of statements
 go test -bench BenchmarkFramesAssembly .   # benchmarks, which plain `go test` skips
 ```
 
@@ -526,7 +595,7 @@ reachable. Two files have no source counterpart:
 
 | File | Contents |
 |---|---|
-| [`Fakes_test.go`](./Fakes_test.go) | Shared doubles — `fakeConn` (in-memory `net.Conn`), `fakeLocker` (counts and catches misuse), `fixedRandRead`, `scriptedReadTCPConn` |
+| [`Fakes_test.go`](./Fakes_test.go) | Shared doubles — `fakeConn` (in-memory `net.Conn`), `fakeIOWriter`/`fakeIOReader` (plain `io.Writer`/`io.Reader` doubles), `fakeLocker` (counts and catches misuse), `fixedRandRead`, `scriptedReadFromReader` |
 | [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | `Listen` end to end over a real `net.Pipe`, with **no** `di` substitution |
 
 The integration tests catch wiring mistakes the unit tests structurally cannot —
@@ -555,10 +624,10 @@ are tested directly.
 
 ```go
 // package-level func: pass a di struct
-cc, err := dial("ws://localhost:8001", nil, dialDI{...})
+netConn, req, err := dial("ws://localhost:8001", nil, dialDI{...})
 
 // method: overwrite the field the constructor set
-conn := NewConn(netConn, nil, nil, false)
+conn := NewConn(netConn, bufio.NewReader(netConn), false)
 conn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) { ... }
 ```
 
@@ -571,19 +640,18 @@ f, _ := newFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: 1, Mask: true
 // f.Seal() == []byte{0x81, 0x82, 1, 2, 3, 4, 'h'^1, 'i'^2}
 ```
 
-Two tests deliberately assert current behaviour rather than correct behaviour,
-and say so in their names and comments:
+One test deliberately asserts current behaviour rather than correct behaviour,
+and says so in its name and comments:
 
-- `TestResponseWriterWrittenBodyIsLostWithoutFlush` — `Write` fills a
-  `bufio.Writer` that is never flushed, while `GenerateResponse` reads the
-  underlying buffer, so a short body never reaches the response and
-  `Content-Length` stays 0. Bodies over 4096 bytes bypass the buffer and do
-  survive. When this is fixed, the test fails and tells you to update it.
-- `TestDial/an_unknown_scheme_yields_a_connection_with_no_socket` — the scheme
+- `TestDial/an_unknown_scheme_yields_a_nil_conn_and_no_error` — the scheme
   switch in `dial` has no default branch. Unreachable in production because
   `ValidateWebsocketUrl` gates it; only a permissive fake exposes it.
 
-`RequestToPlainHTTPMsg` is the one function below 100% coverage.
+`ClientHandShake`'s own success path is the main gap left in coverage: the
+real client picks a fresh `crypto/rand` key on every call, so a canned wire
+response can't be made to match it without a live two-ended connection —
+`clientHandShake` (the DI-injected step it wraps) and `NewConn` (what it
+builds on success) are both separately covered at 100%.
 
 ## License
 

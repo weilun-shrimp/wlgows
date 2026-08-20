@@ -29,8 +29,9 @@ frame 而不是抽象層來運作：server 與 client、手動 handshake，RFC 6
 
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — 三個 echo server、一個 client，還有 streaming 一組兩支
-- [Coming from v2](#coming-from-v2)
+- [從 v3 過來](#從-v3-過來)
 - [Design](#design)
+- [記憶體 vs. 速度](#記憶體-vs-速度自己決定-reader-的大小) — 自己決定 reader 的大小
 - [Reading](#reading) — 用 `Listener`，或一次讀一個 frame
 - [Sending](#sending) — 整個 message、control frame、streaming、自組 frame
 - [Keepalive](#keepalive) — 定期 ping，以及怎麼發現對方不出聲了
@@ -43,10 +44,10 @@ frame 而不是抽象層來運作：server 與 client、手動 handshake，RFC 6
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v3
+go get github.com/weilun-shrimp/wlgows/v4
 ```
 
-import path 帶著 Go 對 major version 2 以上要求的 `/v3` 後綴；package 名稱仍然是
+import path 帶著 Go 對 major version 2 以上要求的 `/v4` 後綴；package 名稱仍然是
 `wlgows`，所以呼叫端寫的還是 `wlgows.Dial(...)`。
 
 ## Quick Start
@@ -57,9 +58,13 @@ import path 帶著 Go 對 major version 2 以上要求的 `/v3` 後綴；package
 package main
 
 import (
+	"bufio"
 	"log"
+	"net"
+	"net/http"
+	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
 func main() {
@@ -70,18 +75,26 @@ func main() {
 	defer server.Close()
 
 	for {
-		conn, err := server.Accept()
+		netConn, err := server.Accept()
 		if err != nil {
 			continue
 		}
-		go handle(conn)
+		go handle(netConn)
 	}
 }
 
-func handle(conn *wlgows.ServerConn) {
-	defer conn.Close()
+func handle(netConn net.Conn) {
+	defer netConn.Close()
 
-	if _, err := conn.HandShake(); err != nil {
+	// Accept 只負責拿 TCP 連線 —— 讀 request、跑 handshake 都是你的事，這樣
+	// 才不會有任何 byte 是在你看不到的地方上線的。
+	r := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小看「記憶體 vs. 速度」
+	req, err := http.ReadRequest(r)
+	if err != nil {
+		return
+	}
+	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	if err != nil {
 		return
 	}
 
@@ -119,19 +132,25 @@ func handle(conn *wlgows.ServerConn) {
 package main
 
 import (
+	"bufio"
 	"log"
+	"time"
 
-	"github.com/weilun-shrimp/wlgows/v3"
+	"github.com/weilun-shrimp/wlgows/v4"
 )
 
 func main() {
-	conn, err := wlgows.Dial("ws://localhost:8001", nil)
+	// Dial 只負責連線、組好 request —— 跑 handshake 是你的事，所以你還是可以
+	// 在送出前替 req 加 header。
+	netConn, req, err := wlgows.Dial("ws://localhost:8001", nil)
 	if err != nil {
 		panic(err)
 	}
-	defer conn.Close()
+	defer netConn.Close()
 
-	if err := conn.HandShake(); err != nil {
+	r := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小看「記憶體 vs. 速度」
+	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	if err != nil {
 		panic(err)
 	}
 
@@ -157,8 +176,9 @@ func main() {
 }
 ```
 
-masking 兩端都不用操心：`Dial` 和 `NewClientConn` 會設好 `maskSendFrame`，所以
-client 的 `SendText`、`SendPong` 會 mask，而 server 的不會。
+masking 兩端都不用操心：`ClientHandShake` 和 `ServerHandShake` 在組出回傳的
+`Conn` 時就會設好 `maskSendFrame`，所以 client 的 `SendText`、`SendPong` 會
+mask，而 server 的不會。
 
 ### TLS (wss://)
 
@@ -167,20 +187,24 @@ caCert, _ := os.ReadFile("ca.crt")
 caCertPool := x509.NewCertPool()
 caCertPool.AppendCertsFromPEM(caCert)
 
-conn, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: caCertPool})
+netConn, req, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: caCertPool})
 ```
 
 ### HTTP Hijacking
 
 ```go
 func handler(w http.ResponseWriter, r *http.Request) {
-	conn, err := wlgows.HijackFromHttp(w, r) // 或 HijackFromGin(c)
+	netConn, bufReader, err := wlgows.HijackFromHttp(w) // 或 HijackFromGin(c)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer netConn.Close()
 
-	conn.HandShake()
+	// r 已經被 net/http 解析過了，不需要再讀一次。
+	conn, _, err := wlgows.ServerHandShake(netConn, bufReader, r)
+	if err != nil {
+		return
+	}
 	// ... read and send
 }
 ```
@@ -218,52 +242,91 @@ go run ./example/stream_client   # 另一個終端機，按兩次 enter 就會�
 handshake 收尾、會擋掉 RFC 6455 不允許的 frame，而這些都不會出現在 example 的程
 式碼裡。每個檔案剩下來的，就是你自己本來就要寫的那部分：hook。
 
-## Coming from v2
+## 從 v3 過來
 
-`Msg` 沒有了。一個 message 就是一個 `Frames`，也就是 `[]*Frame`，所以你拿到的東
-西就是實際收到的東西。
+`ClientConn` 和 `ServerConn` 沒有了。現在只有一個 `Conn`，兩側共用，而且它不
+帶任何 handshake 狀態 —— handshake 是一次函式呼叫，不是存在
+`ClientRequest`/`ServerResponse` 裡的東西。
 
-| v2 | v3 |
+| v3 | v4 |
 |---|---|
-| `conn.GetNextMsg()` | `conn.GetNextFrame(max)`，或交給 `Listener` 幫你組 |
-| `msg.GetStr()` / `msg.GetBytes()` | `frames.String()` / `frames.Bytes()` |
-| `conn.SendByte(b)` | `conn.SendBinary(b)` |
-| `Error{Type, Msg}` | sentinel error —— `errors.Is(err, wlgows.ErrInvalidUTF8)` |
-| `NewConn(c, req, res)` | `NewConn(c, req, res, maskSendFrame)` |
+| `conn, err := wlgows.Dial(url, tls)` 再 `conn.HandShake()` | `netConn, req, err := wlgows.Dial(url, tls)` 再 `conn, res, err := wlgows.ClientHandShake(netConn, r, req)` |
+| `conn, err := server.Accept()` 再 `conn.HandShake()` | `netConn, err := server.Accept()`，自己讀 request，再 `conn, res, err := wlgows.ServerHandShake(netConn, r, req)` |
+| `sc, err := wlgows.HijackFromHttp(w, r)` 再 `sc.HandShake()` | `netConn, r, err := wlgows.HijackFromHttp(w)` 再 `conn, res, err := wlgows.ServerHandShake(netConn, r, req)` |
+| `wlgows.NewClientConn(c, req)` / `wlgows.NewServerConn(c, req)` | 沒有了 —— 用上面的 handshake 函式組出 `Conn`，或直接 `wlgows.NewConn(c, r, maskSendFrame)` |
+| `conn.ClientRequest` / `conn.ServerResponse` | 沒有了 —— handshake 函式直接把 response 回傳給你，不再存起來 |
 
-`GetNextFrame` 收一個 byte 上限，這是 `GetNextMsg` 沒辦法表達的：對端可以用 10
-byte 的 header 宣告 10 GB 的 payload，而這個上限會在讀 header 的當下就拒絕它，任
-何配置都還沒發生。
+拆成兩步是為了 `*bufio.Reader`：`http.ReadRequest` 和 `http.ReadResponse` 可能
+會多讀進一些 header 區塊之後的 byte —— 也就是第一個 frame 的開頭 —— 所以
+handshake 跟之後讀 frame 用的必須是同一個 reader。`ClientHandShake`/
+`ServerHandShake` 把它收成一個參數，並用它組出回傳的 `Conn`，所以這件事再也
+不會不小心弄錯。`Dial`/`Server.Accept`/`HijackFromHttp` 保持很薄 —— 連線（或
+接受、或 hijack）之後就把原始材料交給你 —— 所以 handshake 什麼時候真正跑，還
+是由你決定，送出前也還是能替 request 加 header。
 
 ## Design
 
 **單一 package。** 全部都在根目錄的 `wlgows` package：
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v3"
+import "github.com/weilun-shrimp/wlgows/v4"
 
-conn, _ := wlgows.Dial(url, nil)
-s, _    := wlgows.Run(":8001")
-sc, _   := wlgows.HijackFromHttp(w, r)
+netConn, req, _ := wlgows.Dial(url, nil)
+s, _             := wlgows.Run(":8001")
+hjConn, r, _     := wlgows.HijackFromHttp(w)
 ```
 
-**連線一定要用 constructor 建。** `Conn`、`ClientConn`、`ServerConn` 和 `Server`
-都帶著未匯出的相依欄位，所以手寫 struct literal 會在第一次使用時 panic。`Dial`、
-`Run`、`Accept` 和 `HijackFrom*` 已經幫你做對了；只有直接建構時要留意：
+**`Conn` 一定要用 constructor 建。** 它帶著未匯出的相依欄位，所以手寫 struct
+literal 會在第一次使用時 panic。`ClientHandShake` 和 `ServerHandShake` 已經幫
+你做對了 —— 先用 `Dial`/`Server.Accept`/`HijackFromHttp` 連上（或接受、或
+hijack），再跑其中一個拿到組好的 `Conn`；只有直接建構 `Conn` 時要留意：
 
 ```go
-cc := wlgows.NewClientConn(netConn, req)
-sc := wlgows.NewServerConn(netConn, req)
-c  := wlgows.NewConn(netConn, req, res, false) // false：server 不 mask（5.1）
+c := wlgows.NewConn(netConn, r, false) // false：server 不 mask（5.1）
 ```
 
 最後那個參數就是 RFC 6455 5.1，取決於你是哪一側：client 送出的每個 frame 都要
 mask，server 一個都不 mask，而對端遇到錯的那種會直接讓連線失敗。它在建構時就決
-定好，所以沒有任何一個送出的呼叫能傳錯。`NewClientConn` 和 `NewServerConn` 會幫
-你填。
+定好，所以沒有任何一個送出的呼叫能傳錯。`ClientHandShake` 和 `ServerHandShake`
+會幫你填。
 
-匯出的欄位（`ClientRequest`、`ServerResponse`、`TCPAddr`、`TCPListener`）可讀可
-寫。
+`Server` 匯出的欄位（`TCPAddr`、`TCPListener`）可讀可寫。
+
+## 記憶體 vs. 速度：自己決定 reader 的大小
+
+`bufio.NewReader(netConn)` —— 上面每個範例用的都是它 —— 每條連線預設吃 4096
+byte 的 buffer。`ClientHandShake`/`ServerHandShake`/`NewConn` 不管這個大小，
+你給它什麼 `*bufio.Reader` 它就用什麼。如果你想少一點點速度、換每條連線少很
+多記憶體，自己決定大小就好：
+
+```go
+r := bufio.NewReaderSize(netConn, 16) // 16 是下限 —— 低於它會被 bufio 拉到 16
+```
+
+16 不是隨便挑的下限：一個 frame 的 header（2 byte）加上最長的 extended
+length（8）再加上 mask key（4）是 14 byte，剛好在 16 之下 —— 所以不管用哪種
+大小，frame 除了 payload 以外的部分都還是一次讀完。比 16 大能多買到的，是小
+的 payload 剛好搭同一次讀進來；一旦超過 16 byte，大的 payload 不管 buffer 多
+大都得自己再讀一次，訊息越大，差距就越小。
+
+記憶體那一側，會隨著同時開著的連線數放大：
+
+| | 16 byte | 4096 byte（預設） |
+|---|---|---|
+| 每條連線 | 16 B | 4096 B |
+| 1,000 條連線 | 約 16 KB | 約 4 MB |
+| 100,000 條連線 | 約 1.6 MB | 約 400 MB |
+
+而讀取次數那一側，會隨 frame 大小和連續到達的數量放大：
+
+| | 16 byte | 4096 byte（預設） |
+|---|---|---|
+| 一個 10 B 的 frame | 1 次讀取 | 1 次讀取 |
+| 連續 100 個 10 B 的 frame（共 1000 B） | 約 63 次讀取 | 最少 1 次讀取 |
+| 一個 1 MB 的 frame | payload 繞過 buffer —— 兩種讀取次數一樣 | payload 繞過 buffer —— 兩種讀取次數一樣 |
+
+（100 個 frame 那一列假設呼叫 `Read` 時資料早就到了，這是穩定串流下的常態；
+如果對方傳得很慢、斷斷續續，差距就會縮小。）
 
 ## Reading
 
@@ -477,7 +540,7 @@ wlgows.Loop(func(stop chan<- struct{}) {
 對，不要用 `==`：
 
 ```go
-if _, err := sc.HandShake(); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
+if _, _, err := wlgows.ServerHandShake(netConn, r, req); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
 	// ...
 }
 ```
@@ -503,7 +566,7 @@ if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 ```bash
 go test ./...                              # 全部
 go test -race ./...                        # integration test 會開 goroutine
-go test -cover .                           # 99.8% of statements
+go test -cover .                           # 99.7% of statements
 go test -bench BenchmarkFramesAssembly .   # benchmark，單純的 go test 會跳過
 ```
 
@@ -512,7 +575,7 @@ go test -bench BenchmarkFramesAssembly .   # benchmark，單純的 go test 會�
 
 | 檔案 | 內容 |
 |---|---|
-| [`Fakes_test.go`](./Fakes_test.go) | 共用的替身 —— `fakeConn`（記憶體版 `net.Conn`）、`fakeLocker`（會計次，也會抓出誤用）、`fixedRandRead`、`scriptedReadTCPConn` |
+| [`Fakes_test.go`](./Fakes_test.go) | 共用的替身 —— `fakeConn`（記憶體版 `net.Conn`）、`fakeIOWriter`/`fakeIOReader`（單純的 `io.Writer`/`io.Reader` 替身）、`fakeLocker`（會計次，也會抓出誤用）、`fixedRandRead`、`scriptedReadFromReader` |
 | [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | `Listen` 跑在真的 `net.Pipe` 上，端到端，**不**替換任何 `di` |
 
 integration test 抓得到 unit test 結構上抓不到的接線錯誤 —— 例如 constructor 忘了
@@ -537,10 +600,10 @@ struct（裡面是 function value）的實作；type 則把相依放在 construc
 
 ```go
 // package 層級的 func：傳一個 di struct 進去
-cc, err := dial("ws://localhost:8001", nil, dialDI{...})
+netConn, req, err := dial("ws://localhost:8001", nil, dialDI{...})
 
 // method：覆蓋掉 constructor 設好的欄位
-conn := NewConn(netConn, nil, nil, false)
+conn := NewConn(netConn, bufio.NewReader(netConn), false)
 conn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) { ... }
 ```
 
@@ -553,18 +616,17 @@ f, _ := newFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: 1, Mask: true
 // f.Seal() == []byte{0x81, 0x82, 1, 2, 3, 4, 'h'^1, 'i'^2}
 ```
 
-有兩個測試刻意斷言的是「目前的行為」而不是「正確的行為」，而且在名稱和註解裡都說
-清楚了：
+有一個測試刻意斷言的是「目前的行為」而不是「正確的行為」，而且在名稱和註解裡都
+說清楚了：
 
-- `TestResponseWriterWrittenBodyIsLostWithoutFlush` —— `Write` 寫進一個從來沒有
-  flush 的 `bufio.Writer`，而 `GenerateResponse` 讀的是底層的 buffer，所以短的
-  body 永遠到不了 response，`Content-Length` 也一直是 0。超過 4096 byte 的 body 會
-  繞過 buffer，因此活得下來。等這個被修好，這個測試就會失敗，並提醒你更新它。
-- `TestDial/an_unknown_scheme_yields_a_connection_with_no_socket` —— `dial` 裡的
+- `TestDial/an_unknown_scheme_yields_a_nil_conn_and_no_error` —— `dial` 裡的
   scheme switch 沒有 default 分支。正式環境到不了，因為 `ValidateWebsocketUrl` 擋
   在前面；只有一個寬鬆的 fake 才能把它露出來。
 
-`RequestToPlainHTTPMsg` 是唯一一個覆蓋率不到 100% 的 function。
+覆蓋率最主要的缺口是 `ClientHandShake` 自己的成功路徑：真正的 client 每次呼叫
+都會用 `crypto/rand` 挑一把新的 key，所以沒辦法用一份固定的 wire response 去對
+上它，除非真的接上一條雙向的連線。它包住的 `clientHandShake`（DI 那一步）和它
+成功時會用到的 `NewConn`，兩個都各自測到 100%。
 
 ## License
 

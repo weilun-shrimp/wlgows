@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"bytes"
 	"testing"
 )
@@ -10,7 +11,7 @@ import (
 // is what sets closeSent.
 func hookConn() (*Conn, *[]NewControlFrameConfig) {
 	var sent []NewControlFrameConfig
-	conn := NewConn(newFakeConn(nil), nil, nil, false)
+	conn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
 	conn.di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
 		sent = append(sent, config)
 		return NewControlFrame(config)

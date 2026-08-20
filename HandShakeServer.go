@@ -3,7 +3,6 @@ package wlgows
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,99 +10,67 @@ import (
 	"strings"
 )
 
-type ServerConn struct {
-	Conn
-	di serverConnDI
+type ServerHandShakeRespWriter interface {
+	DeclineByError(error)
+	UpgradeForWebsocket(string)
+	GenerateResponse() *http.Response
 }
 
-type serverConnDI struct {
-	readRequest              func() (*http.Request, error)
-	validateHandShakeRequest func(client_request *http.Request) error
-	newResponseWriter        func() *ResponseWriter
-	sendHand                 func(w *ResponseWriter) (*http.Response, error)
-	responseToPlainHTTPMsg   func(resp *http.Response) (string, error)
-	bufioNewReader           func(rd io.Reader) *bufio.Reader
-	httpReadRequest          func(b *bufio.Reader) (*http.Request, error)
-	fmtPrintln               func(a ...any) (n int, err error)
-}
+/*
+ServerHandShake runs the RFC 6455 4.1 server opening handshake over c: it
+validates req and writes back either a declining response or an upgrading
+one. req must already be parsed — read it yourself first (e.g.
+http.ReadRequest for a raw accept, or from whatever already parsed it for a
+hijacked connection). On success it wraps c in a ready-to-use *Conn —
+unmasked, since 5.1 forbids a server masking what it sends. conn is nil
+whenever err is non-nil; the response is still returned so a caller can
+inspect what actually went out.
 
-func NewServerConn(c net.Conn, req *http.Request) *ServerConn {
-	sc := &ServerConn{Conn: *NewConn(c, req, nil, false)}
-	sc.di = serverConnDI{
-		readRequest:              sc.ReadRequest,
+r must be the same *bufio.Reader you read req from (or, for an
+already-parsed req such as a hijacked connection's, the same reader you go on
+to read frames from) — the returned *Conn reuses it rather than wrapping c
+again.
+*/
+func ServerHandShake(c net.Conn, r *bufio.Reader, req *http.Request) (*Conn, *http.Response, error) {
+	res, err := serverHandShake(c, req, serverHandShakeDI{
 		validateHandShakeRequest: ValidateHandShakeRequest,
-		newResponseWriter:        NewResponseWriter,
-		sendHand:                 sc.SendHand,
-		responseToPlainHTTPMsg:   responseToPlainHTTPMsg,
-		bufioNewReader:           bufio.NewReader,
-		httpReadRequest:          http.ReadRequest,
-		fmtPrintln:               fmt.Println,
+		newResponseWriter:        func() ServerHandShakeRespWriter { return NewResponseWriter() },
+		sendHandShakeResponse:    SendHandShakeResponse,
+	})
+	if err != nil {
+		return nil, res, err
 	}
-	return sc
+	return NewConn(c, r, false), res, nil
 }
 
-func (sc *ServerConn) HandShake() (*http.Response, error) {
-	if sc.Conn.ServerResponse != nil {
-		return nil, errors.New(" Server connection detect the erorr in handshake process. Server Response has been set in connection")
-	}
-	// find invalid error
-	var invalid error
-	if sc.Conn.ClientRequest == nil { // fetch client request if needed.
-		_, invalid = sc.di.readRequest()
-	}
-	if invalid == nil {
-		invalid = sc.di.validateHandShakeRequest(sc.Conn.ClientRequest)
+type serverHandShakeDI struct {
+	validateHandShakeRequest func(req *http.Request) error
+	newResponseWriter        func() ServerHandShakeRespWriter
+	sendHandShakeResponse    func(w io.Writer, res *http.Response) error
+}
+
+func serverHandShake(w io.Writer, req *http.Request, di serverHandShakeDI) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("ServerHandShake: %w", ErrHandshakeRequestNil)
 	}
 
-	writer := sc.di.newResponseWriter()
+	invalid := di.validateHandShakeRequest(req)
+
+	writer := di.newResponseWriter()
 	if invalid != nil {
 		writer.DeclineByError(invalid)
 	} else {
-		writer.UpgradeForWebsocket(sc.Conn.ClientRequest.Header.Get("Sec-Websocket-Key"))
+		writer.UpgradeForWebsocket(req.Header.Get("Sec-Websocket-Key"))
 	}
 
-	res, err := sc.di.sendHand(writer)
+	res := writer.GenerateResponse()
+	err := di.sendHandShakeResponse(w, res)
 	if err == nil && invalid != nil {
 		err = invalid
 	}
+	req.Response = res
+	res.Request = req
 	return res, err
-}
-
-// Generate the http.Response and send back to client and put into sc.Conn.ServerResponse if error not occured
-func (sc *ServerConn) SendHand(w *ResponseWriter) (*http.Response, error) {
-	sc.Conn.di.writeLocker.Lock()
-	defer sc.Conn.di.writeLocker.Unlock()
-	res := w.GenerateResponse()
-	plain_http_msg, err := sc.di.responseToPlainHTTPMsg(res)
-	if err != nil {
-		return res, err
-	}
-	_, err = sc.Write([]byte(plain_http_msg))
-	if err == nil {
-		sc.Conn.ServerResponse = res
-		if sc.Conn.ClientRequest != nil {
-			sc.Conn.ClientRequest.Response = res
-			res.Request = sc.Conn.ClientRequest
-		}
-	}
-	return res, err
-}
-
-// Read and decode the Client http request msg and set to server connection's client request
-func (sc *ServerConn) ReadRequest() (*http.Request, error) {
-	sc.Conn.di.readLocker.Lock()
-	defer sc.Conn.di.readLocker.Unlock()
-	if sc.Conn.ClientRequest != nil { // fetch client request if needed.
-		return sc.Conn.ClientRequest, fmt.Errorf("ReadRequest: %w", ErrClientRequestHasSet)
-	}
-
-	req, err := sc.di.httpReadRequest(sc.di.bufioNewReader(sc))
-	if err != nil {
-		sc.di.fmtPrintln("Error reading request:", err)
-		return nil, fmt.Errorf("ReadRequest: %w: %w", ErrHttpMsgFormationInvalid, err)
-	}
-	sc.Conn.ClientRequest = req
-	return req, nil
 }
 
 /*
@@ -146,6 +113,29 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 		return fmt.Errorf("validate handshake: Sec-WebSocket-Version is %q: %w", val, ErrHttpSecWebSocketVersionNotSupported)
 	}
 	return nil
+}
+
+// SendHandShakeResponse writes res to w as a plain HTTP message.
+func SendHandShakeResponse(w io.Writer, res *http.Response) error {
+	return sendHandShakeResponse(w, res, sendHandShakeResponseDI{
+		responseToPlainHTTPMsg: responseToPlainHTTPMsg,
+	})
+}
+
+type sendHandShakeResponseDI struct {
+	responseToPlainHTTPMsg func(res *http.Response) (string, error)
+}
+
+func sendHandShakeResponse(w io.Writer, res *http.Response, di sendHandShakeResponseDI) error {
+	if res == nil {
+		return fmt.Errorf("SendHandShakeResponse: %w", ErrHandshakeResponseNil)
+	}
+	plainHttpResponseMsg, err := di.responseToPlainHTTPMsg(res)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write([]byte(plainHttpResponseMsg))
+	return err
 }
 
 // Function to convert http.Response to a plain HTTP message
@@ -192,7 +182,3 @@ func responseToPlainHTTPMsgInner(resp *http.Response, di responseToPlainHTTPMsgD
 
 	return buf.String(), nil
 }
-
-// The send path is deliberately absent in v3 for now. Server frames are allowed
-// to go unmasked (RFC 6455 5.1), so whatever replaces it may pass need_mask
-// false.

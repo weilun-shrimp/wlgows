@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"errors"
 	"net"
 	"net/http"
@@ -8,34 +9,36 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func HijackFromHttp(w http.ResponseWriter, r *http.Request) (*ServerConn, error) {
-	return hijackFromHttp(w, r, hijackFromHttpDI{
-		newServerConn: NewServerConn,
-	})
-}
+/*
+HijackFromHttp takes over an already-accepted HTTP connection — nothing more.
+It does not run the handshake or build a *Conn, so you're free to do both
+yourself, using the request net/http already parsed for you:
 
-type hijackFromHttpDI struct {
-	newServerConn func(c net.Conn, req *http.Request) *ServerConn
-}
+	netConn, r, err := wlgows.HijackFromHttp(w)
+	res, err := wlgows.ServerHandShake(netConn, req)
+	conn := wlgows.NewConn(netConn, r, false)
 
-func hijackFromHttp(w http.ResponseWriter, r *http.Request, di hijackFromHttpDI) (*ServerConn, error) {
+r is the hijacked connection's own *bufio.Reader — net/http may have buffered
+bytes past the request headers (the start of the first frame) before handing
+the connection over, and a fresh reader here would strand them. It must be
+the same reader you pass to NewConn.
+*/
+func HijackFromHttp(w http.ResponseWriter) (net.Conn, *bufio.Reader, error) {
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		return nil, errors.New("responsewriter does not suport the hijack connection")
+		return nil, nil, errors.New("responsewriter does not suport the hijack connection")
 	}
-	conn, _, err := hijacker.Hijack()
+	conn, bufRW, err := hijacker.Hijack()
 	if err != nil {
-		// http.Error(w, "could not hijack connection", http.StatusInternalServerError)
-		return nil, err
+		return nil, nil, err
 	}
-	return di.newServerConn(conn, r), nil
+	return conn, bufRW.Reader, nil
 }
 
 /*
-gin.ResponseWriter embeds http.ResponseWriter and http.Hijacker, and
-gin.Context.Request is already an *http.Request, so the gin case is just
-HijackFromHttp with the two values pulled off the context.
+gin.ResponseWriter embeds http.ResponseWriter and http.Hijacker, so the gin
+case is just HijackFromHttp with the writer pulled off the context.
 */
-func HijackFromGin(c *gin.Context) (*ServerConn, error) {
-	return HijackFromHttp(c.Writer, c.Request)
+func HijackFromGin(c *gin.Context) (net.Conn, *bufio.Reader, error) {
+	return HijackFromHttp(c.Writer)
 }

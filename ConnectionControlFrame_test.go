@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bufio"
 	"errors"
 	"testing"
 )
@@ -24,7 +25,7 @@ type capture struct {
 func captureSend(t *testing.T, maskSendFrame bool, send func(*Conn) error) capture {
 	t.Helper()
 	got := capture{conn: newFakeConn(nil), locker: &fakeLocker{}}
-	wsConn := NewConn(got.conn, nil, nil, maskSendFrame)
+	wsConn := NewConn(got.conn, bufio.NewReader(got.conn), maskSendFrame)
 	wsConn.di.writeLocker = got.locker
 	wsConn.di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
 		got.config = config
@@ -59,7 +60,7 @@ func assertPropagatesBuildError(t *testing.T, send func(*Conn) error) {
 	t.Helper()
 	want := errors.New("cannot build")
 	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, nil, nil, false)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
 	wsConn.di.newControlFrame = func(NewControlFrameConfig) (*Frame, error) { return nil, want }
 	if err := send(wsConn); !errors.Is(err, want) {
 		t.Errorf("err = %v, want %v", err, want)

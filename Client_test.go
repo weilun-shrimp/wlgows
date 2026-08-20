@@ -18,7 +18,6 @@ func baseDialDI(conn net.Conn) dialDI {
 		validateWebsocketUrl: ValidateWebsocketUrl,
 		netDial:              func(string, string) (net.Conn, error) { return conn, nil },
 		tlsDial:              func(string, string, *tls.Config) (*tls.Conn, error) { return nil, nil },
-		newClientConn:        NewClientConn,
 	}
 }
 
@@ -38,21 +37,18 @@ func TestDial(t *testing.T) {
 					return nil, nil
 				}
 
-				cc, err := dial(scheme+"://localhost:8001/chat", nil, di)
+				conn, req, err := dial(scheme+"://localhost:8001/chat", nil, di)
 				if err != nil {
 					t.Fatalf("dial: %v", err)
 				}
 				if gotNetwork != "tcp" || gotAddress != "localhost:8001" {
 					t.Errorf("netDial(%q, %q), want (tcp, localhost:8001)", gotNetwork, gotAddress)
 				}
-				if cc.Conn.Conn != net.Conn(netConn) {
-					t.Error("the dialled conn should be embedded in the ClientConn")
+				if conn != net.Conn(netConn) {
+					t.Error("dial should return the dialled conn")
 				}
-				if cc.ClientRequest == nil || cc.ClientRequest.URL.Scheme != scheme {
-					t.Error("the built request should be stored on the ClientConn")
-				}
-				if cc.di.upgradeRequest == nil {
-					t.Error("dial must build the ClientConn through its constructor")
+				if req == nil || req.URL.Scheme != scheme {
+					t.Error("dial should return the built request")
 				}
 			})
 		}
@@ -75,7 +71,7 @@ func TestDial(t *testing.T) {
 					return nil, nil
 				}
 
-				if _, err := dial(scheme+"://localhost:8001/", want, di); err != nil {
+				if _, _, err := dial(scheme+"://localhost:8001/", want, di); err != nil {
 					t.Fatalf("dial: %v", err)
 				}
 				if !called {
@@ -94,7 +90,7 @@ func TestDial(t *testing.T) {
 		di.httpNewRequest = func(string, string, io.Reader) (*http.Request, error) {
 			return nil, wantErr
 		}
-		if _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
+		if _, _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
 		}
 	})
@@ -107,7 +103,7 @@ func TestDial(t *testing.T) {
 			t.Fatal("must not dial when validation failed")
 			return nil, nil
 		}
-		if _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
+		if _, _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
 		}
 	})
@@ -116,7 +112,7 @@ func TestDial(t *testing.T) {
 		wantErr := errors.New("connection refused")
 		di := baseDialDI(nil)
 		di.netDial = func(string, string) (net.Conn, error) { return nil, wantErr }
-		if _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
+		if _, _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
 		}
 	})
@@ -125,30 +121,30 @@ func TestDial(t *testing.T) {
 		wantErr := errors.New("handshake failure")
 		di := baseDialDI(nil)
 		di.tlsDial = func(string, string, *tls.Config) (*tls.Conn, error) { return nil, wantErr }
-		if _, err := dial("wss://localhost:8001", nil, di); !errors.Is(err, wantErr) {
+		if _, _, err := dial("wss://localhost:8001", nil, di); !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
 		}
 	})
 
 	/*
 		The scheme switch has no default branch, so a scheme that slips past
-		validation leaves both conn and err nil and yields a ClientConn wrapping
-		a nil socket. Unreachable in production because the real
-		ValidateWebsocketUrl gates it — only a permissive fake exposes it.
+		validation leaves both conn and err nil. Unreachable in production
+		because the real ValidateWebsocketUrl gates it — only a permissive
+		fake exposes it.
 	*/
-	t.Run("an unknown scheme yields a connection with no socket", func(t *testing.T) {
+	t.Run("an unknown scheme yields a nil conn and no error", func(t *testing.T) {
 		di := baseDialDI(nil)
 		di.validateWebsocketUrl = func(*url.URL) error { return nil }
 		di.netDial = func(string, string) (net.Conn, error) {
 			t.Fatal("no dial should happen for an unknown scheme")
 			return nil, nil
 		}
-		cc, err := dial("ftp://localhost:8001", nil, di)
+		conn, _, err := dial("ftp://localhost:8001", nil, di)
 		if err != nil {
 			t.Fatalf("dial: %v", err)
 		}
-		if cc.Conn.Conn != nil {
-			t.Error("expected a nil socket; the switch has no default branch")
+		if conn != nil {
+			t.Error("expected a nil conn; the switch has no default branch")
 		}
 	})
 }
@@ -206,7 +202,7 @@ func TestValidateWebsocketUrl(t *testing.T) {
 }
 
 func TestDialRealWiringRejectsABadUrl(t *testing.T) {
-	if _, err := Dial("ftp://localhost:8001", nil); err == nil {
+	if _, _, err := Dial("ftp://localhost:8001", nil); err == nil {
 		t.Error("Dial should reject a non websocket scheme")
 	}
 }

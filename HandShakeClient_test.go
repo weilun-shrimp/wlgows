@@ -10,65 +10,34 @@ import (
 	"testing"
 )
 
-func TestNewClientConn(t *testing.T) {
-	netConn := newFakeConn(nil)
-	request := httptestRequest(t)
-
-	clientConn := NewClientConn(netConn, request)
-
-	if clientConn.ClientRequest != request {
-		t.Error("ClientRequest was not set on the embedded Conn")
-	}
-	if clientConn.ServerResponse != nil {
-		t.Error("ServerResponse should start nil")
-	}
-	if clientConn.Conn.di.getFrameFromTCPConn == nil {
-		t.Error("the embedded Conn must get its own di")
-	}
-	for name, constructor := range map[string]any{
-		"upgradeRequest":            clientConn.di.upgradeRequest,
-		"sendHand":                  clientConn.di.sendHand,
-		"readResponse":              clientConn.di.readResponse,
-		"validateHandShakeResponse": clientConn.di.validateHandShakeResponse,
-		"requestToPlainHTTPMsg":     clientConn.di.requestToPlainHTTPMsg,
-		"bufioNewReader":            clientConn.di.bufioNewReader,
-		"httpReadResponse":          clientConn.di.httpReadResponse,
-	} {
-		if constructor == nil {
-			t.Errorf("NewClientConn left di.%s nil", name)
-		}
-	}
-}
-
-func TestClientConnHandShake(t *testing.T) {
+func TestClientHandShake(t *testing.T) {
 	// order records which steps ran, so short-circuiting is observable.
-	newStubbed := func(t *testing.T, order *[]string) *ClientConn {
-		t.Helper()
-		clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-		clientConn.di.upgradeRequest = func(*http.Request) error {
-			*order = append(*order, "upgrade")
-			return nil
+	newOrderTrackingDI := func(order *[]string) clientHandShakeDI {
+		return clientHandShakeDI{
+			upgradeRequest: func(*http.Request) error {
+				*order = append(*order, "upgrade")
+				return nil
+			},
+			sendHandShakeRequest: func(io.Writer, *http.Request) error {
+				*order = append(*order, "send")
+				return nil
+			},
+			readHandShakeResponse: func(*bufio.Reader, *http.Request) (*http.Response, error) {
+				*order = append(*order, "read")
+				return &http.Response{StatusCode: 101}, nil
+			},
+			validateHandShakeResponse: func(*http.Response, string) error {
+				*order = append(*order, "validate")
+				return nil
+			},
 		}
-		clientConn.di.sendHand = func() error {
-			*order = append(*order, "send")
-			return nil
-		}
-		clientConn.di.readResponse = func() error {
-			*order = append(*order, "read")
-			return nil
-		}
-		clientConn.di.validateHandShakeResponse = func(*http.Response, string) error {
-			*order = append(*order, "validate")
-			return nil
-		}
-		return clientConn
 	}
 
 	t.Run("runs all four steps in order", func(t *testing.T) {
 		var order []string
-		clientConn := newStubbed(t, &order)
-		if err := clientConn.HandShake(); err != nil {
-			t.Fatalf("HandShake: %v", err)
+		req := httptestRequest(t)
+		if _, err := clientHandShake(nil, nil, req, newOrderTrackingDI(&order)); err != nil {
+			t.Fatalf("clientHandShake: %v", err)
 		}
 		want := []string{"upgrade", "send", "read", "validate"}
 		if strings.Join(order, ",") != strings.Join(want, ",") {
@@ -78,18 +47,33 @@ func TestClientConnHandShake(t *testing.T) {
 
 	t.Run("passes the Sec-WebSocket-Key to validation", func(t *testing.T) {
 		var order []string
-		clientConn := newStubbed(t, &order)
-		clientConn.ClientRequest.Header.Set("Sec-WebSocket-Key", "the-key")
+		di := newOrderTrackingDI(&order)
+		req := httptestRequest(t)
+		req.Header.Set("Sec-WebSocket-Key", "the-key")
 		var gotKey string
-		clientConn.di.validateHandShakeResponse = func(_ *http.Response, key string) error {
+		di.validateHandShakeResponse = func(_ *http.Response, key string) error {
 			gotKey = key
 			return nil
 		}
-		if err := clientConn.HandShake(); err != nil {
-			t.Fatalf("HandShake: %v", err)
+		if _, err := clientHandShake(nil, nil, req, di); err != nil {
+			t.Fatalf("clientHandShake: %v", err)
 		}
 		if gotKey != "the-key" {
 			t.Errorf("key = %q, want %q", gotKey, "the-key")
+		}
+	})
+
+	t.Run("returns the response even when validation fails", func(t *testing.T) {
+		var order []string
+		di := newOrderTrackingDI(&order)
+		want := errors.New("bad accept")
+		di.validateHandShakeResponse = func(*http.Response, string) error { return want }
+		res, err := clientHandShake(nil, nil, httptestRequest(t), di)
+		if !errors.Is(err, want) {
+			t.Fatalf("err = %v, want %v", err, want)
+		}
+		if res == nil || res.StatusCode != 101 {
+			t.Errorf("res = %v, want the parsed response to survive a validation failure", res)
 		}
 	})
 
@@ -106,37 +90,54 @@ func TestClientConnHandShake(t *testing.T) {
 	for _, testCase := range failures {
 		t.Run(testCase.name, func(t *testing.T) {
 			var order []string
-			clientConn := newStubbed(t, &order)
+			di := newOrderTrackingDI(&order)
 			want := errors.New(testCase.breakStep + " failed")
 			switch testCase.breakStep {
 			case "upgrade":
-				clientConn.di.upgradeRequest = func(*http.Request) error {
+				di.upgradeRequest = func(*http.Request) error {
 					order = append(order, "upgrade")
 					return want
 				}
 			case "send":
-				clientConn.di.sendHand = func() error {
+				di.sendHandShakeRequest = func(io.Writer, *http.Request) error {
 					order = append(order, "send")
 					return want
 				}
 			case "read":
-				clientConn.di.readResponse = func() error {
+				di.readHandShakeResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
 					order = append(order, "read")
-					return want
+					return nil, want
 				}
 			case "validate":
-				clientConn.di.validateHandShakeResponse = func(*http.Response, string) error {
+				di.validateHandShakeResponse = func(*http.Response, string) error {
 					order = append(order, "validate")
 					return want
 				}
 			}
-			if err := clientConn.HandShake(); !errors.Is(err, want) {
+			if _, err := clientHandShake(nil, nil, httptestRequest(t), di); !errors.Is(err, want) {
 				t.Fatalf("err = %v, want %v", err, want)
 			}
 			if strings.Join(order, ",") != testCase.wantOrder {
 				t.Errorf("order = %v, want %s", order, testCase.wantOrder)
 			}
 		})
+	}
+}
+
+// The success path's Conn-wrapping is trivial composition of clientHandShake
+// (tested above via DI) and NewConn (tested in Connection_test.go), and isn't
+// retested here for real: the real UpgradeRequest picks a fresh crypto/rand
+// key on every call, so a canned wire response can't be made to match it
+// without a live two-ended connection.
+func TestClientHandShakeRealWiringReturnsNoConnOnFailure(t *testing.T) {
+	netConn := newFakeConn(nil) // empty: ReadHandShakeResponse fails immediately
+	r := bufio.NewReader(netConn)
+	conn, _, err := ClientHandShake(netConn, r, httptestRequest(t))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if conn != nil {
+		t.Error("expected no Conn when the handshake fails")
 	}
 }
 
@@ -162,22 +163,19 @@ func TestUpgradeRequest(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects firstKey nil request", func(t *testing.T) {
+	t.Run("rejects a nil request", func(t *testing.T) {
 		err := upgradeRequest(nil, upgradeRequestDI{
 			generateWebSocketKey: func() string {
-				t.Fatal("key generation must not run for firstKey nil request")
+				t.Fatal("key generation must not run for a nil request")
 				return ""
 			},
 		})
-		if err == nil {
-			t.Fatal("expected an error for firstKey nil request")
-		}
-		if !strings.Contains(err.Error(), "ClientRequest is nil") {
-			t.Errorf("err = %q", err.Error())
+		if !errors.Is(err, ErrHandshakeRequestNil) {
+			t.Errorf("err = %v, want %v", err, ErrHandshakeRequestNil)
 		}
 	})
 
-	t.Run("real wiring produces firstKey usable key", func(t *testing.T) {
+	t.Run("real wiring produces a usable key", func(t *testing.T) {
 		request := httptestRequest(t)
 		if err := UpgradeRequest(request); err != nil {
 			t.Fatalf("UpgradeRequest: %v", err)
@@ -193,109 +191,111 @@ func TestUpgradeRequest(t *testing.T) {
 	})
 }
 
-func TestClientConnSendHand(t *testing.T) {
+func TestSendHandShakeRequest(t *testing.T) {
 	t.Run("writes the plain http message", func(t *testing.T) {
-		netConn := newFakeConn(nil)
-		clientConn := NewClientConn(netConn, httptestRequest(t))
-		clientConn.di.requestToPlainHTTPMsg = func(*http.Request) (string, error) {
-			return "GET / HTTP/1.1\r\n\r\n", nil
+		w := &fakeIOWriter{}
+		err := sendHandShakeRequest(w, httptestRequest(t), sendHandShakeRequestDI{
+			requestToPlainHTTPMsg: func(*http.Request) (string, error) {
+				return "GET / HTTP/1.1\r\n\r\n", nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("sendHandShakeRequest: %v", err)
 		}
-		if err := clientConn.SendHand(); err != nil {
-			t.Fatalf("SendHand: %v", err)
-		}
-		if string(netConn.written()) != "GET / HTTP/1.1\r\n\r\n" {
-			t.Errorf("written = %q", netConn.written())
-		}
-	})
-
-	t.Run("rejects firstKey nil client request", func(t *testing.T) {
-		clientConn := NewClientConn(newFakeConn(nil), nil)
-		err := clientConn.SendHand()
-		if err == nil || !strings.Contains(err.Error(), "ClientRequest is nil") {
-			t.Errorf("err = %v, want firstKey nil-request error", err)
+		if w.String() != "GET / HTTP/1.1\r\n\r\n" {
+			t.Errorf("written = %q", w.String())
 		}
 	})
 
-	t.Run("propagates firstKey serialisation error", func(t *testing.T) {
+	t.Run("rejects a nil request", func(t *testing.T) {
+		err := sendHandShakeRequest(&fakeIOWriter{}, nil, sendHandShakeRequestDI{
+			requestToPlainHTTPMsg: func(*http.Request) (string, error) {
+				t.Fatal("must not run for a nil request")
+				return "", nil
+			},
+		})
+		if !errors.Is(err, ErrHandshakeRequestNil) {
+			t.Errorf("err = %v, want %v", err, ErrHandshakeRequestNil)
+		}
+	})
+
+	t.Run("propagates a serialisation error", func(t *testing.T) {
 		want := errors.New("cannot serialise")
-		clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-		clientConn.di.requestToPlainHTTPMsg = func(*http.Request) (string, error) { return "", want }
-		if err := clientConn.SendHand(); !errors.Is(err, want) {
+		err := sendHandShakeRequest(&fakeIOWriter{}, httptestRequest(t), sendHandShakeRequestDI{
+			requestToPlainHTTPMsg: func(*http.Request) (string, error) { return "", want },
+		})
+		if !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
 		}
 	})
 
-	t.Run("propagates firstKey write error", func(t *testing.T) {
+	t.Run("propagates a write error", func(t *testing.T) {
 		want := errors.New("broken pipe")
-		netConn := newFakeConn(nil)
-		netConn.writeErr = want
-		clientConn := NewClientConn(netConn, httptestRequest(t))
-		clientConn.di.requestToPlainHTTPMsg = func(*http.Request) (string, error) { return "x", nil }
-		if err := clientConn.SendHand(); !errors.Is(err, want) {
+		w := &fakeIOWriter{err: want}
+		err := sendHandShakeRequest(w, httptestRequest(t), sendHandShakeRequestDI{
+			requestToPlainHTTPMsg: func(*http.Request) (string, error) { return "x", nil },
+		})
+		if !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
 		}
 	})
 }
 
-func TestClientConnReadResponse(t *testing.T) {
-	t.Run("stores the parsed response", func(t *testing.T) {
+func TestReadHandShakeResponse(t *testing.T) {
+	t.Run("returns the parsed response", func(t *testing.T) {
 		want := &http.Response{StatusCode: 101}
-		clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-		clientConn.di.httpReadResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
-			return want, nil
+		res, err := readHandShakeResponse(bufio.NewReader(&fakeIOReader{}), httptestRequest(t), readHandShakeResponseDI{
+			httpReadResponse: func(*bufio.Reader, *http.Request) (*http.Response, error) {
+				return want, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("readHandShakeResponse: %v", err)
 		}
-		if err := clientConn.ReadResponse(); err != nil {
-			t.Fatalf("ReadResponse: %v", err)
-		}
-		if clientConn.ServerResponse != want {
-			t.Error("ServerResponse was not stored")
-		}
-	})
-
-	t.Run("refuses to overwrite an existing response", func(t *testing.T) {
-		clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-		clientConn.ServerResponse = &http.Response{StatusCode: 200}
-		err := clientConn.ReadResponse()
-		if err == nil || !strings.Contains(err.Error(), "ServerResponse has been set") {
-			t.Errorf("err = %v, want an already-set error", err)
+		if res != want {
+			t.Error("response was not returned")
 		}
 	})
 
-	t.Run("rejects firstKey nil client request", func(t *testing.T) {
-		clientConn := NewClientConn(newFakeConn(nil), nil)
-		err := clientConn.ReadResponse()
-		if err == nil || !strings.Contains(err.Error(), "ClientRequest is nil") {
-			t.Errorf("err = %v, want firstKey nil-request error", err)
+	t.Run("rejects a nil request", func(t *testing.T) {
+		_, err := readHandShakeResponse(bufio.NewReader(&fakeIOReader{}), nil, readHandShakeResponseDI{
+			httpReadResponse: func(*bufio.Reader, *http.Request) (*http.Response, error) {
+				t.Fatal("must not run for a nil request")
+				return nil, nil
+			},
+		})
+		if !errors.Is(err, ErrHandshakeRequestNil) {
+			t.Errorf("err = %v, want %v", err, ErrHandshakeRequestNil)
 		}
 	})
 
-	t.Run("propagates firstKey parse error and leaves the response nil", func(t *testing.T) {
+	t.Run("propagates a parse error", func(t *testing.T) {
 		want := errors.New("malformed response")
-		clientConn := NewClientConn(newFakeConn(nil), httptestRequest(t))
-		clientConn.di.httpReadResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
-			return nil, want
-		}
-		if err := clientConn.ReadResponse(); !errors.Is(err, want) {
+		_, err := readHandShakeResponse(bufio.NewReader(&fakeIOReader{}), httptestRequest(t), readHandShakeResponseDI{
+			httpReadResponse: func(*bufio.Reader, *http.Request) (*http.Response, error) {
+				return nil, want
+			},
+		})
+		if !errors.Is(err, want) {
 			t.Fatalf("err = %v, want %v", err, want)
 		}
-		if clientConn.ServerResponse != nil {
-			t.Error("ServerResponse must stay nil after firstKey failed read")
-		}
 	})
 
-	t.Run("real wiring parses bytes off the socket", func(t *testing.T) {
+	t.Run("real wiring parses bytes off the reader", func(t *testing.T) {
 		raw := "HTTP/1.1 101 Switching Protocols\r\n" +
 			"Upgrade: websocket\r\n" +
 			"Connection: Upgrade\r\n\r\n"
-		clientConn := NewClientConn(newFakeConn([]byte(raw)), httptestRequest(t))
-		if err := clientConn.ReadResponse(); err != nil {
-			t.Fatalf("ReadResponse: %v", err)
+		r := &fakeIOReader{}
+		r.Reset([]byte(raw))
+		res, err := ReadHandShakeResponse(bufio.NewReader(r), httptestRequest(t))
+		if err != nil {
+			t.Fatalf("ReadHandShakeResponse: %v", err)
 		}
-		if clientConn.ServerResponse.StatusCode != 101 {
-			t.Errorf("StatusCode = %d, want 101", clientConn.ServerResponse.StatusCode)
+		if res.StatusCode != 101 {
+			t.Errorf("StatusCode = %d, want 101", res.StatusCode)
 		}
-		if clientConn.ServerResponse.Header.Get("Upgrade") != "websocket" {
-			t.Errorf("Upgrade = %q", clientConn.ServerResponse.Header.Get("Upgrade"))
+		if res.Header.Get("Upgrade") != "websocket" {
+			t.Errorf("Upgrade = %q", res.Header.Get("Upgrade"))
 		}
 	})
 }
@@ -315,7 +315,7 @@ func validHandShakeResponse(key string) *http.Response {
 func TestValidateHandShakeResponse(t *testing.T) {
 	const key = "dGhlIHNhbXBsZSBub25jZQ=="
 
-	t.Run("accepts firstKey well formed response", func(t *testing.T) {
+	t.Run("accepts a well formed response", func(t *testing.T) {
 		if err := ValidateHandShakeResponse(validHandShakeResponse(key), key); err != nil {
 			t.Errorf("ValidateHandShakeResponse: %v", err)
 		}
@@ -353,37 +353,37 @@ func TestValidateHandShakeResponse(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*http.Response)
-		wantSub string
+		wantErr error
 	}{
 		{
 			name:    "wrong status code",
 			mutate:  func(r *http.Response) { r.StatusCode = 200 },
-			wantSub: "status code 200",
+			wantErr: ErrHandshakeResponseStatusCodeInvalid,
 		},
 		{
 			name:    "wrong protocol",
 			mutate:  func(r *http.Response) { r.Proto = "HTTP/2.0" },
-			wantSub: "proto HTTP/2.0",
+			wantErr: ErrHandshakeResponseProtoInvalid,
 		},
 		{
 			name:    "connection header not upgrade",
 			mutate:  func(r *http.Response) { r.Header.Set("Connection", "keep-alive") },
-			wantSub: "header Connection keep-alive",
+			wantErr: ErrHandshakeResponseConnectionHeaderInvalid,
 		},
 		{
 			name:    "upgrade header not websocket",
 			mutate:  func(r *http.Response) { r.Header.Set("Upgrade", "h2c") },
-			wantSub: "header Upgrade h2c",
+			wantErr: ErrHandshakeResponseUpgradeHeaderInvalid,
 		},
 		{
 			name:    "missing accept header",
 			mutate:  func(r *http.Response) { r.Header.Del("Sec-WebSocket-Accept") },
-			wantSub: "Sec-WebSocket-Accept header is required",
+			wantErr: ErrHandshakeResponseAcceptHeaderMissing,
 		},
 		{
 			name:    "accept header does not match the key",
 			mutate:  func(r *http.Response) { r.Header.Set("Sec-WebSocket-Accept", "wrong") },
-			wantSub: "Sec-WebSocket-Accept wrong",
+			wantErr: ErrHandshakeResponseAcceptHeaderMismatch,
 		},
 	}
 	for _, testCase := range tests {
@@ -391,19 +391,16 @@ func TestValidateHandShakeResponse(t *testing.T) {
 			response := validHandShakeResponse(key)
 			testCase.mutate(response)
 			err := ValidateHandShakeResponse(response, key)
-			if err == nil {
-				t.Fatal("expected an error")
-			}
-			if !strings.Contains(err.Error(), testCase.wantSub) {
-				t.Errorf("err = %q, want it to contain %q", err.Error(), testCase.wantSub)
+			if !errors.Is(err, testCase.wantErr) {
+				t.Errorf("err = %v, want %v", err, testCase.wantErr)
 			}
 		})
 	}
 
-	t.Run("rejects an accept value computed from firstKey different key", func(t *testing.T) {
+	t.Run("rejects an accept value computed from a different key", func(t *testing.T) {
 		response := validHandShakeResponse(key)
-		if err := ValidateHandShakeResponse(response, "firstKey-different-key"); err == nil {
-			t.Error("expected firstKey mismatch error")
+		if err := ValidateHandShakeResponse(response, "a-different-key"); !errors.Is(err, ErrHandshakeResponseAcceptHeaderMismatch) {
+			t.Errorf("err = %v, want %v", err, ErrHandshakeResponseAcceptHeaderMismatch)
 		}
 	})
 }
@@ -420,9 +417,9 @@ func TestGenerateWebSocketKey(t *testing.T) {
 	t.Run("asks for the 16 bytes RFC 6455 requires", func(t *testing.T) {
 		var size int
 		generateWebSocketKey(generateWebSocketKeyDI{
-			randRead: func(secondKey []byte) (int, error) {
-				size = len(secondKey)
-				return len(secondKey), nil
+			randRead: func(b []byte) (int, error) {
+				size = len(b)
+				return len(b), nil
 			},
 		})
 		if size != 16 {
@@ -449,7 +446,10 @@ func TestGenerateWebSocketKey(t *testing.T) {
 
 func TestRequestToPlainHTTPMsg(t *testing.T) {
 	t.Run("writes the request line and headers", func(t *testing.T) {
-		request := httptestRequest(t)
+		request, err := http.NewRequest("GET", "ws://localhost:8001/", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
 		request.Header.Set("Sec-WebSocket-Version", "13")
 
 		got, err := requestToPlainHTTPMsg(request, requestToPlainHTTPMsgDI{ioReadAll: io.ReadAll})
@@ -463,16 +463,16 @@ func TestRequestToPlainHTTPMsg(t *testing.T) {
 			t.Errorf("missing version header in %q", got)
 		}
 		if !strings.HasSuffix(got, "\r\n\r\n") {
-			t.Errorf("headers should end with firstKey blank line, got %q", got)
+			t.Errorf("headers should end with a blank line, got %q", got)
 		}
 	})
 
 	/*
 		The request-target must be the origin form. Emitting request.URL instead
 		would put "GET ws://host:port HTTP/1.1" on the wire, which servers read
-		as firstKey proxy request; gin answers an empty path with firstKey 301 rather than
+		as a proxy request; gin answers an empty path with a 301 rather than
 		upgrading, so "ws://localhost:8001" with no trailing slash never
-		completes firstKey handshake.
+		completes a handshake.
 	*/
 	t.Run("writes the origin form request target", func(t *testing.T) {
 		tests := []struct {
@@ -507,7 +507,10 @@ func TestRequestToPlainHTTPMsg(t *testing.T) {
 	})
 
 	t.Run("fills in Host from the url when absent", func(t *testing.T) {
-		request := httptestRequest(t)
+		request, err := http.NewRequest("GET", "ws://localhost:8001/", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
 		got, err := requestToPlainHTTPMsg(request, requestToPlainHTTPMsgDI{ioReadAll: io.ReadAll})
 		if err != nil {
 			t.Fatalf("requestToPlainHTTPMsg: %v", err)
@@ -518,7 +521,10 @@ func TestRequestToPlainHTTPMsg(t *testing.T) {
 	})
 
 	t.Run("keeps an explicit Host header", func(t *testing.T) {
-		request := httptestRequest(t)
+		request, err := http.NewRequest("GET", "ws://localhost:8001/", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest: %v", err)
+		}
 		request.Header.Set("Host", "example.com")
 		got, err := requestToPlainHTTPMsg(request, requestToPlainHTTPMsgDI{ioReadAll: io.ReadAll})
 		if err != nil {
@@ -543,7 +549,7 @@ func TestRequestToPlainHTTPMsg(t *testing.T) {
 		}
 	})
 
-	t.Run("propagates firstKey body read error", func(t *testing.T) {
+	t.Run("propagates a body read error", func(t *testing.T) {
 		want := errors.New("body exploded")
 		request, err := http.NewRequest("POST", "ws://localhost:8001/", strings.NewReader("x"))
 		if err != nil {
