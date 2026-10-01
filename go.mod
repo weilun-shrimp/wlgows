@@ -1,4 +1,4 @@
-module github.com/weilun-shrimp/wlgows/v4
+module github.com/weilun-shrimp/wlgows/v5
 
 go 1.22.1
 

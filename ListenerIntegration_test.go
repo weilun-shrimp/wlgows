@@ -33,7 +33,7 @@ func TestListenerIntegration(t *testing.T) {
 			if err != nil {
 				return
 			}
-			peer.Write(frame.Seal())
+			peer.Write(frame.Seal(nil))
 		}
 
 		write(NewFrameConfig{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hello")})

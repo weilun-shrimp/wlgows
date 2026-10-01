@@ -24,33 +24,33 @@ type Conn struct {
 	// peer must fail the connection on the wrong one — so it is settled once at
 	// construction rather than at each send. Dial passes true, Server.Accept
 	// and HijackFromHttp false.
-	//
-	// Today only SendClose, SendPing and SendPong reach it, since they are the
-	// only things here that build a frame. The rule is not about control
-	// frames: it covers every frame this Conn ever builds.
+	// sendFrame holds every frame written to it.
 	maskSendFrame bool
 
-	// The opcode the message opened with, and the record that one is open —
-	// 5.4 never lets a message start with OpcodeContinuation, so zero means no
-	// transmission.
+	// The opcode of the message being sent by a long data transmission. Zero
+	// means no message is open: a message never starts with
+	// OpcodeContinuation (0).
 	currentTransmitDataMsgOpcode uint8
 
-	// Whether the opening frame has gone out, which decides two things: the
-	// next frame carries OpcodeContinuation rather than the opcode again, and
-	// End has a message to terminate. Ending one that never opened would send
-	// a continuation the peer has nothing to continue.
+	// Whether the message's first frame has been sent. 5.4: only the first
+	// frame carries the message's opcode; every frame after it is
+	// OpcodeContinuation.
 	currentTransmitDataMsgOpened bool
 
 	// Whether SendClose has been called and taken. RFC 6455 5.5.1 puts the
 	// closing handshake at one close each way, so this is what says the answer
 	// is already spent.
 	//
-	// SendClose writes it, and SendText, SendBinary and StartLongDataTransmission
-	// read it — 5.5.1 allows no data frame after a close either. Every one of
-	// them does so under writeLocker, so a check and the write it guards cannot
-	// cross. A close built by hand and pushed through SendFrame does not count:
-	// that path checks nothing by design.
+	// 5.5.1 allows no data frame after a close either, so it is checked before
+	// every data frame, under writeLocker, the lock SendClose sets it under: a
+	// check and the write it guards cannot cross. A close built by hand and
+	// pushed through SendFrame does not count: that path checks nothing.
 	closeSent bool
+
+	// writeBuffer is where every outgoing frame is sealed before it is written.
+	// Guarded by writeLocker. It keeps the capacity of the largest frame sent
+	// since the last RenewWriteBuffer — see there.
+	writeBuffer []byte
 
 	di connDI
 }
@@ -81,6 +81,7 @@ func NewConn(c net.Conn, r *bufio.Reader, maskSendFrame bool) *Conn {
 		Conn:          c,
 		reader:        r,
 		maskSendFrame: maskSendFrame,
+		writeBuffer:   make([]byte, 0),
 		di: connDI{
 			getFrameFromReader:    GetFrameFromReader,
 			newControlFrame:       NewControlFrame,
@@ -163,8 +164,8 @@ byte and panics on a frame claiming to be masked without one. PayloadData stays
 plaintext throughout, whether the frame came from NewFrame or off the wire, so
 unmasking is just dropping the key.
 
-Seal builds a complete second copy of the payload, so a large message costs
-twice its size while this runs.
+The frame is sealed into the Conn's write buffer, which grows to the largest
+frame sent and stays that size until RenewWriteBuffer.
 */
 func (c *Conn) SendFrame(f *Frame) error {
 	c.di.writeLocker.Lock()
@@ -188,6 +189,26 @@ func (c *Conn) sendFrame(f *Frame) error {
 		f.MaskingKey = nil
 	}
 
-	_, err := c.Conn.Write(f.Seal())
+	c.writeBuffer = f.Seal(c.writeBuffer)
+	_, err := c.Conn.Write(c.writeBuffer)
 	return err
+}
+
+/*
+RenewWriteBuffer replaces the buffer frames are sealed into with a new one of
+the given capacity (negative is treated as 0), and the old one is released to
+the GC.
+
+Nothing releases it otherwise. Every frame is sealed into the same buffer, which
+grows to fit the largest frame sent and keeps that size, so after one 100 MB
+message the Conn holds 100 MB until this is called. When to call it is yours to
+decide: after a large message, on an idle timer, or never on a connection that
+only sends small frames.
+
+It holds writeLocker, so it waits for a frame being written to finish.
+*/
+func (c *Conn) RenewWriteBuffer(capacity int) {
+	c.di.writeLocker.Lock()
+	defer c.di.writeLocker.Unlock()
+	c.writeBuffer = make([]byte, 0, max(capacity, 0))
 }

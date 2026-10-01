@@ -119,7 +119,7 @@ var (
 	// ErrLongDataTransmissionNotStarted is TransmitData or
 	// EndLongDataTransmission called with no transmission open. Both rely on
 	// StartLongDataTransmission having taken dataFramesWriteLocker, so acting
-	// anyway would write outside the lock and unlock what was never locked.
+	// anyway would write outside the lock.
 	ErrLongDataTransmissionNotStarted = errors.New("no long data transmission is open")
 
 	// ErrCloseAlreadySent is a send on a connection that has already put a close
@@ -128,10 +128,9 @@ var (
 	//
 	// From SendClose it is a race resolved rather than a failure to handle — two
 	// goroutines both answering the peer's close both call it, and this tells the
-	// loser its frame was not needed. From SendText, SendBinary or
-	// StartLongDataTransmission it means the message came too late to send.
-	//
-	// Nothing reached the socket either way.
+	// loser its frame was not needed. From a data send it means the frame came
+	// too late: nothing of it reached the socket, though earlier chunks of the
+	// same message may have, leaving it unterminated.
 	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
 )
 

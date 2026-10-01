@@ -5,7 +5,7 @@
 //	go run ./example/stream_client   # in another, then press enter twice
 //
 // chunkByteLen is deliberately small so an ordinary file still fragments: at
-// 4 KB this repository's README goes out as four fragments, plus the empty
+// 4 KB this repository's README goes out as one fragment per 4 KB, plus the empty
 // frame End sends to carry FIN. RFC 6455 5.4 puts the opcode on the first frame
 // and OpcodeContinuation on the rest, and the transmission API does that for
 // you — the loop below only supplies bytes, and never has to keep them.
@@ -24,8 +24,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v4"
-	"github.com/weilun-shrimp/wlgows/v4/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
 )
 
 const (
@@ -131,9 +131,7 @@ func stream(conn *wlgows.Conn, r io.Reader) (sum []byte, chunks int, bytes int64
 	if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
 		return nil, 0, 0, err
 	}
-	// Releases the connection and sends the last chunk with FIN, which is what
-	// tells the server the message ended.
-	defer conn.EndLongDataTransmission()
+	defer conn.ReleaseLongDataTransmission()
 
 	hasher := sha256.New()
 	buf := make([]byte, chunkByteLen)
@@ -153,6 +151,11 @@ func stream(conn *wlgows.Conn, r io.Reader) (sum []byte, chunks int, bytes int64
 		}
 
 		if readErr == io.EOF {
+			// FIN tells the server the message ended. Any return before this
+			// leaves it unterminated, so a partial file is never taken as whole.
+			if err := conn.EndLongDataTransmission(nil); err != nil {
+				return nil, chunks, bytes, err
+			}
 			return hasher.Sum(nil), chunks, bytes, nil
 		}
 		if readErr != nil {

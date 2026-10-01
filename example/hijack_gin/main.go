@@ -16,8 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/weilun-shrimp/wlgows/v4"
-	"github.com/weilun-shrimp/wlgows/v4/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
 )
 
 const (
@@ -99,7 +99,7 @@ func handler(c *gin.Context) {
 		fmt.Printf("text: frames=%d bytes=%d runes=%d: %s\n",
 			len(frames), frames.ByteLen(), utf8.RuneCountInString(text), text)
 
-		if err := conn.SendText(frames.Bytes()); err != nil {
+		if err := conn.SendText(frames.Bytes(), 0); err != nil {
 			fmt.Println("echo text:", err)
 		}
 	}
@@ -108,7 +108,7 @@ func handler(c *gin.Context) {
 	config.Binary = func(frames wlgows.Frames) {
 		fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), frames.ByteLen())
 
-		if err := conn.SendBinary(frames.Bytes()); err != nil {
+		if err := conn.SendBinary(frames.Bytes(), 0); err != nil {
 			fmt.Println("echo binary:", err)
 		}
 	}

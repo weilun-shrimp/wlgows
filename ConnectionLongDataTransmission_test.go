@@ -2,45 +2,18 @@ package wlgows
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"testing"
 )
 
-// transmitting returns a Conn with an open transmission and the fakes behind it.
-func transmitting(t *testing.T, opcode uint8) (*Conn, *fakeConn, *fakeLocker) {
-	t.Helper()
-	netConn, locker := newFakeConn(nil), &fakeLocker{}
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-	wsConn.di.dataFramesWriteLocker = locker
-
-	if err := wsConn.StartLongDataTransmission(opcode); err != nil {
-		t.Fatalf("StartLongDataTransmission: %v", err)
-	}
-	return wsConn, netConn, locker
-}
-
-// framesOn parses back everything written, so a test can assert what the peer
-// would actually read rather than what the code meant to send.
-func framesOn(t *testing.T, netConn *fakeConn) Frames {
-	t.Helper()
-	wire := newFakeConn(netConn.written())
-	var frames Frames
-	for {
-		f, err := GetFrameFromReader(wire, 0)
-		if err != nil {
-			return frames
-		}
-		frames = append(frames, f)
-	}
-}
-
 func TestConnStartLongDataTransmission(t *testing.T) {
-	/*
-		A refused opcode must leave the lock untaken, or the deferred
-		EndLongDataTransmission a caller writes after checking the error would
-		unlock a mutex nobody holds and panic.
-	*/
+	base_conn := func() *Conn {
+		netConn := newFakeConn(nil)
+		return NewConn(netConn, bufio.NewReader(netConn), false)
+	}
+
+	// A refused Start must leave the lock untaken, or the deferred Release a
+	// caller writes after checking the error would unlock what nobody holds.
 	t.Run("refuses an opcode that cannot open a message", func(t *testing.T) {
 		for _, testCase := range []struct {
 			opcode byte
@@ -54,378 +27,362 @@ func TestConnStartLongDataTransmission(t *testing.T) {
 			{OpcodePong, ErrNotDataFrameOpcode},
 			{0x3, ErrNotDataFrameOpcode}, // reserved by 5.2
 		} {
-			locker := &fakeLocker{}
-			wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
-			wsConn.di.dataFramesWriteLocker = locker
+			dataLocker := &fakeLocker{}
+			conn := base_conn()
+			conn.di.dataFramesWriteLocker = dataLocker
 
-			if err := wsConn.StartLongDataTransmission(testCase.opcode); !errors.Is(err, testCase.want) {
+			if err := conn.StartLongDataTransmission(testCase.opcode); !errors.Is(err, testCase.want) {
 				t.Errorf("opcode %#x: err = %v, want %v", testCase.opcode, err, testCase.want)
 			}
-			if locker.locks != 0 {
-				t.Errorf("opcode %#x: took the lock on a refused start", testCase.opcode)
+			if dataLocker.locks != 0 || conn.currentTransmitDataMsgOpcode != 0 {
+				t.Errorf("opcode %#x: a refused start opened a transmission", testCase.opcode)
 			}
 		}
 	})
 
+	// closeSent is read under the write lock, which is released before the
+	// data lock is taken and held for the whole message.
 	t.Run("claims the connection for a data opcode", func(t *testing.T) {
 		for _, opcode := range []byte{OpcodeText, OpcodeBinary} {
-			wsConn, _, locker := transmitting(t, opcode)
-			if !locker.held {
-				t.Errorf("opcode %#x: the lock was not taken", opcode)
+			writeLocker, dataLocker := &fakeLocker{}, &fakeLocker{}
+			conn := base_conn()
+			conn.di.writeLocker, conn.di.dataFramesWriteLocker = writeLocker, dataLocker
+
+			if err := conn.StartLongDataTransmission(opcode); err != nil {
+				t.Fatalf("opcode %#x: %v", opcode, err)
 			}
-			if wsConn.currentTransmitDataMsgOpcode != opcode {
-				t.Errorf("opcode %#x: recorded %#x", opcode, wsConn.currentTransmitDataMsgOpcode)
+			if !writeLocker.ok(1) {
+				t.Errorf("opcode %#x: write locks=%d unlocks=%d, want 1/1", opcode, writeLocker.locks, writeLocker.unlocks)
 			}
+			if !dataLocker.held || dataLocker.locks != 1 {
+				t.Errorf("opcode %#x: the data lock was not taken", opcode)
+			}
+			if conn.currentTransmitDataMsgOpcode != opcode {
+				t.Errorf("opcode %#x: recorded %#x", opcode, conn.currentTransmitDataMsgOpcode)
+			}
+		}
+	})
+
+	// 5.5.1: no message can open once a close has gone out.
+	t.Run("refuses after a close", func(t *testing.T) {
+		writeLocker, dataLocker := &fakeLocker{}, &fakeLocker{}
+		conn := base_conn()
+		conn.di.writeLocker, conn.di.dataFramesWriteLocker = writeLocker, dataLocker
+		conn.closeSent = true
+
+		if err := conn.StartLongDataTransmission(OpcodeBinary); !errors.Is(err, ErrCloseAlreadySent) {
+			t.Errorf("err = %v, want ErrCloseAlreadySent", err)
+		}
+		if !writeLocker.ok(1) {
+			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		}
+		if dataLocker.locks != 0 || conn.currentTransmitDataMsgOpcode != 0 {
+			t.Error("a refused start opened a transmission")
 		}
 	})
 }
 
-func TestConnTransmitData(t *testing.T) {
-	// Without a start there is no lock held, so writing would race every other
-	// sender on the connection.
-	t.Run("refuses with no transmission open", func(t *testing.T) {
+func TestTransmitData(t *testing.T) {
+	// base_di has a text transmission open on a real Conn, and a sendFrame that
+	// succeeds; each case overrides what it looks at.
+	base_di := func() transmitDataDI {
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn.currentTransmitDataMsgOpcode = OpcodeText
+		return transmitDataDI{
+			conn:      conn,
+			sendFrame: func(f *Frame) error { return nil },
+		}
+	}
 
-		if err := wsConn.TransmitData([]byte("hello")); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
-			t.Errorf("TransmitData = %v, want ErrLongDataTransmissionNotStarted", err)
-		}
-		if len(netConn.written()) != 0 {
-			t.Errorf("%d bytes reached the socket", len(netConn.written()))
-		}
-	})
+	// 5.4: the message's opcode opens it, the rest continue it, and none of
+	// them is the last. 5.1: masked exactly when the Conn masks.
+	t.Run("sends the fragment's frame", func(t *testing.T) {
+		for _, maskSendFrame := range []bool{false, true} {
+			for _, opened := range []bool{false, true} {
+				var sent []*Frame
+				di := base_di()
+				di.conn.maskSendFrame = maskSendFrame
+				di.conn.currentTransmitDataMsgOpened = opened
+				di.sendFrame = func(f *Frame) error {
+					sent = append(sent, f)
+					return nil
+				}
 
-	t.Run("drops empty data", func(t *testing.T) {
-		wsConn, netConn, _ := transmitting(t, OpcodeText)
-
-		if err := wsConn.TransmitData(nil); err != nil {
-			t.Fatalf("TransmitData(nil): %v", err)
-		}
-		if len(netConn.written()) != 0 {
-			t.Errorf("%d bytes reached the socket", len(netConn.written()))
-		}
-		if wsConn.currentTransmitDataMsgOpened {
-			t.Error("an empty fragment opened the message")
-		}
-	})
-
-	// Nothing is held back, which is what lets a caller reuse its read buffer.
-	t.Run("sends each fragment before returning", func(t *testing.T) {
-		wsConn, netConn, _ := transmitting(t, OpcodeText)
-
-		if err := wsConn.TransmitData([]byte("hello ")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-		if sent := framesOn(t, netConn); len(sent) != 1 {
-			t.Fatalf("%d frames on the wire after one fragment, want 1", len(sent))
-		}
-
-		if err := wsConn.TransmitData([]byte("world")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-
-		sent := framesOn(t, netConn)
-		if len(sent) != 2 {
-			t.Fatalf("%d frames on the wire, want 2", len(sent))
-		}
-		// 5.4: the message's opcode opens it, the next frame continues it.
-		if sent[0].Opcode != OpcodeText || sent[1].Opcode != OpcodeContinuation {
-			t.Errorf("opcodes %#x, %#x — want %#x then %#x",
-				sent[0].Opcode, sent[1].Opcode, OpcodeText, OpcodeContinuation)
-		}
-		for i, f := range sent {
-			if f.FIN {
-				t.Errorf("frame %d set FIN before the message ended", i)
+				if err := transmitData([]byte("hello"), di); err != nil {
+					t.Fatalf("transmitData: %v", err)
+				}
+				wantOpcode := uint8(OpcodeText)
+				if opened {
+					wantOpcode = OpcodeContinuation
+				}
+				if len(sent) != 1 || sent[0].Opcode != wantOpcode || sent[0].Mask != maskSendFrame ||
+					string(sent[0].PayloadData) != "hello" || sent[0].FIN {
+					t.Fatalf("mask %v opened %v: sent %+v, want one frame opcode %#x mask %v \"hello\" no FIN",
+						maskSendFrame, opened, sent, wantOpcode, maskSendFrame)
+				}
+				if !di.conn.currentTransmitDataMsgOpened {
+					t.Error("a sent fragment did not open the message")
+				}
 			}
 		}
 	})
 
-	/*
-		The reason nothing is held. A caller streaming a file reads into one
-		buffer over and over, which is what io.Copy does too — a frame keeping a
-		window onto that buffer would go out carrying the next chunk's bytes,
-		with every length still correct and only the contents wrong.
-	*/
-	t.Run("does not retain the caller's buffer", func(t *testing.T) {
-		wsConn, netConn, _ := transmitting(t, OpcodeBinary)
-
-		buf := make([]byte, 4)
-		copy(buf, "AAAA")
-		if err := wsConn.TransmitData(buf); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-		copy(buf, "BBBB") // the caller reuses its buffer for the next read
-		if err := wsConn.TransmitData(buf); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-		if err := wsConn.EndLongDataTransmission(); err != nil {
-			t.Fatalf("End: %v", err)
+	// The check and the write share the lock SendClose sets closeSent under.
+	t.Run("sends under the write lock", func(t *testing.T) {
+		writeLocker := &fakeLocker{}
+		di := base_di()
+		di.conn.di.writeLocker = writeLocker
+		di.sendFrame = func(*Frame) error {
+			if !writeLocker.held {
+				t.Error("sent without holding writeLocker")
+			}
+			return nil
 		}
 
-		if got := framesOn(t, netConn).Bytes(); !bytes.Equal(got, []byte("AAAABBBB")) {
-			t.Errorf("wire carries %q, want %q", got, "AAAABBBB")
+		if err := transmitData([]byte("hello"), di); err != nil {
+			t.Fatalf("transmitData: %v", err)
+		}
+		if !writeLocker.ok(1) {
+			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		}
+	})
+
+	t.Run("refuses with no transmission open", func(t *testing.T) {
+		di := base_di()
+		di.conn.currentTransmitDataMsgOpcode = 0
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent with no transmission open")
+			return nil
+		}
+
+		if err := transmitData([]byte("hello"), di); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
+			t.Errorf("transmitData = %v, want ErrLongDataTransmissionNotStarted", err)
+		}
+	})
+
+	t.Run("drops empty data", func(t *testing.T) {
+		di := base_di()
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent an empty fragment")
+			return nil
+		}
+
+		if err := transmitData(nil, di); err != nil {
+			t.Fatalf("transmitData: %v", err)
+		}
+		if di.conn.currentTransmitDataMsgOpened {
+			t.Error("an empty fragment opened the message")
+		}
+	})
+
+	// 5.5.1: no data frame after a close, checked per fragment.
+	t.Run("refuses after a close", func(t *testing.T) {
+		writeLocker := &fakeLocker{}
+		di := base_di()
+		di.conn.di.writeLocker = writeLocker
+		di.conn.closeSent = true
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent after a close")
+			return nil
+		}
+
+		if err := transmitData([]byte("hello"), di); !errors.Is(err, ErrCloseAlreadySent) {
+			t.Errorf("transmitData = %v, want ErrCloseAlreadySent", err)
+		}
+		if !writeLocker.ok(1) {
+			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
 		}
 	})
 
 	t.Run("propagates a build error", func(t *testing.T) {
 		wantErr := errors.New("cannot build")
-		wsConn, netConn, _ := transmitting(t, OpcodeText)
-		wsConn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
-
-		if err := wsConn.TransmitData([]byte("hello")); !errors.Is(err, wantErr) {
-			t.Errorf("TransmitData = %v, want %v", err, wantErr)
+		di := base_di()
+		di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent after a build failure")
+			return nil
 		}
-		if len(netConn.written()) != 0 {
-			t.Errorf("%d bytes reached the socket after a build failure", len(netConn.written()))
+
+		if err := transmitData([]byte("hello"), di); !errors.Is(err, wantErr) {
+			t.Errorf("transmitData = %v, want %v", err, wantErr)
 		}
 	})
 
-	// The failing call is the failing fragment — nothing is queued, so an error
-	// never points at an earlier one.
-	t.Run("propagates a write error", func(t *testing.T) {
+	// A fragment that never went out did not open the message.
+	t.Run("propagates a send error", func(t *testing.T) {
 		wantErr := errors.New("socket gone")
-		wsConn, netConn, _ := transmitting(t, OpcodeText)
-		netConn.writeErr = wantErr
+		di := base_di()
+		di.sendFrame = func(*Frame) error { return wantErr }
 
-		if err := wsConn.TransmitData([]byte("hello")); !errors.Is(err, wantErr) {
-			t.Errorf("TransmitData = %v, want %v", err, wantErr)
+		if err := transmitData([]byte("hello"), di); !errors.Is(err, wantErr) {
+			t.Errorf("transmitData = %v, want %v", err, wantErr)
 		}
-		if wsConn.currentTransmitDataMsgOpened {
-			t.Error("a fragment that never reached the socket opened the message")
+		if di.conn.currentTransmitDataMsgOpened {
+			t.Error("a failed fragment opened the message")
 		}
 	})
 }
 
-func TestConnEndLongDataTransmission(t *testing.T) {
-	// Unlocking a mutex nobody holds panics, so this has to refuse rather than
-	// release.
-	t.Run("refuses with nothing open", func(t *testing.T) {
-		locker := &fakeLocker{}
-		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
-		wsConn.di.dataFramesWriteLocker = locker
-
-		if err := wsConn.EndLongDataTransmission(); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
-			t.Errorf("End = %v, want ErrLongDataTransmissionNotStarted", err)
+func TestEndLongDataTransmission(t *testing.T) {
+	// base_di has a binary transmission open on a real Conn, and a sendFrame
+	// that succeeds; each case overrides what it looks at.
+	base_di := func() endLongDataTransmissionDI {
+		netConn := newFakeConn(nil)
+		conn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn.currentTransmitDataMsgOpcode = OpcodeBinary
+		return endLongDataTransmissionDI{
+			conn:      conn,
+			sendFrame: func(f *Frame) error { return nil },
 		}
-		if locker.unlocks != 0 {
-			t.Error("released a lock it never took")
+	}
+
+	// FIN set, masked exactly when the Conn masks (5.1), and the message's own
+	// opcode only when nothing went before (5.4).
+	t.Run("sends the last frame", func(t *testing.T) {
+		for _, maskSendFrame := range []bool{false, true} {
+			for _, opened := range []bool{false, true} {
+				var sent []*Frame
+				di := base_di()
+				di.conn.maskSendFrame = maskSendFrame
+				di.conn.currentTransmitDataMsgOpened = opened
+				di.sendFrame = func(f *Frame) error {
+					sent = append(sent, f)
+					return nil
+				}
+
+				if err := endLongDataTransmission([]byte("last"), di); err != nil {
+					t.Fatalf("endLongDataTransmission: %v", err)
+				}
+				wantOpcode := uint8(OpcodeBinary)
+				if opened {
+					wantOpcode = OpcodeContinuation
+				}
+				if len(sent) != 1 || sent[0].Opcode != wantOpcode || sent[0].Mask != maskSendFrame ||
+					string(sent[0].PayloadData) != "last" || !sent[0].FIN {
+					t.Fatalf("mask %v opened %v: sent %+v, want one frame opcode %#x mask %v \"last\" FIN",
+						maskSendFrame, opened, sent, wantOpcode, maskSendFrame)
+				}
+			}
 		}
 	})
 
-	/*
-		Started and never fed — an empty file streams exactly like this. No
-		message was opened on the wire, so a terminator would reach the peer as
-		a continuation with nothing to continue, and cost the connection.
-	*/
-	t.Run("writes nothing when no fragment was transmitted", func(t *testing.T) {
-		wsConn, netConn, locker := transmitting(t, OpcodeBinary)
+	// 5.6 allows an empty message, so End sends one even with nothing before.
+	t.Run("sends an empty last frame", func(t *testing.T) {
+		var sent []*Frame
+		di := base_di()
+		di.sendFrame = func(f *Frame) error {
+			sent = append(sent, f)
+			return nil
+		}
 
-		if err := wsConn.EndLongDataTransmission(); err != nil {
-			t.Fatalf("End: %v", err)
+		if err := endLongDataTransmission(nil, di); err != nil {
+			t.Fatalf("endLongDataTransmission: %v", err)
 		}
-		if len(netConn.written()) != 0 {
-			t.Errorf("%d bytes reached the socket", len(netConn.written()))
-		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
-				locker.locks, locker.unlocks, locker.held)
+		if len(sent) != 1 || sent[0].Opcode != OpcodeBinary || len(sent[0].PayloadData) != 0 || !sent[0].FIN {
+			t.Fatalf("sent %+v, want one empty binary frame with FIN", sent)
 		}
 	})
 
-	/*
-		5.4 terminates a message with opcode 0 and FIN set, and constrains its
-		length not at all — so an empty one ends the message without holding a
-		fragment back to put FIN on.
-	*/
-	t.Run("terminates with an empty continuation carrying FIN", func(t *testing.T) {
-		wsConn, netConn, locker := transmitting(t, OpcodeText)
-
-		if err := wsConn.TransmitData([]byte("hello")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-		if err := wsConn.EndLongDataTransmission(); err != nil {
-			t.Fatalf("End: %v", err)
+	// Release frees the connection, not End.
+	t.Run("sends under the write lock and keeps the data lock", func(t *testing.T) {
+		writeLocker, dataLocker := &fakeLocker{}, &fakeLocker{}
+		di := base_di()
+		di.conn.di.writeLocker = writeLocker
+		di.conn.di.dataFramesWriteLocker = dataLocker
+		di.sendFrame = func(*Frame) error {
+			if !writeLocker.held {
+				t.Error("sent without holding writeLocker")
+			}
+			return nil
 		}
 
-		sent := framesOn(t, netConn)
-		if len(sent) != 2 {
-			t.Fatalf("%d frames on the wire, want 2 — the fragment and the terminator", len(sent))
+		if err := endLongDataTransmission(nil, di); err != nil {
+			t.Fatalf("endLongDataTransmission: %v", err)
 		}
-		last := sent[len(sent)-1]
-		if last.Opcode != OpcodeContinuation {
-			t.Errorf("terminator opcode = %#x, want %#x", last.Opcode, OpcodeContinuation)
+		if !writeLocker.ok(1) {
+			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
 		}
-		if !last.FIN {
-			t.Error("terminator did not set FIN — the peer would wait for more")
-		}
-		if len(last.PayloadData) != 0 {
-			t.Errorf("terminator carries %d bytes, want none", len(last.PayloadData))
-		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
-				locker.locks, locker.unlocks, locker.held)
+		if dataLocker.unlocks != 0 || di.conn.currentTransmitDataMsgOpcode == 0 {
+			t.Error("End released the transmission; Release does that")
 		}
 	})
 
-	// A deferred End has to free the connection whatever happened, or one dead
-	// socket blocks every other sender for good.
-	t.Run("releases the lock even when the write fails", func(t *testing.T) {
-		wantErr := errors.New("socket gone")
-		wsConn, netConn, locker := transmitting(t, OpcodeText)
+	t.Run("refuses with no transmission open", func(t *testing.T) {
+		di := base_di()
+		di.conn.currentTransmitDataMsgOpcode = 0
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent with no transmission open")
+			return nil
+		}
 
-		if err := wsConn.TransmitData([]byte("hello")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
-		}
-		netConn.writeErr = wantErr
-
-		if err := wsConn.EndLongDataTransmission(); !errors.Is(err, wantErr) {
-			t.Errorf("End = %v, want %v", err, wantErr)
-		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
-				locker.locks, locker.unlocks, locker.held)
-		}
-		if wsConn.currentTransmitDataMsgOpcode != 0 || wsConn.currentTransmitDataMsgOpened {
-			t.Error("state survived a failed end, so the next transmission inherits it")
+		if err := endLongDataTransmission(nil, di); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
+			t.Errorf("endLongDataTransmission = %v, want ErrLongDataTransmissionNotStarted", err)
 		}
 	})
 
-	t.Run("propagates a build error and still unlocks", func(t *testing.T) {
+	// The FIN frame is a data frame too (5.5.1).
+	t.Run("refuses after a close", func(t *testing.T) {
+		writeLocker := &fakeLocker{}
+		di := base_di()
+		di.conn.di.writeLocker = writeLocker
+		di.conn.closeSent = true
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent after a close")
+			return nil
+		}
+
+		if err := endLongDataTransmission(nil, di); !errors.Is(err, ErrCloseAlreadySent) {
+			t.Errorf("endLongDataTransmission = %v, want ErrCloseAlreadySent", err)
+		}
+		if !writeLocker.ok(1) {
+			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		}
+	})
+
+	t.Run("propagates a build error", func(t *testing.T) {
 		wantErr := errors.New("cannot build")
-		wsConn, _, locker := transmitting(t, OpcodeText)
-		if err := wsConn.TransmitData([]byte("hello")); err != nil {
-			t.Fatalf("TransmitData: %v", err)
+		di := base_di()
+		di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
+		di.sendFrame = func(*Frame) error {
+			t.Error("sent after a build failure")
+			return nil
 		}
-		wsConn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
 
-		if err := wsConn.EndLongDataTransmission(); !errors.Is(err, wantErr) {
-			t.Errorf("End = %v, want %v", err, wantErr)
+		if err := endLongDataTransmission(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("endLongDataTransmission = %v, want %v", err, wantErr)
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
-				locker.locks, locker.unlocks, locker.held)
+	})
+
+	t.Run("propagates a send error", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		di := base_di()
+		di.sendFrame = func(*Frame) error { return wantErr }
+
+		if err := endLongDataTransmission(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("endLongDataTransmission = %v, want %v", err, wantErr)
 		}
 	})
 }
 
-/*
-The whole thing, read back off the wire. RFC 6455 5.4 makes a message the
-concatenation of its fragments, with the opcode on the first frame,
-OpcodeContinuation on the rest, and FIN only on the last — get any of those
-wrong and a conforming peer closes the connection instead of assembling this.
-*/
-func TestConnLongDataTransmissionWholeMessage(t *testing.T) {
-	wsConn, netConn, locker := transmitting(t, OpcodeText)
+// Both fields, or the next transmission inherits this one: a stale opened
+// would send its first frame as a continuation, a held lock would block it.
+func TestConnReleaseLongDataTransmission(t *testing.T) {
+	dataLocker := &fakeLocker{locks: 1, held: true}
+	netConn := newFakeConn(nil)
+	conn := NewConn(netConn, bufio.NewReader(netConn), false)
+	conn.di.dataFramesWriteLocker = dataLocker
+	conn.currentTransmitDataMsgOpcode = OpcodeText
+	conn.currentTransmitDataMsgOpened = true
 
-	for _, chunk := range []string{"hello ", "long ", "world"} {
-		if err := wsConn.TransmitData([]byte(chunk)); err != nil {
-			t.Fatalf("TransmitData(%q): %v", chunk, err)
-		}
-	}
-	if err := wsConn.EndLongDataTransmission(); err != nil {
-		t.Fatalf("End: %v", err)
-	}
+	conn.ReleaseLongDataTransmission()
 
-	sent := framesOn(t, netConn)
-	if len(sent) != 4 {
-		t.Fatalf("%d frames on the wire, want 4 — three fragments and the terminator", len(sent))
+	if conn.currentTransmitDataMsgOpcode != 0 || conn.currentTransmitDataMsgOpened {
+		t.Errorf("opcode=%#x opened=%v, want both reset",
+			conn.currentTransmitDataMsgOpcode, conn.currentTransmitDataMsgOpened)
 	}
-
-	wantOpcodes := []byte{OpcodeText, OpcodeContinuation, OpcodeContinuation, OpcodeContinuation}
-	for i, f := range sent {
-		if f.Opcode != wantOpcodes[i] {
-			t.Errorf("frame %d opcode = %#x, want %#x", i, f.Opcode, wantOpcodes[i])
-		}
-		if wantFIN := i == len(sent)-1; f.FIN != wantFIN {
-			t.Errorf("frame %d FIN = %v, want %v", i, f.FIN, wantFIN)
-		}
-	}
-	if got := sent.Bytes(); !bytes.Equal(got, []byte("hello long world")) {
-		t.Errorf("assembled %q, want %q", got, "hello long world")
-	}
-
-	// The connection is free and clean, so the next message starts fresh.
-	if !locker.ok(1) {
-		t.Errorf("locks=%d unlocks=%d held=%v, want 1/1/false",
-			locker.locks, locker.unlocks, locker.held)
-	}
-	if err := wsConn.StartLongDataTransmission(OpcodeBinary); err != nil {
-		t.Errorf("a second transmission was refused: %v", err)
-	}
-}
-
-/*
-A close ends the transmission wherever it lands (5.5.1), so all three refuse
-after one. Start is the easy case; the other two matter more, since a stream is
-where a close arriving mid message is the ordinary thing rather than a race.
-*/
-func TestConnStartLongDataTransmissionAfterClose(t *testing.T) {
-	locker := &fakeLocker{}
-	wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
-	wsConn.di.dataFramesWriteLocker = locker
-	if err := wsConn.SendClose(nil); err != nil {
-		t.Fatalf("SendClose: %v", err)
-	}
-
-	err := wsConn.StartLongDataTransmission(OpcodeBinary)
-
-	if !errors.Is(err, ErrCloseAlreadySent) {
-		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
-	}
-	// Nothing was claimed, so a deferred End would unlock what was never locked.
-	if locker.locks != 0 {
-		t.Errorf("locks = %d, want 0", locker.locks)
-	}
-	if wsConn.currentTransmitDataMsgOpcode != 0 {
-		t.Error("a refused Start left a transmission open")
-	}
-}
-
-func TestConnTransmitDataAfterClose(t *testing.T) {
-	wsConn, netConn, _ := transmitting(t, OpcodeBinary)
-	if err := wsConn.TransmitData([]byte("first")); err != nil {
-		t.Fatalf("TransmitData: %v", err)
-	}
-	if err := wsConn.SendClose(nil); err != nil {
-		t.Fatalf("SendClose: %v", err)
-	}
-	sentBefore := len(netConn.written())
-
-	err := wsConn.TransmitData([]byte("second"))
-
-	if !errors.Is(err, ErrCloseAlreadySent) {
-		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
-	}
-	if len(netConn.written()) != sentBefore {
-		t.Error("a refused fragment still reached the socket")
-	}
-}
-
-// The terminating frame is a data frame too, so it is refused as well — and the
-// lock still has to come back, or the next transmission waits forever on it.
-func TestConnEndLongDataTransmissionAfterClose(t *testing.T) {
-	wsConn, netConn, locker := transmitting(t, OpcodeBinary)
-	if err := wsConn.TransmitData([]byte("first")); err != nil {
-		t.Fatalf("TransmitData: %v", err)
-	}
-	if err := wsConn.SendClose(nil); err != nil {
-		t.Fatalf("SendClose: %v", err)
-	}
-	sentBefore := len(netConn.written())
-
-	err := wsConn.EndLongDataTransmission()
-
-	if !errors.Is(err, ErrCloseAlreadySent) {
-		t.Errorf("err = %v, want ErrCloseAlreadySent", err)
-	}
-	if len(netConn.written()) != sentBefore {
-		t.Error("the FIN frame reached the socket after a close")
-	}
-	if !locker.ok(1) {
-		t.Errorf("locks=%d unlocks=%d misuse=%d — the refusal path must release it",
-			locker.locks, locker.unlocks, locker.misuse)
-	}
-	if wsConn.currentTransmitDataMsgOpcode != 0 {
-		t.Error("the transmission state was left open")
+	if !dataLocker.ok(1) {
+		t.Errorf("data locks=%d unlocks=%d misuse=%d held=%v, want the one lock released",
+			dataLocker.locks, dataLocker.unlocks, dataLocker.misuse, dataLocker.held)
 	}
 }

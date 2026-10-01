@@ -160,7 +160,7 @@ func TestFrameSealRoundTripsThroughGetFrameFromReader(t *testing.T) {
 		FIN: true, Opcode: 1, Mask: true, PayloadLength: 5,
 		MaskingKey: []byte{9, 8, 7, 6}, PayloadData: []byte("round"),
 	}
-	got, err := GetFrameFromReader(newFakeConn(original.Seal()), 0)
+	got, err := GetFrameFromReader(newFakeConn(original.Seal(nil)), 0)
 	if err != nil {
 		t.Fatalf("GetFrameFromReader: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestGetFrameFromReaderMaxByteLength(t *testing.T) {
 	const declared = 70000
 	header := (&Frame{
 		FIN: true, Opcode: 2, PayloadLength: 127, ExtendedPayloadLength: declared,
-	}).Seal()
+	}).Seal(nil)
 
 	// readFromReader replaying that header, recording every length it is asked for.
 	scriptedHeader := func(asked *[]uint64) func(io.Reader, uint64) ([]byte, error) {

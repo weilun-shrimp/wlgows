@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v4"
-	"github.com/weilun-shrimp/wlgows/v4/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
 )
 
 const (
@@ -138,7 +138,7 @@ func main() {
 				fmt.Println("Client reader bye. Waiting for the server to close.")
 				return
 			}
-			if err := conn.SendText([]byte(input)); err != nil {
+			if err := conn.SendText([]byte(input), 0); err != nil {
 				fmt.Println("send:", err)
 				stop()
 				return

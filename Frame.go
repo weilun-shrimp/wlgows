@@ -3,6 +3,7 @@ package wlgows
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"slices"
 )
 
 type Frame struct {
@@ -34,39 +35,60 @@ func boolToInt(data bool) uint8 {
 }
 
 /*
-* make self to []byte data
- */
-func (f *Frame) Seal() []byte {
-	result := []byte{
-		boolToInt(f.FIN)<<7 +
-			boolToInt(f.RSV1)<<6 +
-			boolToInt(f.RSV2)<<5 +
-			boolToInt(f.RSV3)<<4 +
-			f.Opcode&15,
-		boolToInt(f.Mask)<<7 +
-			f.PayloadLength,
-	}
+Seal writes the frame, in wire format, into buffer and returns it.
 
-	var ExtendedPayloadByte []byte
+buffer is emptied first and then overwritten, so whatever it held before is
+gone. It may be nil or make([]byte, 0): it grows when the frame needs more room.
+Keep the returned slice and pass it back next time, and its capacity is reused
+so that Seal allocates nothing:
+
+	buffer = f.Seal(buffer)
+
+The returned slice may be a new array, so always keep it — the one passed in
+is only the starting point. Its bytes are valid until the next Seal into it.
+
+A one-off frame needs no buffer at all:
+
+	wire := f.Seal(nil)
+
+The payload written is PayloadData, whole, masked with MaskingKey when Mask is
+set. PayloadData itself is never modified — masking is applied to the copy in
+the returned slice.
+*/
+func (f *Frame) Seal(buffer []byte) []byte {
+	// Empty it, then make room once: 14 is the longest header
+	// (2 + 8 extended length + 4 masking key).
+	result := slices.Grow(buffer[:0], 14+len(f.PayloadData))
+
+	result = append(result,
+		// Byte 0: FIN, RSV1-3, then the 4 bit opcode.
+		boolToInt(f.FIN)<<7|
+			boolToInt(f.RSV1)<<6|
+			boolToInt(f.RSV2)<<5|
+			boolToInt(f.RSV3)<<4|
+			f.Opcode&15,
+		// Byte 1: MASK, then the 7 bit payload length.
+		boolToInt(f.Mask)<<7|
+			f.PayloadLength,
+	)
 	switch f.PayloadLength {
 	case 126:
-		ExtendedPayloadByte = make([]byte, 2)
-		binary.BigEndian.PutUint16(ExtendedPayloadByte, uint16(f.ExtendedPayloadLength))
+		result = binary.BigEndian.AppendUint16(result, uint16(f.ExtendedPayloadLength))
 	case 127:
-		ExtendedPayloadByte = make([]byte, 8)
-		binary.BigEndian.PutUint64(ExtendedPayloadByte, f.ExtendedPayloadLength)
+		result = binary.BigEndian.AppendUint64(result, f.ExtendedPayloadLength)
 	}
-	result = append(result, ExtendedPayloadByte...)
-
-	if f.Mask { // need to mask payload
+	if f.Mask {
 		result = append(result, f.MaskingKey...)
-		for i := uint64(0); i < f.GetMaxPayloadLength(); i++ {
-			result = append(result, f.PayloadData[i]^f.MaskingKey[i%4])
-		}
-	} else {
-		result = append(result, f.PayloadData...)
 	}
 
+	payloadStart := len(result)
+	result = append(result, f.PayloadData...)
+	if f.Mask {
+		payload := result[payloadStart:]
+		for i := range payload {
+			payload[i] ^= f.MaskingKey[i&3]
+		}
+	}
 	return result
 }
 

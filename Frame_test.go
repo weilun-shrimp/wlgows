@@ -95,7 +95,7 @@ func TestFrameSeal(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := testCase.frame.Seal(); !bytes.Equal(got, testCase.want) {
+			if got := testCase.frame.Seal(nil); !bytes.Equal(got, testCase.want) {
 				if len(got) > 32 {
 					t.Errorf("Seal() len = %d (want %d), head = % x (want % x)",
 						len(got), len(testCase.want), got[:12], testCase.want[:12])
@@ -107,19 +107,62 @@ func TestFrameSeal(t *testing.T) {
 	}
 }
 
-// Seal masks with key[i%4], so a payload longer than the key cycles it.
+// Seal masks with key[i%4], so a payload longer than the key cycles it. The mask
+// goes into the sealed bytes only, never back into PayloadData.
 func TestFrameSealCyclesMaskingKey(t *testing.T) {
 	frame := &Frame{
 		FIN: true, Opcode: 1, Mask: true, PayloadLength: 6,
 		MaskingKey: []byte{0x10, 0x20, 0x30, 0x40}, PayloadData: []byte("abcdef"),
 	}
-	got := frame.Seal()
+	got := frame.Seal(nil)
 	want := []byte{
 		0x81, 0x86, 0x10, 0x20, 0x30, 0x40,
 		'a' ^ 0x10, 'b' ^ 0x20, 'c' ^ 0x30, 'd' ^ 0x40, 'e' ^ 0x10, 'f' ^ 0x20,
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("Seal() = % x, want % x", got, want)
+	}
+	if string(frame.PayloadData) != "abcdef" {
+		t.Errorf("PayloadData = %q, want it left plaintext", frame.PayloadData)
+	}
+}
+
+/*
+Seal empties the buffer it is given. One buffer taken from the largest frame
+down to the smallest must come out identical to a fresh seal every time, with
+nothing of the larger frame left behind — the leftovers would go out on the wire.
+*/
+func TestFrameSealEmptiesAReusedBuffer(t *testing.T) {
+	var buffer []byte
+	for _, size := range []int{70000, 300, 125, 5, 0} {
+		for _, mask := range []bool{true, false} {
+			frame, err := NewFrame(NewFrameConfig{
+				PayloadData: bytes.Repeat([]byte("abcdefg"), size/7+1)[:size],
+				Opcode:      OpcodeBinary, Mask: mask, FIN: true,
+			})
+			if err != nil {
+				t.Fatalf("NewFrame: %v", err)
+			}
+			buffer = frame.Seal(buffer)
+			if want := frame.Seal(nil); !bytes.Equal(buffer, want) {
+				t.Errorf("size %d mask %v: reused buffer is %d bytes, want %d", size, mask, len(buffer), len(want))
+			}
+		}
+	}
+}
+
+// Once the buffer has grown, sealing a frame that fits allocates nothing.
+func TestFrameSealReusesTheBufferWithoutAllocating(t *testing.T) {
+	frame, err := NewFrame(NewFrameConfig{
+		PayloadData: make([]byte, 64<<10), Opcode: OpcodeBinary, Mask: true, FIN: true,
+	})
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	var buffer []byte
+	buffer = frame.Seal(buffer)
+	if allocs := testing.AllocsPerRun(10, func() { buffer = frame.Seal(buffer) }); allocs != 0 {
+		t.Errorf("Seal into a grown buffer = %v allocs, want 0", allocs)
 	}
 }
 
@@ -206,7 +249,7 @@ func TestNewFrameMasking(t *testing.T) {
 		}
 		// A fixed key makes the sealed bytes fully assertable.
 		want := []byte{0x81, 0x82, 1, 2, 3, 4, 'h' ^ 1, 'i' ^ 2}
-		if got := frame.Seal(); !bytes.Equal(got, want) {
+		if got := frame.Seal(nil); !bytes.Equal(got, want) {
 			t.Errorf("Seal() = % x, want % x", got, want)
 		}
 	})
@@ -310,7 +353,7 @@ func TestNewFrameFIN(t *testing.T) {
 				t.Errorf("FIN = %v, want %v", frame.FIN, want)
 			}
 			// Seal puts FIN in the top bit of byte 0.
-			if got := frame.Seal()[0]>>7 == 1; got != want {
+			if got := frame.Seal(nil)[0]>>7 == 1; got != want {
 				t.Errorf("sealed FIN bit = %v, want %v", got, want)
 			}
 		}

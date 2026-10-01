@@ -1,7 +1,7 @@
 package example_helpers
 
 import (
-	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v5"
 )
 
 // FrameReader is what *wlgows.Conn satisfies, so one helper serves every example.

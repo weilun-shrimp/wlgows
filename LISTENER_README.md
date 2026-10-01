@@ -23,7 +23,7 @@ in the [main README](./README.md).
 
 ## Quick start
 
-`conn` is an already handshaken `*wlgows.Conn` — see [`ServerHandShake`](./README.md#coming-from-v3)
+`conn` is an already handshaken `*wlgows.Conn` — see [`ServerHandShake`](./README.md#server)
 in the main README for how to get one. This handles one connection
 start to finish, and covers every way `Listen` can return. `Pong` is the one
 hook left nil on purpose — 5.5.3 says MUST NOT answer a pong, which is exactly
@@ -191,7 +191,7 @@ Each item carries its own detail in full — which frames it covers, and the
 reasoning behind the numbers:
 
 ```bash
-go doc github.com/weilun-shrimp/wlgows/v4.ListenerConfig
+go doc github.com/weilun-shrimp/wlgows/v5.ListenerConfig
 ```
 
 ## Hooks

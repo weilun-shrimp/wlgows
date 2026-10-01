@@ -240,6 +240,68 @@ func TestConnSendFrameMatchesTheConnsMasking(t *testing.T) {
 }
 
 /*
+Every frame is sealed into the Conn's one write buffer. A big frame followed by
+a small one must put exactly the two frames on the wire — nothing of the big
+one may trail the small one.
+*/
+func TestConnSendFrameReusesTheWriteBuffer(t *testing.T) {
+	big, err := NewFrame(NewFrameConfig{PayloadData: bytes.Repeat([]byte("x"), 70000), Opcode: OpcodeBinary, FIN: true})
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	small, err := NewFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: OpcodeText, FIN: true})
+	if err != nil {
+		t.Fatalf("NewFrame: %v", err)
+	}
+	netConn := newFakeConn(nil)
+	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
+
+	for _, f := range []*Frame{big, small} {
+		if err := wsConn.SendFrame(f); err != nil {
+			t.Fatalf("SendFrame: %v", err)
+		}
+	}
+	want := append(big.Seal(nil), small.Seal(nil)...)
+	if !bytes.Equal(netConn.written(), want) {
+		t.Errorf("wrote %d bytes, want %d", len(netConn.written()), len(want))
+	}
+	if cap(wsConn.writeBuffer) < 70000 {
+		t.Errorf("writeBuffer cap = %d, want it kept at the big frame's size", cap(wsConn.writeBuffer))
+	}
+}
+
+/*
+RenewWriteBuffer is the only thing that gives the grown buffer back, and it
+takes writeLocker to do it, so it cannot race a send.
+*/
+func TestConnRenewWriteBuffer(t *testing.T) {
+	for _, testCase := range []struct {
+		capacity, wantCap int
+	}{
+		{0, 0},
+		{4096, 4096},
+		{-1, 0}, // negative is treated as 0, not a panic
+	} {
+		netConn, locker := newFakeConn(nil), &fakeLocker{}
+		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
+		wsConn.di.writeLocker = locker
+		wsConn.writeBuffer = make([]byte, 70000)
+
+		wsConn.RenewWriteBuffer(testCase.capacity)
+		if got := cap(wsConn.writeBuffer); got != testCase.wantCap {
+			t.Errorf("RenewWriteBuffer(%d): cap = %d, want %d", testCase.capacity, got, testCase.wantCap)
+		}
+		if len(wsConn.writeBuffer) != 0 {
+			t.Errorf("RenewWriteBuffer(%d): len = %d, want 0", testCase.capacity, len(wsConn.writeBuffer))
+		}
+		if !locker.ok(1) {
+			t.Errorf("RenewWriteBuffer(%d): writeLocker locks=%d unlocks=%d misuse=%d held=%v, want one paired lock",
+				testCase.capacity, locker.locks, locker.unlocks, locker.misuse, locker.held)
+		}
+	}
+}
+
+/*
 A key that cannot be generated must stop the send. Writing the frame anyway
 would put an unmasked frame from a client on the wire, which RFC 6455 5.1
 forbids and the server fails the connection on — the very thing masking here is

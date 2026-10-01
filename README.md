@@ -22,6 +22,7 @@ on you kept where you can see it.
 - **Listener** — a read loop that validates against RFC 6455 and routes frames to your hooks
 - **Frame-level control** — build and send your own frames when you need to
 - **Streaming** — send a message larger than memory, fragment by fragment
+- **Memory in your hands** — full power over sending memory, at any time: pick the chunk size on every send, and release the write buffer down to zero whenever you want — see [SENDING_README.md](./SENDING_README.md#you-are-in-control)
 - **Keepalive** — ping on an interval, with a payload you choose per ping
 - **Concurrent sending** — lock-guarded, and control frames are never stuck behind a long message
 
@@ -29,7 +30,7 @@ on you kept where you can see it.
 
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
-- [Coming from v3](#coming-from-v3)
+- [Coming from v4](#coming-from-v4)
 - [Design](#design)
 - [Memory vs. speed](#memory-vs-speed-sizing-the-reader-yourself) — sizing the reader yourself
 - [Reading](#reading) — `Listener`, or one frame at a time
@@ -39,15 +40,16 @@ on you kept where you can see it.
 - [Errors](#errors) — sentinels and `StandardClosePayloadFor`
 - [Testing](#testing)
 
-The `Listener` has a guide of its own: **[LISTENER_README.md](./LISTENER_README.md)**.
+The `Listener` has a guide of its own: **[LISTENER_README.md](./LISTENER_README.md)**,
+and so does sending: **[SENDING_README.md](./SENDING_README.md)**.
 
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v4
+go get github.com/weilun-shrimp/wlgows/v5
 ```
 
-The import path carries the `/v4` suffix Go requires for major version 2 and
+The import path carries the `/v5` suffix Go requires for major version 2 and
 above; the package name is still `wlgows`, so call sites read `wlgows.Dial(...)`.
 
 ## Quick Start
@@ -64,7 +66,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v5"
 )
 
 func main() {
@@ -106,7 +108,7 @@ func handle(netConn net.Conn) {
 	config := listener.GetConfig()
 	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
 	config.Text = func(frames wlgows.Frames) {
-		conn.SendText(frames.Bytes()) // echo
+		conn.SendText(frames.Bytes(), 0) // echo
 	}
 	listener.SetConfig(config)
 
@@ -137,7 +139,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v5"
 )
 
 func main() {
@@ -166,7 +168,7 @@ func main() {
 
 	go conn.StartPingLoop(30*time.Second, nil) // heartbeat; ends itself
 
-	conn.SendText([]byte("Hello, WebSocket!"))
+	conn.SendText([]byte("Hello, WebSocket!"), 0)
 
 	if err := listener.Listen(); err != nil {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
@@ -245,36 +247,72 @@ pings, echo the close handshake, and reject frames RFC 6455 forbids without any
 of that appearing in the example. What is left in each file is the part you
 would write yourself: the hooks.
 
-## Coming from v3
+## Coming from v4
 
-`ClientConn` and `ServerConn` are gone. There is one `Conn`, for both sides,
-and it carries no handshake state — the handshake is a function call, not a
-stored `ClientRequest`/`ServerResponse`.
+Most v4 code fails to compile against v5, and the compiler points at each place
+to change. One change compiles anyway and then hangs: read
+[Streaming: End no longer releases](#streaming-end-no-longer-releases) first.
 
-| v3 | v4 |
+| v4 | v5 |
 |---|---|
-| `conn, err := wlgows.Dial(url, tls)` then `conn.HandShake()` | `netConn, req, err := wlgows.Dial(url, tls)` then `conn, res, err := wlgows.ClientHandShake(netConn, r, req)` |
-| `conn, err := server.Accept()` then `conn.HandShake()` | `netConn, err := server.Accept()`, read the request yourself, then `conn, res, err := wlgows.ServerHandShake(netConn, r, req)` |
-| `sc, err := wlgows.HijackFromHttp(w, r)` then `sc.HandShake()` | `netConn, r, err := wlgows.HijackFromHttp(w)` then `conn, res, err := wlgows.ServerHandShake(netConn, r, req)` |
-| `wlgows.NewClientConn(c, req)` / `wlgows.NewServerConn(c, req)` | gone — build a `Conn` via a handshake func above, or `wlgows.NewConn(c, r, maskSendFrame)` directly |
-| `conn.ClientRequest` / `conn.ServerResponse` | gone — the handshake funcs return the response directly instead of storing it |
+| `conn.SendText(text)` | `conn.SendText(text, 0)` — 0 sends one frame, as v4 did |
+| `conn.SendBinary(data)` | `conn.SendBinary(data, 0)` |
+| `defer conn.EndLongDataTransmission()` | `defer conn.ReleaseLongDataTransmission()`, then `return conn.EndLongDataTransmission(nil)` on success |
+| `wire := frame.Seal()` | `wire := frame.Seal(nil)` for a one-off frame; `buffer = frame.Seal(buffer)` to reuse one |
 
-The point of the split is the `*bufio.Reader`: `http.ReadRequest` and
-`http.ReadResponse` can buffer bytes past the header block — the start of the
-first frame — so the handshake and the `Conn` that reads frames afterward
-must share the exact same reader. `ClientHandShake`/`ServerHandShake` take it
-as a parameter and build the returned `Conn` from it, so this can no longer be
-gotten wrong by accident. `Dial`/`Server.Accept`/`HijackFromHttp` stay thin —
-connect (or accept, or hijack) and hand back the raw materials — so you still
-decide when the handshake actually runs, and can still add headers to a
-request before it goes out.
+New in v5:
+
+- `conn.SendData(opcode, payload, chunkSize)` sends a message whose opcode you pick at
+  run time.
+- `chunkSize` on `SendText`, `SendBinary` and `SendData` splits a message into
+  frames of that many payload bytes.
+- `conn.ReleaseLongDataTransmission()` frees the connection after a stream.
+- `conn.RenewWriteBuffer(capacity)` gives the `Conn`'s write buffer back to the
+  GC. A `Conn` now seals every frame into one buffer it keeps, so sending stops
+  allocating, but the buffer stays at the largest frame sent until you call
+  this. See [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer).
+
+### Streaming: End no longer releases
+
+In v4, `EndLongDataTransmission` sent FIN and freed the connection, so the usual
+code deferred it. In v5 it only sends FIN, and `ReleaseLongDataTransmission`
+frees the connection.
+
+The obvious one-word fix compiles, and is wrong:
+
+```go
+defer conn.EndLongDataTransmission(nil) // compiles, never frees the connection
+```
+
+The first stream works. Every data send after it on that connection waits
+forever. Write this instead:
+
+```go
+if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
+	return err
+}
+defer conn.ReleaseLongDataTransmission()
+
+// ... TransmitData for each chunk, returning on error ...
+
+return conn.EndLongDataTransmission(nil)
+```
+
+Two more behaviour changes:
+
+- **A failed stream is no longer delivered as complete.** In v4 the deferred End
+  sent FIN after a failed chunk, so the peer received a cut-off message as whole.
+  In v5 nothing sends FIN unless you reach End. Close the connection after a
+  failure.
+- **Start then End with nothing sent now sends an empty message.** v4 sent
+  nothing. RFC 6455 allows an empty message.
 
 ## Design
 
 **Single package.** Everything is in the root `wlgows` package:
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v4"
+import "github.com/weilun-shrimp/wlgows/v5"
 
 netConn, req, _ := wlgows.Dial(url, nil)
 s, _             := wlgows.Run(":8001")
@@ -337,6 +375,9 @@ And the read-count side scales with frame size and how many arrive back to back:
 (the 100-frame row assumes the bytes have already arrived when `Read` is
 called, the normal case for a steady stream — a peer trickling data in slowly
 narrows the gap.)
+
+Sending has the same trade-off from the other side — one write buffer per
+`Conn`, sized by you: see [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer).
 
 ## Reading
 
@@ -409,71 +450,32 @@ case wlgows.OpcodePong:   // 0xA
 
 ## Sending
 
-Four levels. Use the highest one that fits.
+Sending has a guide of its own: **[SENDING_README.md](./SENDING_README.md)** —
+which call to use, streaming, managing memory, failures and locks.
 
-| | Call |
+| You have | Call |
 |---|---|
-| A whole message | `SendText(b)`, `SendBinary(b)` |
-| Control frames | `SendClose(payload)`, `SendPing(b)`, `SendPong(b)` |
-| Too large to hold | `StartLongDataTransmission(opcode)` / `TransmitData(chunk)` / `EndLongDataTransmission()` |
-| Your own frame | `NewFrame(config)` then `SendFrame(f)` |
-
-`SendText` checks UTF-8 (5.6) and refuses invalid bytes with `ErrInvalidUTF8`,
-because a peer that validates answers close 1007. `SendBinary` checks nothing —
-5.6 gives binary no encoding at all.
-
-**The close ends it.** 5.5.1 puts the closing handshake at one close each way and
-allows no data frame after one, so once `SendClose` has gone out, `SendClose`,
-`SendText`, `SendBinary` and `StartLongDataTransmission` all return
-`ErrCloseAlreadySent` and write nothing. Each checks under the same lock that
-records the close, so two goroutines racing to answer a peer's close cannot both
-put a frame on the wire — the loser is told its frame was not needed. `SendFrame`
-is exempt: it checks nothing by design, so a close you build yourself is yours to
-sequence.
-
-Streaming a message too big for memory — one chunk is one frame, so read into a
-buffer and pass it as many times as you like:
+| A message in memory | `SendText(text, chunkSize)`, `SendBinary(data, chunkSize)`, `SendData(opcode, payload, chunkSize)` |
+| A message too large to hold | `StartLongDataTransmission` → `TransmitData` → `EndLongDataTransmission`, with `ReleaseLongDataTransmission` deferred |
+| A close, ping or pong | `SendClose(payload)`, `SendPing(payloadData)`, `SendPong(payloadData)` |
+| A frame you built yourself | `SendFrame(frame)` |
 
 ```go
-if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
-	return err
-}
-defer conn.EndLongDataTransmission()
-
-buf := make([]byte, 32*1024)
-for {
-	n, err := file.Read(buf)
-	if n > 0 {
-		if err := conn.TransmitData(buf[:n]); err != nil {
-			return err
-		}
-	}
-	if err == io.EOF {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-}
+conn.SendText([]byte("hello"), 0)  // one frame
+conn.SendBinary(data, 4*1024)      // frames of 4 KB payload each
 ```
 
-**`TransmitData` does not retain `buf`.** It seals and writes before returning,
-so the next `Read` into the same buffer is safe — memory stays flat at one chunk
-however large the message is.
+`chunkSize` is the payload of each frame. 0 or less sends one frame.
 
-5.4 is kept for you: the opcode goes on the first frame and `OpcodeContinuation`
-on every one after, and no other message interleaves. `End` terminates with an
-empty frame carrying FIN, which is why a four chunk message goes out as five
-frames.
+**You are in control, so memory is yours to manage.** Most packages fix a frame
+size when the connection is set up; wlgows lets every send choose its own. Every
+frame is sealed into one write buffer per `Conn`, which grows to the largest
+frame sent and never shrinks by itself. Use a fixed `chunkSize` to cap it, and
+call `conn.RenewWriteBuffer(capacity)` to give memory back — see
+[Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer).
 
-[`stream_client`](./example/stream_client/main.go) streams a file this way, and
-[`stream_server`](./example/stream_server/main.go) receives it without holding
-it. A `Listener` normally assembles the whole message before your hook runs, so
-that end uses the `Data` hook, which hands over each data frame instead and
-retains nothing — see [LISTENER_README.md](./LISTENER_README.md).
-
-`SendFrame` is the escape hatch — it writes what you built and checks almost
-nothing beyond masking. Read its doc before reaching for it.
+**Nothing is sent after a close.** Once `SendClose` has gone out, data sends
+return `ErrCloseAlreadySent` (5.5.1).
 
 ## Keepalive
 
@@ -536,7 +538,7 @@ wlgows.Loop(func(stop chan<- struct{}) {
 | Locker | Guards | Taken by |
 |---|---|---|
 | `writeLocker` | one frame on the wire at a time | every `Send*`, for the length of one frame |
-| `dataFramesWriteLocker` | one data message at a time | `SendText`, `SendBinary`, and `Start`…`End` |
+| `dataFramesWriteLocker` | one data message at a time | `SendText`, `SendBinary`, `SendData`, and `Start`…`Release` |
 | `readLocker` | one reader | `GetNextFrame` |
 
 **Sending from many goroutines is safe.** Two locks rather than one is what
@@ -637,7 +639,7 @@ frame's bytes cannot be pinned otherwise:
 ```go
 f, _ := newFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: 1, Mask: true, FIN: true},
 	newFrameDI{generateMaskingKey: func() ([]byte, error) { return []byte{1, 2, 3, 4}, nil }})
-// f.Seal() == []byte{0x81, 0x82, 1, 2, 3, 4, 'h'^1, 'i'^2}
+// f.Seal(nil) == []byte{0x81, 0x82, 1, 2, 3, 4, 'h'^1, 'i'^2}
 ```
 
 One test deliberately asserts current behaviour rather than correct behaviour,

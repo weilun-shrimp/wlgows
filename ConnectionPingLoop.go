@@ -33,12 +33,24 @@ alive to every write here, so detecting one is a deadline you keep: stamp a time
 in your Pong hook and compare it against your own.
 */
 func (c *Conn) StartPingLoop(interval time.Duration, payload func() []byte) {
-	c.di.loop(func(stop_signal chan<- struct{}) {
+	startPingLoop(interval, payload, startPingLoopDI{
+		conn:     c,
+		sendPing: c.SendPing,
+	})
+}
+
+type startPingLoopDI struct {
+	conn     *Conn
+	sendPing func(payloadData []byte) error
+}
+
+func startPingLoop(interval time.Duration, payload func() []byte, di startPingLoopDI) {
+	di.conn.di.loop(func(stop_signal chan<- struct{}) {
 		// Once a close is on the wire there is nothing left to keep alive —
 		// see the choice above. Read under the lock that sets it.
-		c.di.writeLocker.Lock()
-		closeSent := c.closeSent
-		c.di.writeLocker.Unlock()
+		di.conn.di.writeLocker.Lock()
+		closeSent := di.conn.closeSent
+		di.conn.di.writeLocker.Unlock()
 
 		if closeSent {
 			stop_signal <- struct{}{}
@@ -49,7 +61,7 @@ func (c *Conn) StartPingLoop(interval time.Duration, payload func() []byte) {
 		if payload != nil {
 			payloadData = payload()
 		}
-		if err := c.SendPing(payloadData); err != nil {
+		if err := di.sendPing(payloadData); err != nil {
 			stop_signal <- struct{}{}
 		}
 	}, interval)

@@ -33,7 +33,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v4"
+	"github.com/weilun-shrimp/wlgows/v5"
 )
 
 const (

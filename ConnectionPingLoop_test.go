@@ -4,124 +4,114 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
 
 /*
-StartPingLoop is what each tick does; that it ticks at all is Loop's own test.
-So the loop is substituted here — same shape, no clock — and these run the
-trigger straight through, which is what makes them deterministic rather than a
-race against an interval.
-
-scriptedLoop calls the trigger until it asks to stop, checking after the call
-the way Loop does. Running past the cap means the trigger never stopped.
+startPingLoop is what each tick does; that it ticks at all is Loop's own test.
+So base_di's loop has the same shape and no clock: it runs the trigger straight
+through, checking for a stop after each call the way Loop does, which makes
+these deterministic rather than a race against an interval.
 */
-func scriptedLoop(t *testing.T, cap int, gotInterval *time.Duration, runs *int) func(func(chan<- struct{}), time.Duration) {
-	t.Helper()
-	return func(trigger func(stop_signal chan<- struct{}), interval time.Duration) {
-		*gotInterval = interval
-		stop_signal := make(chan struct{}, 1)
-		for *runs < cap {
-			*runs++
-			trigger(stop_signal)
-
-			select {
-			case <-stop_signal:
-				return
-			default:
+func TestStartPingLoop(t *testing.T) {
+	// base_di runs up to 10 ticks on a real Conn, and its sendPing succeeds;
+	// each case overrides what it looks at, and has to stop the loop.
+	base_di := func(t *testing.T) startPingLoopDI {
+		netConn := newFakeConn(nil)
+		conn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn.di.loop = func(trigger func(stop_signal chan<- struct{}), interval time.Duration) {
+			stop_signal := make(chan struct{}, 1)
+			for range 10 {
+				trigger(stop_signal)
+				select {
+				case <-stop_signal:
+					return
+				default:
+				}
 			}
+			t.Error("the trigger never stopped")
 		}
-		t.Errorf("the trigger never stopped, ran %d times", *runs)
-	}
-}
-
-func TestConnStartPingLoop(t *testing.T) {
-	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-
-	writes, runs := 0, 0
-	var gotInterval time.Duration
-	netConn.onWrite = func() {
-		writes++
-		if writes == 3 { // the socket dies under the third ping
-			netConn.writeErr = errors.New("socket gone")
+		return startPingLoopDI{
+			conn:     conn,
+			sendPing: func(payloadData []byte) error { return nil },
 		}
 	}
-	wsConn.di.loop = scriptedLoop(t, 10, &gotInterval, &runs)
 
-	pings := 0
-	wsConn.StartPingLoop(30*time.Second, func() []byte {
-		pings++
-		return []byte(fmt.Sprintf("ping-%d", pings))
+	/*
+		5.5.2 has the peer echo the payload, so payload is called per ping rather
+		than once and reused — that is what lets a Pong hook tell them apart. A
+		ping that fails is the last one: nothing retries.
+	*/
+	t.Run("pings each tick with its own payload until one fails", func(t *testing.T) {
+		var sent []string
+		di := base_di(t)
+		di.sendPing = func(payloadData []byte) error {
+			sent = append(sent, string(payloadData))
+			if len(sent) == 3 {
+				return errors.New("socket gone")
+			}
+			return nil
+		}
+
+		pings := 0
+		startPingLoop(30*time.Second, func() []byte {
+			pings++
+			return []byte(fmt.Sprintf("ping-%d", pings))
+		}, di)
+
+		if !slices.Equal(sent, []string{"ping-1", "ping-2", "ping-3"}) {
+			t.Errorf("pinged %q, want [ping-1 ping-2 ping-3] and then stop", sent)
+		}
 	})
 
-	// A ping that fails is the last one: nothing retries.
-	if runs != 3 {
-		t.Errorf("the trigger ran %d times, want 3 — it should stop on the failed send", runs)
-	}
-	if gotInterval != 30*time.Second {
-		t.Errorf("interval = %v, want 30s", gotInterval)
-	}
+	t.Run("hands the interval to the loop", func(t *testing.T) {
+		var gotInterval time.Duration
+		di := base_di(t)
+		di.conn.di.loop = func(_ func(chan<- struct{}), interval time.Duration) { gotInterval = interval }
 
-	frames := framesOn(t, netConn)
-	if len(frames) != 2 {
-		t.Fatalf("%d frames reached the socket, want 2 — the third failed", len(frames))
-	}
-	// 5.5.2 has the peer echo the payload, so payload is called per ping rather
-	// than once and reused — that is what lets a Pong hook tell them apart.
-	for i, f := range frames {
-		if f.Opcode != OpcodePing {
-			t.Errorf("frame %d opcode = %#x, want OpcodePing", i, f.Opcode)
+		startPingLoop(30*time.Second, nil, di)
+
+		if gotInterval != 30*time.Second {
+			t.Errorf("interval = %v, want 30s", gotInterval)
 		}
-		if want := fmt.Sprintf("ping-%d", i+1); string(f.PayloadData) != want {
-			t.Errorf("frame %d payload = %q, want %q", i, f.PayloadData, want)
+	})
+
+	// nil is the ordinary heartbeat, and it must not turn into a payload of its own.
+	t.Run("a nil payload pings empty", func(t *testing.T) {
+		var sent [][]byte
+		di := base_di(t)
+		di.sendPing = func(payloadData []byte) error {
+			sent = append(sent, payloadData)
+			return errors.New("socket gone")
 		}
-	}
-}
 
-// nil is the ordinary heartbeat, and it must not turn into a payload of its own.
-func TestConnStartPingLoopNilPayload(t *testing.T) {
-	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
+		startPingLoop(time.Second, nil, di)
 
-	runs := 0
-	var gotInterval time.Duration
-	netConn.onWrite = func() { netConn.writeErr = errors.New("socket gone") }
-	wsConn.di.loop = scriptedLoop(t, 10, &gotInterval, &runs)
+		if len(sent) != 1 || len(sent[0]) != 0 {
+			t.Errorf("pinged %q, want one empty ping", sent)
+		}
+	})
 
-	wsConn.StartPingLoop(time.Second, nil)
+	// Sent, not completed: this is the flag SendClose sets, so it covers both
+	// sides of the handshake — closing first, or a Close hook answering the
+	// peer. Without it a heartbeat outlives the conversation it was there to
+	// check.
+	t.Run("stops once a close is sent, reading it under the write lock", func(t *testing.T) {
+		writeLocker := &fakeLocker{}
+		di := base_di(t)
+		di.conn.closeSent = true
+		di.conn.di.writeLocker = writeLocker
+		di.sendPing = func([]byte) error {
+			t.Error("pinged after a close")
+			return nil
+		}
 
-	frames := framesOn(t, netConn)
-	if len(frames) != 0 {
-		t.Fatalf("%d frames reached the socket, want 0 — the first write failed", len(frames))
-	}
-	if runs != 1 {
-		t.Errorf("the trigger ran %d times, want 1", runs)
-	}
-}
+		startPingLoop(time.Second, nil, di)
 
-// Sent, not completed: this is the flag SendClose sets, so it covers both sides
-// of the handshake — closing first, or a Close hook answering the peer. Without
-// it a heartbeat outlives the conversation it was there to check.
-func TestConnStartPingLoopStopsOnceCloseSent(t *testing.T) {
-	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-	if err := wsConn.SendClose(nil); err != nil {
-		t.Fatalf("SendClose: %v", err)
-	}
-	sentByClose := len(netConn.written())
-
-	runs := 0
-	var gotInterval time.Duration
-	wsConn.di.loop = scriptedLoop(t, 10, &gotInterval, &runs)
-
-	wsConn.StartPingLoop(time.Second, nil)
-
-	if runs != 1 {
-		t.Errorf("the trigger ran %d times, want 1 — a close stops it on the first tick", runs)
-	}
-	if len(netConn.written()) != sentByClose {
-		t.Error("a ping went out after the close")
-	}
+		if !writeLocker.ok(1) {
+			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		}
+	})
 }
