@@ -87,29 +87,32 @@ func getFrameFromReader(r io.Reader, maxByteLength uint64, di getFrameFromReader
 	f.PayloadLength = uint8(firstSec[1] & 0x7F)
 	f.Mask = firstSec[1]>>7 == 1
 
+	// The extended length and the masking key sit next to each other on the
+	// wire, so they are read together with one allocation.
+	var restHeaderLength uint64
 	switch f.PayloadLength {
 	case 126:
-		extendedPayloadLength, err := di.readFromReader(r, 2)
-		if err != nil {
-			// fmt.Printf("%+v\n", "Error GetFrameFromReader PayloadLength 126")
-			return f, err
-		}
-		f.ExtendedPayloadLength = uint64(binary.BigEndian.Uint16(extendedPayloadLength))
+		restHeaderLength = 2
 	case 127:
-		extendedPayloadLength, err := di.readFromReader(r, 8)
-		if err != nil {
-			// fmt.Printf("%+v\n", "Error GetFrameFromReader PayloadLength 127")
-			return f, err
-		}
-		f.ExtendedPayloadLength = uint64(binary.BigEndian.Uint64(extendedPayloadLength))
-
+		restHeaderLength = 8
+	}
+	if f.Mask {
+		restHeaderLength += 4
 	}
 
-	if f.Mask {
-		f.MaskingKey, err = di.readFromReader(r, 4)
+	if restHeaderLength > 0 {
+		restHeader, err := di.readFromReader(r, restHeaderLength)
 		if err != nil {
-			// fmt.Printf("%+v\n", "Error GetFrameFromReader maskingKeyByte")
 			return f, err
+		}
+		switch f.PayloadLength {
+		case 126:
+			f.ExtendedPayloadLength = uint64(binary.BigEndian.Uint16(restHeader))
+		case 127:
+			f.ExtendedPayloadLength = binary.BigEndian.Uint64(restHeader)
+		}
+		if f.Mask {
+			f.MaskingKey = restHeader[len(restHeader)-4:] // always the last 4 bytes
 		}
 	}
 

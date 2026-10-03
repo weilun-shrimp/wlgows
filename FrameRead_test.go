@@ -224,6 +224,83 @@ func TestGetFrameFromReaderUsesInjectedReader(t *testing.T) {
 	}
 }
 
+// Reading a frame with an extended length must allocate no more than 4 times,
+// masked or not.
+func TestGetFrameFromReaderAllocations(t *testing.T) {
+	const runs = 100
+	for _, testCase := range []struct {
+		name       string
+		mask       bool
+		maskingKey []byte
+	}{
+		{"masked", true, []byte{1, 2, 3, 4}},
+		{"unmasked", false, nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			frame := (&Frame{
+				FIN: true, Opcode: 2, Mask: testCase.mask, PayloadLength: 126, ExtendedPayloadLength: 300,
+				MaskingKey: testCase.maskingKey, PayloadData: make([]byte, 300),
+			}).Seal(nil)
+			// AllocsPerRun calls once more than runs, as a warm up.
+			reader := bytes.NewReader(bytes.Repeat(frame, runs+1))
+
+			allocs := testing.AllocsPerRun(runs, func() {
+				if _, err := GetFrameFromReader(reader, 0); err != nil {
+					t.Fatalf("GetFrameFromReader: %v", err)
+				}
+			})
+			if allocs > 4 {
+				t.Errorf("allocs per frame = %v, want <= 4", allocs)
+			}
+		})
+	}
+}
+
+// The reads must add up to exactly one frame on the wire. Less leaves part of
+// it for the next read, more eats into the next frame.
+func TestGetFrameFromReaderReadsExactlyOneFrame(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		payloadLength int
+		mask          bool
+	}{
+		{"unmasked 7 bit length", 5, false},
+		{"masked 7 bit length", 5, true},
+		{"unmasked 16 bit length", 300, false},
+		{"masked 16 bit length", 300, true},
+		{"unmasked 64 bit length", 70000, false},
+		{"masked 64 bit length", 70000, true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			frame, err := NewFrame(NewFrameConfig{
+				PayloadData: make([]byte, testCase.payloadLength), Opcode: 2, Mask: testCase.mask, FIN: true,
+			})
+			if err != nil {
+				t.Fatalf("NewFrame: %v", err)
+			}
+			wire := frame.Seal(nil)
+
+			var readLength uint64
+			_, err = getFrameFromReader(newFakeConn(nil), 0, getFrameFromReaderDI{
+				readFromReader: func(_ io.Reader, maxLen uint64) ([]byte, error) {
+					if readLength+maxLen > uint64(len(wire)) {
+						return nil, io.EOF // past the end of this frame
+					}
+					chunk := wire[readLength : readLength+maxLen]
+					readLength += maxLen
+					return chunk, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("getFrameFromReader: %v", err)
+			}
+			if readLength != uint64(len(wire)) {
+				t.Errorf("read %d bytes, want exactly the frame's %d", readLength, len(wire))
+			}
+		})
+	}
+}
+
 /*
 The v3 guard. A peer can claim a 10 GB payload in a 10 byte header, and the
 only useful place to refuse is between parsing that header and allocating for
