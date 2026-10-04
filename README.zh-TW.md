@@ -13,6 +13,10 @@ constructor、一個 hook，再加上 `conn.NewStandardListener()` 自動處理 
 server 與 client、手動 handshake，以及 RFC 6455 要求由你負責的每一條規則，都
 清楚擺在你看得到的地方。
 
+**正確性優先。** 不同於許多追求 benchmark 數字的套件，正確性是我們的第一優先。
+我們永遠追求最快的速度，但前提是程式依然正確且安全：不使用 `unsafe`，也不繞過
+bounds check。
+
 ## Features
 
 - **WebSocket Server**：直接在 raw TCP 上執行，搭配 HTTP handshake

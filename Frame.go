@@ -84,7 +84,15 @@ func (f *Frame) Seal(buffer []byte) []byte {
 	payloadStart := len(result)
 	result = append(result, f.PayloadData...)
 	if f.Mask {
+		// 8 bytes at a time with the key repeated twice, then the tail byte by
+		// byte. Every step is a multiple of 4, so the tail starts on key[0].
 		payload := result[payloadStart:]
+		key := uint64(binary.LittleEndian.Uint32(f.MaskingKey))
+		key |= key << 32
+		for len(payload) >= 8 {
+			binary.LittleEndian.PutUint64(payload, binary.LittleEndian.Uint64(payload)^key)
+			payload = payload[8:]
+		}
 		for i := range payload {
 			payload[i] ^= f.MaskingKey[i&3]
 		}

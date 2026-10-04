@@ -13,6 +13,10 @@ send a frame by hand. Nothing is hidden, because it works in frames rather than
 abstractions: server and client, manual handshake, and every rule RFC 6455 puts
 on you kept where you can see it.
 
+**Correctness first.** Unlike many packages that chase benchmark numbers,
+correctness is our first priority. We always go for the fastest code, but only
+when it stays correct and safe: no `unsafe`, no shortcuts past bounds checks.
+
 ## Features
 
 - **WebSocket Server** — raw TCP with HTTP handshake

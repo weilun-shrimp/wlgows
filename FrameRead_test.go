@@ -3,6 +3,7 @@ package wlgows
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -169,6 +170,37 @@ func TestFrameSealRoundTripsThroughGetFrameFromReader(t *testing.T) {
 	}
 	if got.Opcode != original.Opcode || got.FIN != original.FIN || got.Mask != original.Mask {
 		t.Errorf("header mismatch: %+v", got)
+	}
+}
+
+// Unmasking runs 8 bytes per step, then byte by byte for the tail. Seal is the
+// reference, checked against a plain byte loop in TestFrameSealMasksEveryLength.
+// The lengths hit each side of the 8 byte boundaries.
+func TestGetFrameFromReaderUnmasksEveryLength(t *testing.T) {
+	for _, length := range []int{0, 1, 3, 4, 7, 8, 9, 12, 15, 16, 17, 23, 24, 25, 300} {
+		t.Run(fmt.Sprintf("%d bytes", length), func(t *testing.T) {
+			payload := make([]byte, length)
+			for i := range payload {
+				payload[i] = byte(i*7 + 1)
+			}
+			frame, err := newFrame(NewFrameConfig{
+				PayloadData: payload, Opcode: 2, Mask: true, FIN: true,
+			}, newFrameDI{
+				generateMaskingKey: func() ([]byte, error) { return []byte{0x11, 0x22, 0x44, 0x88}, nil },
+			})
+			if err != nil {
+				t.Fatalf("newFrame: %v", err)
+			}
+
+			got, err := GetFrameFromReader(newFakeConn(frame.Seal(nil)), 0)
+			if err != nil {
+				t.Fatalf("GetFrameFromReader: %v", err)
+			}
+			if !got.FIN || got.Opcode != 2 || !got.Mask || !bytes.Equal(got.PayloadData, payload) {
+				t.Errorf("FIN=%v Opcode=%d Mask=%v PayloadData=% x, want true 2 true % x",
+					got.FIN, got.Opcode, got.Mask, got.PayloadData, payload)
+			}
+		})
 	}
 }
 

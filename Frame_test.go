@@ -3,6 +3,7 @@ package wlgows
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -124,6 +125,36 @@ func TestFrameSealCyclesMaskingKey(t *testing.T) {
 	}
 	if string(frame.PayloadData) != "abcdef" {
 		t.Errorf("PayloadData = %q, want it left plaintext", frame.PayloadData)
+	}
+}
+
+// Seal masks 8 bytes per step, then byte by byte for the tail. The want is
+// built with a plain byte loop, and the lengths hit each side of the 8 byte
+// boundaries.
+func TestFrameSealMasksEveryLength(t *testing.T) {
+	key := []byte{0x11, 0x22, 0x44, 0x88}
+	for _, length := range []int{0, 1, 3, 4, 7, 8, 9, 12, 15, 16, 17, 23, 24, 25, 125} {
+		t.Run(fmt.Sprintf("%d bytes", length), func(t *testing.T) {
+			payload := make([]byte, length)
+			for i := range payload {
+				payload[i] = byte(i*7 + 1)
+			}
+			frame := &Frame{
+				FIN: true, Opcode: 2, Mask: true, PayloadLength: byte(length),
+				MaskingKey: key, PayloadData: bytes.Clone(payload),
+			}
+
+			want := []byte{0x82, 0x80 | byte(length), 0x11, 0x22, 0x44, 0x88}
+			for i := range payload {
+				want = append(want, payload[i]^key[i&3])
+			}
+			if got := frame.Seal(nil); !bytes.Equal(got, want) {
+				t.Errorf("Seal() = % x, want % x", got, want)
+			}
+			if !bytes.Equal(frame.PayloadData, payload) {
+				t.Errorf("PayloadData = % x, want it left plaintext % x", frame.PayloadData, payload)
+			}
+		})
 	}
 }
 
