@@ -16,7 +16,7 @@ Two rules NewControlFrame keeps do not apply here:
     defaults it to false — set it on the frame that ends the message, which for
     an unfragmented one is the only frame.
   - There is no payload cap. The 125 bytes is a control frame rule (5.5), and a
-    data frame's length is bounded only by what NewFrame can encode.
+    data frame's length is bounded only by the 64 bit length field.
 
 The fragmentation sequence 5.4 describes — the first frame carrying the opcode,
 every continuation carrying OpcodeContinuation, only the last setting FIN — spans
@@ -27,5 +27,5 @@ func NewDataFrame(config NewFrameConfig) (*Frame, error) {
 	if !IsDataOpcode(config.Opcode) {
 		return nil, fmt.Errorf("opcode %#x: %w", config.Opcode, ErrNotDataFrameOpcode)
 	}
-	return NewFrame(config)
+	return NewFrame(config), nil
 }

@@ -1,153 +1,212 @@
 package wlgows
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"testing"
 )
 
-/*
-One test per method. Opcode classification, the 125 byte cap and FIN belong to
-NewControlFrame and are covered in FrameControl_test.go; what is left for Conn is
-which opcode each method picks, what it relays, and that the frame reaches the
-socket under the write lock.
-*/
-
-// capture holds what a Send method asked NewControlFrame for, and the socket and
-// locker the frame went out through.
-type capture struct {
-	config NewControlFrameConfig
-	conn   *fakeConn
-	locker *fakeLocker
-	held   bool // was the write lock held at the moment of the write?
-}
-
-func captureSend(t *testing.T, maskSendFrame bool, send func(*Conn) error) capture {
-	t.Helper()
-	got := capture{conn: newFakeConn(nil), locker: &fakeLocker{}}
-	wsConn := NewConn(got.conn, bufio.NewReader(got.conn), maskSendFrame)
-	wsConn.di.writeLocker = got.locker
-	wsConn.di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
-		got.config = config
-		return NewControlFrame(config)
-	}
-	got.conn.onWrite = func() { got.held = got.locker.held }
-
-	if err := send(wsConn); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	return got
-}
-
-// The frame must reach the socket, and do so inside the write lock.
-func (got capture) assertWrittenUnderLock(t *testing.T) {
-	t.Helper()
-	if len(got.conn.written()) == 0 {
-		t.Error("nothing reached the socket")
-	}
-	if !got.held {
-		t.Error("the frame was written outside the write lock")
-	}
-	if !got.locker.ok(1) {
-		t.Errorf("locks=%d unlocks=%d misuse=%d held=%v, want 1/1/0/false",
-			got.locker.locks, got.locker.unlocks, got.locker.misuse, got.locker.held)
-	}
-}
-
-// assertPropagatesBuildError substitutes a failing builder and checks the error
-// reaches the caller with nothing written.
-func assertPropagatesBuildError(t *testing.T, send func(*Conn) error) {
-	t.Helper()
-	want := errors.New("cannot build")
-	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-	wsConn.di.newControlFrame = func(NewControlFrameConfig) (*Frame, error) { return nil, want }
-	if err := send(wsConn); !errors.Is(err, want) {
-		t.Errorf("err = %v, want %v", err, want)
-	}
-	if len(netConn.written()) != 0 {
-		t.Errorf("%d bytes reached the socket after a build failure", len(netConn.written()))
-	}
-}
-
-func TestConnSendClose(t *testing.T) {
-	t.Run("nil payload sends no body", func(t *testing.T) {
-		got := captureSend(t, false, func(c *Conn) error { return c.SendClose(nil) })
-		if got.config.Opcode != OpcodeClose {
-			t.Errorf("Opcode = %#x, want %#x", got.config.Opcode, OpcodeClose)
+func TestSendClose(t *testing.T) {
+	// base_di builds and sends successfully; each case overrides what it looks at.
+	base_di := func() sendCloseDI {
+		return sendCloseDI{
+			newControlFrame: func(config NewControlFrameConfig) (*Frame, error) {
+				return &Frame{Opcode: config.Opcode, PayloadData: config.PayloadData, FIN: true}, nil
+			},
+			SendFrame: func(f *Frame) error { return nil },
 		}
-		if len(got.config.PayloadData) != 0 {
-			t.Errorf("PayloadData = % x, want empty", got.config.PayloadData)
-		}
-		got.assertWrittenUnderLock(t)
-	})
+	}
 
-	t.Run("relays the encoded payload", func(t *testing.T) {
-		payload := &ClosePayload{StatusCode: CloseNormalClosure, Reason: "bye"}
-		got := captureSend(t, false, func(c *Conn) error { return c.SendClose(payload) })
-		if string(got.config.PayloadData) != string(payload.Bytes()) {
-			t.Errorf("PayloadData = % x, want % x", got.config.PayloadData, payload.Bytes())
+	t.Run("builds a close from the payload and sends it", func(t *testing.T) {
+		payload := &ClosePayload{StatusCode: CloseGoingAway, Reason: "restart"}
+		var configs []NewControlFrameConfig
+		built := &Frame{}
+		var sent []*Frame
+		di := base_di()
+		di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
+			configs = append(configs, config)
+			return built, nil
+		}
+		di.SendFrame = func(f *Frame) error {
+			sent = append(sent, f)
+			return nil
+		}
+
+		if err := sendClose(payload, di); err != nil {
+			t.Fatalf("sendClose: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Opcode != OpcodeClose || !bytes.Equal(configs[0].PayloadData, payload.Bytes()) {
+			t.Errorf("configs %+v, want one {Opcode: close, PayloadData: % x}", configs, payload.Bytes())
+		}
+		if len(sent) != 1 || sent[0] != built {
+			t.Errorf("sent %d frames, want the built one once", len(sent))
 		}
 	})
 
-	t.Run("propagates a build error", func(t *testing.T) {
-		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendClose(nil) })
+	// 7.1.5: a close may carry no body at all.
+	t.Run("a nil payload builds a close with no body", func(t *testing.T) {
+		var configs []NewControlFrameConfig
+		di := base_di()
+		di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
+			configs = append(configs, config)
+			return &Frame{}, nil
+		}
+
+		if err := sendClose(nil, di); err != nil {
+			t.Fatalf("sendClose: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Opcode != OpcodeClose || configs[0].PayloadData != nil {
+			t.Errorf("configs %+v, want one {Opcode: close, PayloadData: nil}", configs)
+		}
+	})
+
+	t.Run("returns a build error with nothing sent", func(t *testing.T) {
+		wantErr := errors.New("cannot build")
+		di := base_di()
+		di.newControlFrame = func(NewControlFrameConfig) (*Frame, error) { return nil, wantErr }
+		di.SendFrame = func(*Frame) error {
+			t.Error("sent after a build error")
+			return nil
+		}
+
+		if err := sendClose(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendClose = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("returns the send error", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		di := base_di()
+		di.SendFrame = func(*Frame) error { return wantErr }
+
+		if err := sendClose(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendClose = %v, want %v", err, wantErr)
+		}
 	})
 }
 
-func TestConnSendPing(t *testing.T) {
-	t.Run("relays payload unchanged", func(t *testing.T) {
-		got := captureSend(t, false, func(c *Conn) error { return c.SendPing([]byte("hb")) })
-		if got.config.Opcode != OpcodePing {
-			t.Errorf("Opcode = %#x, want %#x", got.config.Opcode, OpcodePing)
+func TestSendPing(t *testing.T) {
+	// base_di builds and sends successfully; each case overrides what it looks at.
+	base_di := func() sendPingDI {
+		return sendPingDI{
+			newControlFrame: func(config NewControlFrameConfig) (*Frame, error) {
+				return &Frame{Opcode: config.Opcode, PayloadData: config.PayloadData, FIN: true}, nil
+			},
+			SendFrame: func(f *Frame) error { return nil },
 		}
-		if string(got.config.PayloadData) != "hb" {
-			t.Errorf("PayloadData = %q, want %q", got.config.PayloadData, "hb")
-		}
-		got.assertWrittenUnderLock(t)
-	})
-
-	t.Run("propagates a build error", func(t *testing.T) {
-		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendPing(nil) })
-	})
-}
-
-func TestConnSendPong(t *testing.T) {
-	t.Run("relays payload unchanged", func(t *testing.T) {
-		got := captureSend(t, false, func(c *Conn) error { return c.SendPong([]byte("hb")) })
-		if got.config.Opcode != OpcodePong {
-			t.Errorf("Opcode = %#x, want %#x", got.config.Opcode, OpcodePong)
-		}
-		if string(got.config.PayloadData) != "hb" {
-			t.Errorf("PayloadData = %q, want %q", got.config.PayloadData, "hb")
-		}
-		got.assertWrittenUnderLock(t)
-	})
-
-	t.Run("propagates a build error", func(t *testing.T) {
-		assertPropagatesBuildError(t, func(c *Conn) error { return c.SendPong(nil) })
-	})
-}
-
-/*
-The mask is no longer a parameter — RFC 6455 5.1 ties it to which side the Conn
-is, so it is settled at construction and every control frame the Conn builds
-must carry whatever was set there.
-*/
-func TestConnSendControlFrameTakesMaskFromConn(t *testing.T) {
-	senders := map[string]func(*Conn) error{
-		"SendClose": func(c *Conn) error { return c.SendClose(nil) },
-		"SendPing":  func(c *Conn) error { return c.SendPing(nil) },
-		"SendPong":  func(c *Conn) error { return c.SendPong(nil) },
 	}
 
-	for name, send := range senders {
-		t.Run(name, func(t *testing.T) {
-			for _, maskSendFrame := range []bool{false, true} {
-				if got := captureSend(t, maskSendFrame, send); got.config.Mask != maskSendFrame {
-					t.Errorf("Conn built with maskSendFrame=%v sent Mask=%v", maskSendFrame, got.config.Mask)
-				}
-			}
-		})
+	// 5.5.2: the pong must echo this payload, so it goes in as given.
+	t.Run("builds a ping from the payload and sends it", func(t *testing.T) {
+		payloadData := []byte("hb")
+		var configs []NewControlFrameConfig
+		built := &Frame{}
+		var sent []*Frame
+		di := base_di()
+		di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
+			configs = append(configs, config)
+			return built, nil
+		}
+		di.SendFrame = func(f *Frame) error {
+			sent = append(sent, f)
+			return nil
+		}
+
+		if err := sendPing(payloadData, di); err != nil {
+			t.Fatalf("sendPing: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Opcode != OpcodePing || !bytes.Equal(configs[0].PayloadData, payloadData) {
+			t.Errorf("configs %+v, want one {Opcode: ping, PayloadData: hb}", configs)
+		}
+		if len(sent) != 1 || sent[0] != built {
+			t.Errorf("sent %d frames, want the built one once", len(sent))
+		}
+	})
+
+	t.Run("returns a build error with nothing sent", func(t *testing.T) {
+		wantErr := errors.New("cannot build")
+		di := base_di()
+		di.newControlFrame = func(NewControlFrameConfig) (*Frame, error) { return nil, wantErr }
+		di.SendFrame = func(*Frame) error {
+			t.Error("sent after a build error")
+			return nil
+		}
+
+		if err := sendPing(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendPing = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("returns the send error", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		di := base_di()
+		di.SendFrame = func(*Frame) error { return wantErr }
+
+		if err := sendPing(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendPing = %v, want %v", err, wantErr)
+		}
+	})
+}
+
+func TestSendPong(t *testing.T) {
+	// base_di builds and sends successfully; each case overrides what it looks at.
+	base_di := func() sendPongDI {
+		return sendPongDI{
+			newControlFrame: func(config NewControlFrameConfig) (*Frame, error) {
+				return &Frame{Opcode: config.Opcode, PayloadData: config.PayloadData, FIN: true}, nil
+			},
+			SendFrame: func(f *Frame) error { return nil },
+		}
 	}
+
+	// 5.5.3: an answer echoes the ping's payload, so it goes in as given.
+	t.Run("builds a pong from the payload and sends it", func(t *testing.T) {
+		payloadData := []byte("hb")
+		var configs []NewControlFrameConfig
+		built := &Frame{}
+		var sent []*Frame
+		di := base_di()
+		di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
+			configs = append(configs, config)
+			return built, nil
+		}
+		di.SendFrame = func(f *Frame) error {
+			sent = append(sent, f)
+			return nil
+		}
+
+		if err := sendPong(payloadData, di); err != nil {
+			t.Fatalf("sendPong: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Opcode != OpcodePong || !bytes.Equal(configs[0].PayloadData, payloadData) {
+			t.Errorf("configs %+v, want one {Opcode: pong, PayloadData: hb}", configs)
+		}
+		if len(sent) != 1 || sent[0] != built {
+			t.Errorf("sent %d frames, want the built one once", len(sent))
+		}
+	})
+
+	t.Run("returns a build error with nothing sent", func(t *testing.T) {
+		wantErr := errors.New("cannot build")
+		di := base_di()
+		di.newControlFrame = func(NewControlFrameConfig) (*Frame, error) { return nil, wantErr }
+		di.SendFrame = func(*Frame) error {
+			t.Error("sent after a build error")
+			return nil
+		}
+
+		if err := sendPong(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendPong = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("returns the send error", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		di := base_di()
+		di.SendFrame = func(*Frame) error { return wantErr }
+
+		if err := sendPong(nil, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendPong = %v, want %v", err, wantErr)
+		}
+	})
 }

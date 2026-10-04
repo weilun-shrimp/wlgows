@@ -3,10 +3,9 @@ package wlgows
 import "time"
 
 /*
-ListenerConfig is everything a Listener reads from, and it is never handed over
-whole: each item has its own setter on the Listener, below. Every one of them
-has a working zero value, so a Listener is usable before any is called — one
-that reads conformingly and answers nothing.
+ListenerConfig is everything a Listener reads from, handed over whole by
+SetConfig. Every item has a working zero value, so a Listener is usable before
+SetConfig is called — one that reads conformingly and answers nothing.
 */
 type ListenerConfig struct {
 

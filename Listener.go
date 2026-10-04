@@ -72,7 +72,7 @@ type Listener struct {
 }
 
 // ListenerConn is what a Listener reads from: an already handshaken *Conn
-// (from Dial, Server.Accept or HijackFromHttp), or anything else that can
+// (from Dial, Server.Accept or an http.Hijacker), or anything else that can
 // hand over the next frame — a wrapper of your own, or a scripted one in a
 // test.
 type ListenerConn interface {

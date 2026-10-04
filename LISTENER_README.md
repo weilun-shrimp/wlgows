@@ -14,8 +14,8 @@ puts on a receiver lands on a hook, never inside the Listener.
 - [Quick start](#quick-start) — one connection, start to finish
 - [Three things it will not do for you](#three-things-it-will-not-do-for-you) — [closing](#it-never-closes-the-connection) · [writing](#it-never-writes-anything) · [liveness](#it-has-no-pingpong-liveness)
 - [Configuration](#configuration) — `SetConfig`, `GetConfig`, and which item to get right
-- [Hooks](#hooks) — which frame reaches which, and what the RFC asks back
-- [Errors](#errors) — four groups, and which of them want a close frame
+- [Hooks](#hooks) — which frame reaches which, and what the RFC asks back — [reading text without a copy: `unsafe`](#reading-text-without-a-copy-unsafe)
+- [Errors](#errors) — four groups, and which of them want a close frame — [1. a frame broke a rule](#1-a-frame-broke-a-rule) · [2. the connection failed](#2-the-connection-failed) · [3. you misused the Listener](#3-you-misused-the-listener) · [4. something else](#4-something-else-entirely) · [putting it together](#putting-it-together)
 - [Pausing and resuming](#pausing-and-resuming) — ending a run, and starting it again
 
 The rest of the library — sending, streaming, liveness, handshakes, locks — is
@@ -50,15 +50,16 @@ func handleConn(conn *wlgows.Conn) {
 			log.Printf("binary: %d bytes", frames.ByteLen())
 		},
 		Ping: func(f *wlgows.Frame) {
-			// 5.5.2: pong back, echoing f.PayloadData. Sending is yours.
+			conn.SendPong(f.PayloadData) // 5.5.2: pong back, echoing the payload
 		},
 		Close: func(f *wlgows.Frame) {
 			payload, _ := f.GetClosePayload() // the Listener already validated it
-			// 5.5.1: answer with a close, whatever you want in it, then stop.
-			listener.PauseListen(nil) // nil: the peer said why, Listen returns nil
+			conn.SendClose(payload)           // 5.5.1: answer with a close, then stop
+			listener.PauseListen(nil)         // nil: the peer said why, Listen returns nil
 		},
 		Unknown: func(f *wlgows.Frame) {
 			// An opcode 5.2 reserves: close 1002, then stop.
+			conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseProtocolError})
 			listener.PauseListen(errors.New("reserved opcode")) // Listen returns this
 		},
 	})
@@ -78,16 +79,17 @@ func handleConn(conn *wlgows.Conn) {
 	// payload comes back only for the first — a dead socket has nothing to tell.
 	default:
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-			// Answer with it, then close.
+			conn.SendClose(payload) // answer with it; the deferred Close follows
 		}
 		log.Println("closing:", err)
 	}
 }
 ```
 
-The Listener writes nothing and closes nothing, so every answer above is a
-comment rather than a call: what goes on the wire is yours, and the hooks only
-say when. `PauseListen` is the one thing it does for you there — it ends the run
+The Listener writes nothing and closes nothing, so every `Send*` above is this
+function's own call: what goes on the wire is yours, and the hooks only say
+when. `conn.NewStandardListener()` sets these same `Ping`, `Pong`, `Close` and
+`Unknown` hooks for you. `PauseListen` is the one thing it does for you there — it ends the run
 so this function can return, carrying whatever reason you hand it.
 
 ## Three things it will not do for you
@@ -106,7 +108,7 @@ after a reasonable delay. A Listener does not know which side it is on.
 ### It never writes anything
 
 No pongs, no close replies, no echoes. It reads. Every `Send*` call in the quick
-start above is yours, in your hook.
+start above is yours, in your hook or after `Listen` returns.
 
 So a Listener with **no hooks configured is a conforming reader of nothing** — it
 will sit there quite happily while the peer waits for pongs that never come.
@@ -191,7 +193,7 @@ Each item carries its own detail in full — which frames it covers, and the
 reasoning behind the numbers:
 
 ```bash
-go doc github.com/weilun-shrimp/wlgows/v5.ListenerConfig
+go doc github.com/weilun-shrimp/wlgows/v6.ListenerConfig
 ```
 
 ## Hooks
@@ -270,10 +272,11 @@ listener.SetConfig(wlgows.ListenerConfig{
 		}
 	},
 	Ping: func(f *wlgows.Frame) {
-		// 5.5.2: pong back, echoing f.PayloadData.
+		conn.SendPong(f.PayloadData) // 5.5.2: pong back, echoing the payload
 	},
 	Close: func(f *wlgows.Frame) {
-		// 5.5.1: answer with a close, then stop.
+		payload, _ := f.GetClosePayload()
+		conn.SendClose(payload) // 5.5.1: answer with a close, then stop
 		listener.PauseListen(nil)
 	},
 })
@@ -298,6 +301,44 @@ process any further data frames once a Close has arrived. The Listener does not
 enforce that — it hands the frame to `Close` and reads on — so your `Close` hook
 must call `PauseListen`, or a message arriving after the close will still reach
 `Text` or `Binary`.
+
+### Reading text without a copy: `unsafe`
+
+**Only if you know exactly what you are doing** — the warning in
+[the sending guide](./SENDING_README.md#faster-and-less-memory-sending-a-string-with-unsafe)
+applies here too. If you are not sure, use `frames.String()`: the price is one
+copy.
+
+wlgows never writes to a payload after a frame is read, and every frame gets its
+own. So a message that arrived in one frame can become a string without a copy:
+
+```go
+config.Text = func(frames wlgows.Frames) {
+	if len(frames) != 1 {
+		handle(frames.String()) // fragmented: joining needs a copy anyway
+		return
+	}
+	payload := frames[0].PayloadData
+	handle(unsafe.String(unsafe.SliceData(payload), len(payload)))
+}
+```
+
+On a 1 MB message, `frames.String()` takes about 60 µs and allocates 1 MB; the
+`unsafe` conversion takes about 2 ns and allocates nothing. It also halves the
+memory: without it the message exists twice, the payload and the string, until
+the payload is collected.
+
+- **Only for a message that arrived in one frame.** A fragmented one has to be
+  joined, and `frames.String()` already joins it in one allocation.
+- **Never write to `payload` afterwards**, or the string changes with it. Go
+  assumes a string never changes: a map keyed by it, for one, breaks.
+- **The string keeps the whole payload alive.** Keep a short piece of a huge
+  message, and the whole message stays in memory. Copy the piece with
+  `strings.Clone` if you keep it.
+- The bytes are already checked as valid UTF-8 before `Text` runs.
+
+A binary message needs no `unsafe` at all: `frames[0].PayloadData` is already a
+`[]byte` you can read without a copy, under the same rule of not writing to it.
 
 ## Errors
 

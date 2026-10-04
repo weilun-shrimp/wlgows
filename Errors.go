@@ -130,7 +130,8 @@ var (
 	// goroutines both answering the peer's close both call it, and this tells the
 	// loser its frame was not needed. From a data send it means the frame came
 	// too late: nothing of it reached the socket, though earlier chunks of the
-	// same message may have, leaving it unterminated.
+	// same message may have, leaving it unterminated. A ping or pong is never
+	// refused: 5.5.2 still allows both.
 	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
 )
 

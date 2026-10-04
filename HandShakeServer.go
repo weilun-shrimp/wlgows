@@ -29,9 +29,15 @@ inspect what actually went out.
 r must be the same *bufio.Reader you read req from (or, for an
 already-parsed req such as a hijacked connection's, the same reader you go on
 to read frames from) — the returned *Conn reuses it rather than wrapping c
-again.
+again. From net/http, that is the hijacked connection's own reader:
+
+	netConn, bufRW, err := responseWriter.(http.Hijacker).Hijack()
+	conn, res, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, req)
+
+w is the returned *Conn's writer — see NewConn. Pass net/http's, as above, or
+your own, such as bufio.NewWriterSize(c, 16*1024).
 */
-func ServerHandShake(c net.Conn, r *bufio.Reader, req *http.Request) (*Conn, *http.Response, error) {
+func ServerHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request) (*Conn, *http.Response, error) {
 	res, err := serverHandShake(c, req, serverHandShakeDI{
 		validateHandShakeRequest: ValidateHandShakeRequest,
 		newResponseWriter:        func() ServerHandShakeRespWriter { return NewResponseWriter() },
@@ -40,7 +46,11 @@ func ServerHandShake(c net.Conn, r *bufio.Reader, req *http.Request) (*Conn, *ht
 	if err != nil {
 		return nil, res, err
 	}
-	return NewConn(c, r, false), res, nil
+	conn, err := NewConn(c, r, w, false)
+	if err != nil {
+		return nil, res, err
+	}
+	return conn, res, nil
 }
 
 type serverHandShakeDI struct {

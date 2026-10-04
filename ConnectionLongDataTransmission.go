@@ -19,8 +19,7 @@ chunks and it goes out as one message, fragment by fragment.
 RFC 6455 5.4 is kept for you: the opcode goes on the first frame and
 OpcodeContinuation on every frame after, and no other message interleaves. A
 chunk is one frame, so pick a size — 4 KB is a fair default — rather than
-passing a byte at a time. The chunk size is also what the Conn's write buffer
-grows to, not the message size — see RenewWriteBuffer.
+passing a byte at a time.
 
 Start and Release pair like Lock and Unlock: always defer Release. End only
 sends the last frame, carrying FIN: the final chunk if you pass it, or an empty
@@ -41,7 +40,7 @@ whole messages is yours.
 A close ends the transmission wherever it lands. 5.5.1 allows no data frame after
 one, and a stream is the case where that matters — minutes of chunks against a
 peer that stopped reading them — so all three refuse with ErrCloseAlreadySent
-once SendClose has gone out: Start opens nothing, Transmit sends nothing, and End
+once a close has gone out: Start opens nothing, Transmit sends nothing, and End
 skips the terminating frame. A message cut off that way is left unterminated on
 the wire, which is what the close already told the peer.
 */
@@ -115,7 +114,7 @@ func transmitData(data []byte, di transmitDataDI) error {
 	}
 
 	f, err := di.conn.di.newDataFrame(NewFrameConfig{
-		Opcode: opcode, Mask: di.conn.maskSendFrame, PayloadData: data, FIN: false,
+		Opcode: opcode, PayloadData: data, FIN: false,
 	})
 	if err != nil {
 		return err
@@ -124,11 +123,6 @@ func transmitData(data []byte, di transmitDataDI) error {
 	di.conn.di.writeLocker.Lock()
 	defer di.conn.di.writeLocker.Unlock()
 
-	// Checked per fragment, not once at Start: a close arriving mid stream is
-	// the ordinary case, and every chunk after it is a frame 5.5.1 forbids.
-	if di.conn.closeSent {
-		return ErrCloseAlreadySent
-	}
 	if err := di.sendFrame(f); err != nil {
 		return err
 	}
@@ -171,7 +165,7 @@ func endLongDataTransmission(data []byte, di endLongDataTransmissionDI) error {
 	}
 
 	f, err := di.conn.di.newDataFrame(NewFrameConfig{
-		Opcode: opcode, Mask: di.conn.maskSendFrame, PayloadData: data, FIN: true,
+		Opcode: opcode, PayloadData: data, FIN: true,
 	})
 	if err != nil {
 		return err
@@ -180,11 +174,6 @@ func endLongDataTransmission(data []byte, di endLongDataTransmissionDI) error {
 	di.conn.di.writeLocker.Lock()
 	defer di.conn.di.writeLocker.Unlock()
 
-	// The FIN frame is a data frame too, so a close leaves the message
-	// unterminated.
-	if di.conn.closeSent {
-		return ErrCloseAlreadySent
-	}
 	return di.sendFrame(f)
 }
 

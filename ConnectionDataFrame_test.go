@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -111,224 +112,227 @@ func TestSendBinary(t *testing.T) {
 	})
 }
 
-/*
-RFC 6455 5.4 through the long data transmission: every chunk but the last to
-TransmitData, the last to End so it carries FIN itself and no empty terminator
-follows it.
-*/
 func TestSendData(t *testing.T) {
 	// base_di succeeds at every step; each case overrides what it looks at.
 	base_di := func() sendDataDI {
 		return sendDataDI{
-			startLongDataTransmission:   func(opcode uint8) error { return nil },
-			transmitData:                func(data []byte) error { return nil },
-			endLongDataTransmission:     func(data []byte) error { return nil },
-			releaseLongDataTransmission: func() {},
+			dataFramesWriteLocker: fakeFuncLocker{lock: func() {}, unlock: func() {}},
+			writeLocker:           fakeFuncLocker{lock: func() {}, unlock: func() {}},
+			newDataFrame: func(config NewFrameConfig) (*Frame, error) {
+				return &Frame{Opcode: config.Opcode}, nil
+			},
+			bufferedWriteFrame: func(f *Frame) error { return nil },
+			flushWriter:        func() error { return nil },
 		}
 	}
 
-	t.Run("splits the payload into chunks of chunkSize", func(t *testing.T) {
-		var transmitted, ended []string
-		di := base_di()
-		di.transmitData = func(data []byte) error {
-			transmitted = append(transmitted, string(data))
-			return nil
-		}
-		di.endLongDataTransmission = func(data []byte) error {
-			ended = append(ended, string(data))
-			return nil
-		}
-
-		if err := sendData(OpcodeText, []byte("hello world"), 4, di); err != nil {
-			t.Fatalf("sendData: %v", err)
-		}
-		if !slices.Equal(transmitted, []string{"hell", "o wo"}) || !slices.Equal(ended, []string{"rld"}) {
-			t.Errorf("transmitted %q, ended %q — want [hell o wo] then [rld]", transmitted, ended)
-		}
-	})
-
-	t.Run("an exact multiple ends on its last chunk", func(t *testing.T) {
-		var transmitted, ended []string
-		di := base_di()
-		di.transmitData = func(data []byte) error {
-			transmitted = append(transmitted, string(data))
-			return nil
-		}
-		di.endLongDataTransmission = func(data []byte) error {
-			ended = append(ended, string(data))
-			return nil
-		}
-
-		if err := sendData(OpcodeText, []byte("abcdefgh"), 4, di); err != nil {
-			t.Fatalf("sendData: %v", err)
-		}
-		if !slices.Equal(transmitted, []string{"abcd"}) || !slices.Equal(ended, []string{"efgh"}) {
-			t.Errorf("transmitted %q, ended %q — want [abcd] then [efgh]", transmitted, ended)
-		}
-	})
-
-	// 0 or less, or a chunkSize the payload fits in, hands it all to End — one frame.
-	t.Run("the whole payload to End when chunkSize does not split it", func(t *testing.T) {
-		for _, size := range []int{-1, 0, 5, 100} {
-			var ended []string
-			di := base_di()
-			di.transmitData = func([]byte) error {
-				t.Errorf("size %d: transmitted, want it all to End", size)
-				return nil
-			}
-			di.endLongDataTransmission = func(data []byte) error {
-				ended = append(ended, string(data))
-				return nil
-			}
-
-			if err := sendData(OpcodeText, []byte("hello"), size, di); err != nil {
-				t.Fatalf("sendData: %v", err)
-			}
-			if !slices.Equal(ended, []string{"hello"}) {
-				t.Errorf("size %d: ended %q, want [hello]", size, ended)
-			}
-		}
-	})
-
-	// End turns an empty payload into one empty frame; 5.6 allows the message.
-	t.Run("an empty payload goes to End", func(t *testing.T) {
-		for _, size := range []int{0, 4} {
-			var ended []string
-			di := base_di()
-			di.transmitData = func([]byte) error {
-				t.Errorf("size %d: transmitted an empty payload", size)
-				return nil
-			}
-			di.endLongDataTransmission = func(data []byte) error {
-				ended = append(ended, string(data))
-				return nil
-			}
-
-			if err := sendData(OpcodeText, nil, size, di); err != nil {
-				t.Fatalf("sendData: %v", err)
-			}
-			if !slices.Equal(ended, []string{""}) {
-				t.Errorf("size %d: ended %q, want one empty", size, ended)
-			}
-		}
-	})
-
-	// By byte, not by rune: UTF-8 is judged on the message (8.1).
-	t.Run("splits a rune across chunks", func(t *testing.T) {
-		var transmitted, ended []string
-		di := base_di()
-		di.transmitData = func(data []byte) error {
-			transmitted = append(transmitted, string(data))
-			return nil
-		}
-		di.endLongDataTransmission = func(data []byte) error {
-			ended = append(ended, string(data))
-			return nil
-		}
-
-		if err := sendData(OpcodeText, []byte("中"), 1, di); err != nil {
-			t.Fatalf("sendData: %v", err)
-		}
-		if !slices.Equal(transmitted, []string{"\xe4", "\xb8"}) || !slices.Equal(ended, []string{"\xad"}) {
-			t.Errorf("transmitted %q, ended %q — want [e4 b8] then [ad]", transmitted, ended)
-		}
-	})
-
-	t.Run("opens with the opcode it is given", func(t *testing.T) {
-		for _, opcode := range []uint8{OpcodeText, OpcodeBinary} {
-			var got []uint8
-			di := base_di()
-			di.startLongDataTransmission = func(opcode uint8) error {
-				got = append(got, opcode)
-				return nil
-			}
-
-			if err := sendData(opcode, []byte("hello"), 0, di); err != nil {
-				t.Fatalf("sendData: %v", err)
-			}
-			if !slices.Equal(got, []uint8{opcode}) {
-				t.Errorf("Start got %#x, want [%#x]", got, opcode)
-			}
-		}
-	})
-
-	// A refused start locked nothing, so there is nothing to transmit, end or
-	// release — either of the last two would unlock what was never locked.
-	t.Run("stops at a start error", func(t *testing.T) {
-		wantErr := errors.New("cannot start")
-		di := base_di()
-		di.startLongDataTransmission = func(uint8) error { return wantErr }
-		di.transmitData = func([]byte) error {
-			t.Error("transmitted after a refused start")
-			return nil
-		}
-		di.endLongDataTransmission = func([]byte) error {
-			t.Error("ended after a refused start")
-			return nil
-		}
-		di.releaseLongDataTransmission = func() { t.Error("released after a refused start") }
-
-		if err := sendData(OpcodeText, []byte("hello world"), 4, di); !errors.Is(err, wantErr) {
-			t.Errorf("sendData = %v, want %v", err, wantErr)
-		}
-	})
-
-	/*
-		End would put FIN on a message missing chunks, and the peer would take it
-		as complete. Only released, the message is left unterminated.
-	*/
-	t.Run("releases without End on a transmit error", func(t *testing.T) {
-		wantErr := errors.New("cannot transmit")
-		var transmits, releases int
-		di := base_di()
-		di.transmitData = func([]byte) error {
-			transmits++
-			return wantErr
-		}
-		di.endLongDataTransmission = func([]byte) error {
-			t.Error("ended a message missing chunks")
-			return nil
-		}
-		di.releaseLongDataTransmission = func() { releases++ }
-
-		if err := sendData(OpcodeText, []byte("hello world"), 4, di); !errors.Is(err, wantErr) {
-			t.Errorf("sendData = %v, want %v", err, wantErr)
-		}
-		if transmits != 1 || releases != 1 {
-			t.Errorf("transmitted %d, released %d — want 1 and 1", transmits, releases)
-		}
-	})
-
-	// End only sends FIN; the connection is freed by Release, after it.
-	t.Run("releases once after End", func(t *testing.T) {
+	// 5.4: there is no message for it to continue.
+	t.Run("refuses a continuation opcode", func(t *testing.T) {
 		var steps []string
 		di := base_di()
-		di.endLongDataTransmission = func([]byte) error {
-			steps = append(steps, "end")
-			return nil
+		di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
 		}
-		di.releaseLongDataTransmission = func() { steps = append(steps, "release") }
+		di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
+			t.Error("built a frame for a continuation")
+			return nil, nil
+		}
 
-		if err := sendData(OpcodeText, []byte("hello world"), 4, di); err != nil {
-			t.Fatalf("sendData: %v", err)
+		if err := sendData(OpcodeContinuation, []byte("hello"), 0, di); !errors.Is(err, ErrContinuationFrameWithoutMsg) {
+			t.Errorf("sendData = %v, want ErrContinuationFrameWithoutMsg", err)
 		}
-		if !slices.Equal(steps, []string{"end", "release"}) {
-			t.Errorf("steps %q, want [end release]", steps)
+		if len(steps) != 0 {
+			t.Errorf("steps %q, want no lock taken", steps)
 		}
 	})
 
-	t.Run("returns an end error and still releases", func(t *testing.T) {
-		wantErr := errors.New("cannot end")
-		releases := 0
+	t.Run("builds one frame from the opcode", func(t *testing.T) {
+		var configs []NewFrameConfig
 		di := base_di()
-		di.endLongDataTransmission = func([]byte) error { return wantErr }
-		di.releaseLongDataTransmission = func() { releases++ }
+		di.newDataFrame = func(config NewFrameConfig) (*Frame, error) {
+			configs = append(configs, config)
+			return &Frame{Opcode: config.Opcode}, nil
+		}
+
+		if err := sendData(OpcodeBinary, []byte("hello world"), 4, di); err != nil {
+			t.Fatalf("sendData: %v", err)
+		}
+		if len(configs) != 1 || configs[0].Opcode != OpcodeBinary || configs[0].PayloadData != nil || configs[0].FIN {
+			t.Errorf("configs %+v, want one {Opcode: binary}", configs)
+		}
+	})
+
+	t.Run("returns a build error with nothing written", func(t *testing.T) {
+		wantErr := errors.New("cannot build")
+		var steps []string
+		di := base_di()
+		di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
+		}
+		di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		di.newDataFrame = func(NewFrameConfig) (*Frame, error) { return nil, wantErr }
+		di.bufferedWriteFrame = func(*Frame) error {
+			t.Error("wrote after a build error")
+			return nil
+		}
+		di.flushWriter = func() error {
+			t.Error("flushed after a build error")
+			return nil
+		}
 
 		if err := sendData(OpcodeText, []byte("hello"), 0, di); !errors.Is(err, wantErr) {
 			t.Errorf("sendData = %v, want %v", err, wantErr)
 		}
-		if releases != 1 {
-			t.Errorf("released %d times, want 1", releases)
+		if want := []string{"data lock", "data unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	// 5.4: the first frame carries the opcode, the rest 0, only the last FIN.
+	// The frame is reused, so each write is recorded as it happens.
+	t.Run("writes one frame per chunk", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name      string
+			payload   string
+			chunkSize int
+			want      []string
+		}{
+			{"0 sends one frame", "hello", 0, []string{"1 true hello"}},
+			{"negative sends one frame", "hello", -1, []string{"1 true hello"}},
+			{"a payload that fits is one frame", "hello", 5, []string{"1 true hello"}},
+			{"an empty payload is one empty frame", "", 4, []string{"1 true "}},
+			{"splits by chunkSize", "hello world", 4, []string{"1 false hell", "0 false o wo", "0 true rld"}},
+			{"an exact multiple ends on its last chunk", "abcdefgh", 4, []string{"1 false abcd", "0 true efgh"}},
+		} {
+			var got []string
+			di := base_di()
+			di.bufferedWriteFrame = func(f *Frame) error {
+				got = append(got, fmt.Sprintf("%d %v %s", f.Opcode, f.FIN, f.PayloadData))
+				return nil
+			}
+
+			if err := sendData(OpcodeText, []byte(testCase.payload), testCase.chunkSize, di); err != nil {
+				t.Fatalf("%s: sendData: %v", testCase.name, err)
+			}
+			if !slices.Equal(got, testCase.want) {
+				t.Errorf("%s: wrote %q, want %q", testCase.name, got, testCase.want)
+			}
+		}
+	})
+
+	/*
+		dataFramesWriteLocker is held throughout. writeLocker is taken for each
+		frame and for the flush, and released in between, so a control frame can
+		get out mid message (5.5.2).
+	*/
+	t.Run("locks", func(t *testing.T) {
+		var steps []string
+		di := base_di()
+		di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
+		}
+		di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		di.bufferedWriteFrame = func(*Frame) error {
+			steps = append(steps, "write")
+			return nil
+		}
+		di.flushWriter = func() error {
+			steps = append(steps, "flush")
+			return nil
+		}
+
+		if err := sendData(OpcodeText, []byte("hello world"), 4, di); err != nil {
+			t.Fatalf("sendData: %v", err)
+		}
+		want := []string{
+			"data lock",
+			"write lock", "write", "write unlock",
+			"write lock", "write", "write unlock",
+			"write lock", "write", "write unlock",
+			"write lock", "flush", "write unlock",
+			"data unlock",
+		}
+		if !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	// A message missing chunks must not be flushed as if it were whole.
+	t.Run("stops at a write error", func(t *testing.T) {
+		wantErr := errors.New("refused")
+		var steps []string
+		di := base_di()
+		di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
+		}
+		di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		di.bufferedWriteFrame = func(*Frame) error {
+			steps = append(steps, "write")
+			return wantErr
+		}
+		di.flushWriter = func() error {
+			steps = append(steps, "flush")
+			return nil
+		}
+
+		if err := sendData(OpcodeText, []byte("hello world"), 4, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendData = %v, want %v", err, wantErr)
+		}
+		want := []string{"data lock", "write lock", "write", "write unlock", "data unlock"}
+		if !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	t.Run("returns a flush error", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		var steps []string
+		di := base_di()
+		di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
+		}
+		di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		di.bufferedWriteFrame = func(*Frame) error {
+			steps = append(steps, "write")
+			return nil
+		}
+		di.flushWriter = func() error {
+			steps = append(steps, "flush")
+			return wantErr
+		}
+
+		if err := sendData(OpcodeText, []byte("hello"), 0, di); !errors.Is(err, wantErr) {
+			t.Errorf("sendData = %v, want %v", err, wantErr)
+		}
+		want := []string{
+			"data lock",
+			"write lock", "write", "write unlock",
+			"write lock", "flush", "write unlock",
+			"data unlock",
+		}
+		if !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 }

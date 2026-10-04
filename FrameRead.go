@@ -112,7 +112,7 @@ func getFrameFromReader(r io.Reader, maxByteLength uint64, di getFrameFromReader
 			f.ExtendedPayloadLength = binary.BigEndian.Uint64(restHeader)
 		}
 		if f.Mask {
-			f.MaskingKey = restHeader[len(restHeader)-4:] // always the last 4 bytes
+			f.MaskingKey = [4]byte(restHeader[len(restHeader)-4:]) // always the last 4 bytes
 		}
 	}
 
@@ -131,17 +131,8 @@ func getFrameFromReader(r io.Reader, maxByteLength uint64, di getFrameFromReader
 		return f, err
 	}
 
-	if f.Mask { // need to unmask payload, 8 bytes per step with the key doubled
-		b := f.PayloadData
-		k32 := binary.LittleEndian.Uint32(f.MaskingKey)
-		k64 := uint64(k32) | uint64(k32)<<32
-		for len(b) >= 8 {
-			binary.LittleEndian.PutUint64(b, binary.LittleEndian.Uint64(b)^k64)
-			b = b[8:]
-		}
-		for i := range b {
-			b[i] ^= f.MaskingKey[i&3]
-		}
+	if f.Mask {
+		MaskPayload(f.PayloadData, f.MaskingKey) // do unmask by mask again.
 	}
 
 	return f, nil

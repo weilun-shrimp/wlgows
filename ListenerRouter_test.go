@@ -356,64 +356,6 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 }
 
 /*
-resetCurrentDataFrames reopens the assembly state for the next message.
-
-The fresh slice is the part worth pinning: reslicing to [:0] would zero the
-length while keeping the array, so the next message's frames would land on top
-of the ones a hook is still holding.
-*/
-func TestListenerResetCurrentDataFrames(t *testing.T) {
-	t.Run("zeroes every field", func(t *testing.T) {
-		l := &Listener{
-			configLocker:           &sync.Mutex{},
-			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
-			currentDataFrameCount:  1,
-			currentDataAccLength:   2,
-			currentDataFrameOpcode: OpcodeText,
-		}
-
-		l.resetCurrentDataFrames()
-
-		// 0 is OpcodeContinuation, which no message can be, so it reads as "none
-		// open" — and GetCurrentMsgOpcode hands it to the caller as exactly that.
-		if l.currentDataFrameOpcode != OpcodeContinuation {
-			t.Errorf("currentDataFrameOpcode = %#x, want 0", l.currentDataFrameOpcode)
-		}
-
-		if len(l.currentDataFrames) != 0 {
-			t.Errorf("currentDataFrames = %d, want 0", len(l.currentDataFrames))
-		}
-		// Both totals are budgets spent by the message just finished, so leaving
-		// either behind charges the next message for it.
-		if l.currentDataFrameCount != 0 {
-			t.Errorf("currentDataFrameCount = %d, want 0", l.currentDataFrameCount)
-		}
-		if l.currentDataAccLength != 0 {
-			t.Errorf("currentDataAccLength = %d, want 0", l.currentDataAccLength)
-		}
-		// Empty, not nil: everything else reads emptiness as "no message open"
-		// and appends without checking.
-		if l.currentDataFrames == nil {
-			t.Error("currentDataFrames should be empty, not nil")
-		}
-	})
-
-	t.Run("a fresh slice, not the old array", func(t *testing.T) {
-		held := Frames{{Opcode: OpcodeText, PayloadData: []byte("first")}}
-		l := &Listener{configLocker: &sync.Mutex{}, currentDataFrames: held, currentDataAccLength: 5}
-
-		l.resetCurrentDataFrames()
-		l.currentDataFrames = append(l.currentDataFrames, &Frame{
-			Opcode: OpcodeText, PayloadData: []byte("second"),
-		})
-
-		if held.String() != "first" {
-			t.Errorf("the frames held from before the reset became %q", held.String())
-		}
-	})
-}
-
-/*
 RFC 6455 5.6 makes a text message UTF-8 as a whole, and 8.1 requires failing the
 connection when it is not. Binary is exempt: its payload is arbitrary bytes.
 */
@@ -548,43 +490,6 @@ func TestListenerRouteFrameClosePayload(t *testing.T) {
 
 func closeBody(statusCode uint16) []byte {
 	return (&ClosePayload{StatusCode: statusCode}).Bytes()
-}
-
-/*
-RFC 6455 7.4.2 splits the status code space and 7.4.1 keeps three of the
-registered codes off the wire, so a peer sending one of those is violating the
-spec however sensible the number looks.
-*/
-func TestValidCloseStatusCode(t *testing.T) {
-	tests := []struct {
-		name  string
-		codes []uint16
-		want  bool
-	}{
-		{"defined by RFC 6455", []uint16{1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011}, true},
-		// Absent from RFC 6455, registered with IANA afterwards through the
-		// process 7.4.2 describes.
-		{"registered later", []uint16{1012, 1013, 1014}, true},
-		{"library and framework use", []uint16{3000, 3999}, true},
-		{"private use", []uint16{4000, 4999}, true},
-
-		{"unused range", []uint16{0, 1, 999}, false},
-		{"reserved with no meaning", []uint16{1004}, false},
-		// Local only: what an application reports to itself when the peer sent
-		// no status, the connection died, or TLS failed.
-		{"local only", []uint16{1005, 1006, 1015}, false},
-		{"undefined in the protocol range", []uint16{1016, 1100, 2000, 2999}, false},
-		{"above the private range", []uint16{5000, 65535}, false},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			for _, code := range testCase.codes {
-				if got := validCloseStatusCode(code); got != testCase.want {
-					t.Errorf("validCloseStatusCode(%d) = %v, want %v", code, got, testCase.want)
-				}
-			}
-		})
-	}
 }
 
 /*
@@ -774,5 +679,100 @@ func TestListenerRouteFrameControlFramesDoNotCount(t *testing.T) {
 	}
 	if got.String() != "hello" {
 		t.Errorf("Text got %q, want hello", got.String())
+	}
+}
+
+/*
+resetCurrentDataFrames reopens the assembly state for the next message.
+
+The fresh slice is the part worth pinning: reslicing to [:0] would zero the
+length while keeping the array, so the next message's frames would land on top
+of the ones a hook is still holding.
+*/
+func TestListenerResetCurrentDataFrames(t *testing.T) {
+	t.Run("zeroes every field", func(t *testing.T) {
+		l := &Listener{
+			configLocker:           &sync.Mutex{},
+			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
+			currentDataFrameCount:  1,
+			currentDataAccLength:   2,
+			currentDataFrameOpcode: OpcodeText,
+		}
+
+		l.resetCurrentDataFrames()
+
+		// 0 is OpcodeContinuation, which no message can be, so it reads as "none
+		// open" — and GetCurrentMsgOpcode hands it to the caller as exactly that.
+		if l.currentDataFrameOpcode != OpcodeContinuation {
+			t.Errorf("currentDataFrameOpcode = %#x, want 0", l.currentDataFrameOpcode)
+		}
+
+		if len(l.currentDataFrames) != 0 {
+			t.Errorf("currentDataFrames = %d, want 0", len(l.currentDataFrames))
+		}
+		// Both totals are budgets spent by the message just finished, so leaving
+		// either behind charges the next message for it.
+		if l.currentDataFrameCount != 0 {
+			t.Errorf("currentDataFrameCount = %d, want 0", l.currentDataFrameCount)
+		}
+		if l.currentDataAccLength != 0 {
+			t.Errorf("currentDataAccLength = %d, want 0", l.currentDataAccLength)
+		}
+		// Empty, not nil: everything else reads emptiness as "no message open"
+		// and appends without checking.
+		if l.currentDataFrames == nil {
+			t.Error("currentDataFrames should be empty, not nil")
+		}
+	})
+
+	t.Run("a fresh slice, not the old array", func(t *testing.T) {
+		held := Frames{{Opcode: OpcodeText, PayloadData: []byte("first")}}
+		l := &Listener{configLocker: &sync.Mutex{}, currentDataFrames: held, currentDataAccLength: 5}
+
+		l.resetCurrentDataFrames()
+		l.currentDataFrames = append(l.currentDataFrames, &Frame{
+			Opcode: OpcodeText, PayloadData: []byte("second"),
+		})
+
+		if held.String() != "first" {
+			t.Errorf("the frames held from before the reset became %q", held.String())
+		}
+	})
+}
+
+/*
+RFC 6455 7.4.2 splits the status code space and 7.4.1 keeps three of the
+registered codes off the wire, so a peer sending one of those is violating the
+spec however sensible the number looks.
+*/
+func TestValidCloseStatusCode(t *testing.T) {
+	tests := []struct {
+		name  string
+		codes []uint16
+		want  bool
+	}{
+		{"defined by RFC 6455", []uint16{1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011}, true},
+		// Absent from RFC 6455, registered with IANA afterwards through the
+		// process 7.4.2 describes.
+		{"registered later", []uint16{1012, 1013, 1014}, true},
+		{"library and framework use", []uint16{3000, 3999}, true},
+		{"private use", []uint16{4000, 4999}, true},
+
+		{"unused range", []uint16{0, 1, 999}, false},
+		{"reserved with no meaning", []uint16{1004}, false},
+		// Local only: what an application reports to itself when the peer sent
+		// no status, the connection died, or TLS failed.
+		{"local only", []uint16{1005, 1006, 1015}, false},
+		{"undefined in the protocol range", []uint16{1016, 1100, 2000, 2999}, false},
+		{"above the private range", []uint16{5000, 65535}, false},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, code := range testCase.codes {
+				if got := validCloseStatusCode(code); got != testCase.want {
+					t.Errorf("validCloseStatusCode(%d) = %v, want %v", code, got, testCase.want)
+				}
+			}
+		})
 	}
 }

@@ -11,12 +11,8 @@ const ControlFramePayloadMaxByteLength = 125
 
 // NewControlFrameConfig describes the control frame to build.
 type NewControlFrameConfig struct {
-	// Opcode must be a control opcode — OpcodeClose, OpcodePing, OpcodePong, or
-	// one the RFC reserves. A data opcode is refused.
+	// Opcode must be OpcodeClose, OpcodePing or OpcodePong. Any other is refused.
 	Opcode byte
-	// Mask must be true on a frame a client sends and may be false on one a
-	// server sends (RFC 6455 5.1).
-	Mask bool
 	// PayloadData is at most ControlFramePayloadMaxByteLength bytes. May be nil.
 	PayloadData []byte
 }
@@ -25,12 +21,12 @@ type NewControlFrameConfig struct {
 NewControlFrame builds one control frame, refusing anything the RFC forbids
 before the frame exists.
 
-Two rules, neither recoverable once bytes are on the wire:
+Two rules, checked here so a bad frame fails when it is built, not when it is
+sent:
 
   - the opcode must be a control opcode, or the frame would be built with FIN
     forced on and a 125 byte cap applied, which is wrong for a data frame;
-  - the payload must fit in 125 bytes, or NewFrame would silently encode a 16
-    bit extended length, which a peer reads as a protocol error.
+  - the payload must fit in 125 bytes (5.5). Sending refuses a longer one too.
 
 Control frames are never fragmented (RFC 6455 5.5), so FIN is always set and is
 not the caller's to choose.
@@ -47,9 +43,8 @@ func NewControlFrame(config NewControlFrameConfig) (*Frame, error) {
 	return NewFrame(NewFrameConfig{
 		PayloadData: config.PayloadData,
 		Opcode:      config.Opcode,
-		Mask:        config.Mask,
 		FIN:         true,
-	})
+	}), nil
 }
 
 // Close status codes from RFC 6455 7.4.1, for SendClose.

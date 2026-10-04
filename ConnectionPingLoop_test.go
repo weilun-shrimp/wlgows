@@ -20,7 +20,7 @@ func TestStartPingLoop(t *testing.T) {
 	// each case overrides what it looks at, and has to stop the loop.
 	base_di := func(t *testing.T) startPingLoopDI {
 		netConn := newFakeConn(nil)
-		conn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 		conn.di.loop = func(trigger func(stop_signal chan<- struct{}), interval time.Duration) {
 			stop_signal := make(chan struct{}, 1)
 			for range 10 {
@@ -99,10 +99,13 @@ func TestStartPingLoop(t *testing.T) {
 	// peer. Without it a heartbeat outlives the conversation it was there to
 	// check.
 	t.Run("stops once a close is sent, reading it under the write lock", func(t *testing.T) {
-		writeLocker := &fakeLocker{}
+		var steps []string
 		di := base_di(t)
 		di.conn.closeSent = true
-		di.conn.di.writeLocker = writeLocker
+		di.conn.di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
 		di.sendPing = func([]byte) error {
 			t.Error("pinged after a close")
 			return nil
@@ -110,8 +113,8 @@ func TestStartPingLoop(t *testing.T) {
 
 		startPingLoop(time.Second, nil, di)
 
-		if !writeLocker.ok(1) {
-			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		if want := []string{"write lock", "write unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 }

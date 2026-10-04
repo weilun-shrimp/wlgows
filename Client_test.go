@@ -21,6 +21,12 @@ func baseDialDI(conn net.Conn) dialDI {
 	}
 }
 
+func TestDialRealWiringRejectsABadUrl(t *testing.T) {
+	if _, _, err := Dial("ftp://localhost:8001", nil); err == nil {
+		t.Error("Dial should reject a non websocket scheme")
+	}
+}
+
 func TestDial(t *testing.T) {
 	t.Run("ws and http schemes go through netDial", func(t *testing.T) {
 		for _, scheme := range []string{"ws", "http"} {
@@ -199,10 +205,4 @@ func TestValidateWebsocketUrl(t *testing.T) {
 			t.Errorf("err should quote the url, got %q", got.Error())
 		}
 	})
-}
-
-func TestDialRealWiringRejectsABadUrl(t *testing.T) {
-	if _, _, err := Dial("ftp://localhost:8001", nil); err == nil {
-		t.Error("Dial should reject a non websocket scheme")
-	}
 }

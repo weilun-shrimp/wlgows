@@ -10,16 +10,19 @@ build yourself.
 Most WebSocket packages fix a frame size or a buffer size when the connection is
 set up, and every send lives with it.
 
-wlgows does not. Nothing is fixed. Every send decides its own frame size, and you
-decide when the `Conn` gives memory back. You get full power over both, and full
-responsibility: if memory use grows ugly, that is the sizes you chose. Two habits
-keep it clean:
+wlgows hands you both, and they are separate knobs:
 
-- **Pick one chunk size and stick to it.** See [Use a fixed chunk size](#1-use-a-fixed-chunk-size).
-- **Call `RenewWriteBuffer` at the right moments.** See [Call `RenewWriteBuffer`](#2-call-renewwritebuffer-when-you-want-memory-back).
+- **The write buffer** is yours, per connection: the `*bufio.Writer` you hand
+  the `Conn` when it is built, and `RenewWriter` to swap it at any time. It is
+  the only memory a `Conn` keeps for sending, and it never grows past what you
+  gave it. See [Memory: the write buffer](#memory-the-write-buffer).
+- **The frame size** is yours on every send: `chunkSize`. It decides where a
+  message is cut into frames, never how much memory sending takes. See
+  [Choosing a chunk size](#choosing-a-chunk-size).
 
-The same control lets you make a server's sending memory extremely low, for a
-small price: one allocation on the next send. See
+Full power, and full responsibility: the trade between memory and speed is the
+size you pick. The same control lets a server's sending memory go as low as 14
+bytes a connection, for a price in writes. See
 [The lowest memory setup](#the-lowest-memory-setup).
 
 ## Contents
@@ -28,13 +31,15 @@ small price: one allocation on the next send. See
 - [Choosing a call](#choosing-a-call)
 - [Whole messages](#whole-messages) — `SendText`, `SendBinary`, `SendData`
 - [Streaming](#streaming) — `Start`, `TransmitData`, `End`, `Release`
-- [Memory: the write buffer](#memory-the-write-buffer) — a fixed chunk size, `RenewWriteBuffer`, and the lowest memory setup
+- [Memory: the write buffer](#memory-the-write-buffer) — [changing it: `RenewWriter`](#changing-it-renewwriter) · [the lowest memory setup](#the-lowest-memory-setup)
+- [Choosing a chunk size](#choosing-a-chunk-size)
+- [Faster and less memory: sending a string with `unsafe`](#faster-and-less-memory-sending-a-string-with-unsafe) — only if you know what you are doing
 - [When a send fails](#when-a-send-fails)
 - [Concurrency](#concurrency)
 - [Control frames and your own frames](#control-frames-and-your-own-frames)
 
-The rest of the library is in the [main README](./README.md). Coming from v4?
-See [Coming from v4](./README.md#coming-from-v4).
+The rest of the library is in the [main README](./README.md). Coming from v5?
+See [Coming from v5](./README.md#coming-from-v5).
 
 ## Choosing a call
 
@@ -72,6 +77,18 @@ conn.SendData(frames[0].Opcode, frames.Bytes(), 0) // echo back what arrived
 refuses it with `ErrInvalidUTF8` if not. A peer would close the connection over
 invalid text (8.1). The check is on the whole message, so a chunk boundary in the
 middle of a character is fine. `SendBinary` and `SendData` check nothing.
+
+The frames of one message go through the write buffer together, and it is
+flushed once at the end, so many small frames share one socket write. The call
+returns once the last frame has been written.
+
+**Your bytes are only read.** A client masks a copy, in the write buffer, never
+your slice. So sending the same slice twice, sending bytes you keep using, or
+sending a `[]byte` converted from a string is safe, on either side.
+
+That promise is also what lets you send a string with no copy at all, through
+`unsafe`. Only if you know what you are doing: see
+[Faster and less memory](#faster-and-less-memory-sending-a-string-with-unsafe).
 
 ## Streaming
 
@@ -121,8 +138,9 @@ The rules:
   out as five frames. If you know which chunk is last, pass it to End instead and
   it carries FIN itself. If nothing was sent before End, its data is the whole
   message, even when it is empty.
-- **Your buffer is yours again** as soon as `TransmitData` returns. Nothing is
-  held between calls, so reading into the same buffer is safe.
+- **Your buffer is yours again** as soon as `TransmitData` returns: the frame is
+  already flushed to the socket. Nothing is held between calls, so reading into
+  the same buffer is safe.
 - **Text must be valid UTF-8.** Only `SendText` checks it. A text stream is yours
   to keep valid.
 - **One goroutine.** Make all four calls from the goroutine that called Start.
@@ -132,111 +150,191 @@ The rules:
 
 ## Memory: the write buffer
 
-Every frame a `Conn` sends is sealed into one write buffer. The buffer grows to
-fit the largest **frame** sent and stays that size. It never shrinks by itself.
-
-Nothing here caps it for you — see [You are in control](#you-are-in-control).
-You have two tools.
-
-### 1. Use a fixed chunk size
-
-This is the good practice. The buffer follows the largest frame, not the largest
-message. So a fixed `chunkSize` caps the buffer at `chunkSize` plus at most 14
-header bytes, however large the message is.
-
-| Sending a 16 MB message | Write buffer after |
-|---|---|
-| `SendBinary(data, 0)` | about 16 MB |
-| `SendBinary(data, 4*1024)` | about 4 KB |
-| Streaming with a 4 KB read buffer | about 4 KB |
-
-Pick one size and use it everywhere: as `chunkSize`, and as the buffer you read
-into before `TransmitData`. Then every send produces the same frames, and the
-buffer stays the same size.
-
-4 KB is a fair default. Check it against your peer's limits:
-
-- **Too large**, and a frame may pass a peer's per-frame or per-message limit.
-- **Too small**, and a large message becomes many frames. A peer may cap frames
-  per message. wlgows' own `Listener` can, with `MaxMsgFrameCount` (no limit by
-  default), and refuses the message with `ErrMsgFrameCountExceeded`. Keep message size ÷ `chunkSize`
-  under that cap. For example, 16 MB in 4 KB chunks is 4,096 frames, more than
-  the 4,000 the [Listener guide](./LISTENER_README.md#configuration) uses as its
-  example.
-
-### 2. Call `RenewWriteBuffer` when you want memory back
+Every frame a `Conn` sends goes through one write buffer: the `*bufio.Writer`
+you hand it when it is built. Its size is the buffer's size:
 
 ```go
-conn.RenewWriteBuffer(4 * 1024) // a fresh buffer of 4 KB; the old one goes to the GC
-conn.RenewWriteBuffer(0)        // no buffer at all; every byte goes back
+serverConn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriterSize(netConn, 16*1024), req) // 16 KB
+clientConn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)        // bufio's 4096
 ```
 
-When to call it is your call. Good times:
+- **It must write to the same connection.** Build it on `netConn`.
+- **Under 14 bytes** it is flushed and replaced by a new 14 byte writer on the
+  connection. 14 is the longest frame header (2 + 8 extended length + 4 masking
+  key). If that flush fails, you get the error and no `Conn`.
+- Hijacked from `net/http`? Pass `bufRW.Writer` and keep net/http's writer.
 
-- **After a large frame.** One big message grew the buffer, and you do not
-  expect another soon.
-- **Before a long quiet time.** You know the connection will not send for a
-  while. On a server holding many connections, each idle connection holding a
-  large buffer adds up.
+**It is fixed.** It never grows and never shrinks by itself, whatever you send.
+A `Conn` holds exactly the writer's size for sending, from the first frame to
+the last, so memory per connection is known before any message is sent:
+
+| Writer size | Per connection | 100,000 connections |
+|---|---|---|
+| 14 | 14 B | ~1.4 MB |
+| 4096 (`bufio.NewWriter`) | 4 KB | ~400 MB |
+| 64 KB | 64 KB | ~6.4 GB |
+
+A frame larger than the buffer still goes out whole, in pieces:
+
+- **A server** writes a large payload straight from your slice. No copy, and the
+  buffer size hardly matters.
+- **A client** must mask what it sends, and never touches your slice, so it masks
+  a copy in the buffer, one buffer at a time. Here the size is the number of
+  socket writes.
+
+What the size buys is fewer socket writes: frames that fit share one. Measured,
+counting writes to the socket:
+
+| Send | 14, server | 14, client | 4096 | 64 KB |
+|---|---|---|---|---|
+| One 10 B message | 1 | 2 | 1 | 1 |
+| 1000 B in 10 B frames (`chunkSize` 10) | 86 | 134 | 1 | 1 |
+| One 1 MB message, server | 2 | | 2 | 2 |
+| One 1 MB message, client | | 87,383 | 257 | 17 |
+
+So a server can run a small buffer cheaply: only many small frames feel it. A
+client sending large messages wants a large one.
+
+### Changing it: `RenewWriter`
+
+```go
+conn.RenewWriter(bufio.NewWriterSize(conn, 64*1024)) // a 64 KB buffer from here on
+conn.RenewWriter(bufio.NewWriterSize(conn, 14))      // the smallest there is
+```
+
+It flushes what the old writer holds, then sends every frame after it through
+the new one, and the old one goes to the GC. The new writer is taken as the
+handshake takes it: one under 14 bytes is flushed and replaced. When to call it
+is your call:
+
+- **Before a bulk send**, on a client: a larger buffer cuts the writes of every
+  large message after it.
+- **Before a long quiet time**, on a server holding many connections: a small
+  buffer keeps an idle connection cheap.
 
 How to call it:
 
-- **Pass your usual frame size**, such as your `chunkSize`, so the next send
-  does not have to grow the buffer again. Or pass 0 — see below.
-- **Not between chunks of one message.** The next chunk grows the buffer straight
-  back.
 - **Any goroutine is fine.** It takes the write lock, so it waits for a frame
   being written to finish.
-
-With a fixed chunk size the buffer never grows past one chunk, so you may never
-need `RenewWriteBuffer` at all.
-
-#### 0: the lowest memory cost
-
-`RenewWriteBuffer(0)` gives the whole write buffer back. Until the next send, the
-`Conn` holds no write memory at all. On a server with many connections that
-mostly sit idle, this keeps the server clean: an idle connection costs nothing
-to write with.
-
-The price is one allocation: the next send grows the buffer again, to the size
-of its frame. Nothing breaks, because the buffer is dynamic and grows whenever a
-frame needs it. So 0 is safe to pass at any time, and it is the right choice when
-you know the connection will be quiet. If it sends again straight away, passing
-your usual frame size saves that allocation.
+- **Build the new writer on the same connection.** `conn` itself works: it is a
+  `net.Conn`.
+- **It returns an error.** A failed flush leaves the old writer in place, and
+  means the socket write failed — see [When a send fails](#when-a-send-fails).
 
 ### The lowest memory setup
 
-Because nothing is fixed, sending can cost a server almost no memory. Two
-settings together:
+Because you size it, sending can cost a server almost no memory:
 
 ```go
-conn.SendText(text, 4*1024) // a small, fixed chunk size
-conn.RenewWriteBuffer(0)    // no write buffer while idle
+conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriterSize(netConn, 14), req) // 14 bytes, for the life of the Conn
 ```
 
-- **While sending:** the write buffer is at most one chunk plus a 14-byte header,
-  however large the message.
-- **While idle:** the write buffer holds nothing at all.
+Or keep a normal buffer while busy and drop to 14 when the connection goes
+quiet:
 
-So a connection that is not sending costs no write memory. For a server holding
-100,000 mostly idle connections, that is the difference between nothing and
-100,000 buffers each the size of the largest frame they ever sent. The price is
-one allocation on the next send, so use it when memory matters more than that.
+```go
+conn.RenewWriter(bufio.NewWriterSize(conn, 14))
+```
+
+For a server holding 100,000 connections, that is about 1.4 MB of write buffers
+instead of about 400 MB at 4096. The price is socket writes, as measured above:
+about one per frame on a server, which large messages barely notice. Do not do
+this on a client that sends large messages: it masks 12 bytes per write.
+
+**After a hijack, return from the handler first.** From Go 1.25 on, net/http
+keeps its own 4 KB writer, the one in `bufRW.Writer`, until the handler returns.
+Run the WebSocket on a goroutine of its own and return from the handler; then a
+14 byte writer frees the 4 KB. Keep the `http.ResponseWriter` out of that
+goroutine: it holds the writer too. If the handler runs the WebSocket itself, a
+smaller writer frees nothing, so keep `bufRW.Writer`. Before Go 1.25,
+`bufRW.Writer` is a new writer net/http does not keep, so this does not apply.
+
+## Choosing a chunk size
+
+`chunkSize` decides where a message is cut into frames. It does not change
+memory: the write buffer is fixed, and a whole message given to `SendData` is
+already in memory. What it changes:
+
+- **How soon a control frame gets out.** A ping, pong or close can only go
+  between two frames of a message, so a 100 MB message sent as one frame holds
+  a pong back until all of it is written. Smaller frames let it in sooner.
+- **Your peer's limits.** Too large, and a frame may pass a peer's per-frame or
+  per-message limit. Too small, and a large message becomes many frames, and a
+  peer may cap frames per message. wlgows' own `Listener` can, with
+  `MaxMsgFrameCount` (no limit by default), and refuses the message with
+  `ErrMsgFrameCountExceeded`. Keep message size ÷ `chunkSize` under that cap.
+  For example, 16 MB in 4 KB chunks is 4,096 frames, more than the 4,000 the
+  [Listener guide](./LISTENER_README.md#configuration) uses as its example.
+
+0 is fine for messages that are small next to the peer's limits. For large ones,
+4 KB to 64 KB is a fair range. A stream's chunk is the buffer you read into
+before `TransmitData`.
+
+## Faster and less memory: sending a string with `unsafe`
+
+**Only if you know exactly what you are doing.** A mistake here is not caught by
+the compiler, the race detector or your tests. It shows up later as a crash, or
+as a string that changes under you, far from the line that caused it. If you
+are not sure, use `[]byte(text)`: the price is one copy.
+
+wlgows itself uses no `unsafe`. But it promises it **never writes to a payload
+you send**, on either side: a client masks a copy in the write buffer. So you
+can hand it a string's own memory instead of a copy, as long as **your** code
+never writes to it either.
+
+```go
+payload := unsafe.Slice(unsafe.StringData(text), len(text))
+err := conn.SendText(payload, 0)
+```
+
+Measured on a 1 MB text message:
+
+| | Time | Allocated |
+|---|---|---|
+| `conn.SendText([]byte(text), 0)` | ~80–110 µs | 1 MB |
+| `conn.SendText(payload, 0)`, through `unsafe` | ~23 µs | 0.3 KB |
+| `conn.SendBinary(payload, 0)`, through `unsafe` | ~1.3 µs | 0.3 KB |
+
+The copy is what `[]byte(text)` costs: Go must copy a string to give you bytes
+you could write to. Of the 23 µs left, about 20 µs is `SendText`'s UTF-8 check;
+the send itself is about 1 µs.
+
+**It is also the lowest memory.** Without `unsafe`, the 1 MB string exists twice,
+the string and its copy, until the send ends. With it, once.
+
+The rules:
+
+- **Never write to `payload`.** It is the string's own memory. A string literal
+  lives in read-only memory, so writing to it crashes the program; any other
+  string silently changes everywhere it is used.
+- **Never pass `payload` to anything else that might write to it**, or `append`
+  to it.
+- **It works with every send**: `SendText`, `SendBinary`, `SendData`,
+  `TransmitData`, `EndLongDataTransmission`, `SendPing`, `SendPong` and
+  `SendFrame`.
+
+Receiving has the same trick the other way round: see
+[Reading text without a copy](./LISTENER_README.md#reading-text-without-a-copy-unsafe).
 
 ## When a send fails
 
 | Error | Meaning |
 |---|---|
-| `ErrCloseAlreadySent` | A close has gone out, and RFC 6455 allows no data frame after one (5.5.1). Nothing of this frame was sent. |
+| `ErrCloseAlreadySent` | A close has gone out, and RFC 6455 allows no data frame and no second close after one (5.5.1). Nothing of this frame was sent. A ping or pong is never refused for this. |
+| `ErrControlFramePayloadTooLong` | A close, ping or pong payload over 125 bytes (5.5). Nothing was sent. |
 | `ErrInvalidUTF8` | `SendText` got invalid UTF-8. Nothing was sent. |
 | `ErrNotDataFrameOpcode`, `ErrContinuationFrameWithoutMsg` | `Start` or `SendData` got an opcode that cannot open a message. Nothing was locked. |
 | `ErrLongDataTransmissionNotStarted` | `TransmitData` or `End` with no transmission open. |
-| Anything else | The frame could not be built, or the socket write failed. |
+| Anything else | A masking key could not be drawn, or the socket write failed. |
+
+**A failed socket write is final.** The write buffer keeps its first error, so
+every send after it fails the same way, and so does `RenewWriter`. Close
+the connection.
 
 **A failure in the middle of a message leaves it unterminated.** Earlier chunks
-already reached the peer, and RFC 6455 has no way to end a message early. Close
-the connection. If you send another data message instead, the peer sees a
-protocol error.
+may already have reached the peer, and RFC 6455 has no way to end a message
+early. Close the connection. If you send another data message instead, the peer
+sees a protocol error.
 
 In a stream you may call End after a failure instead. The peer then receives what
 was sent as a complete message. Do that only if a partial message is what you
@@ -248,7 +346,8 @@ want.
   holds the connection from its first frame to its last.
 - **Control frames still get through.** A ping, pong or close waits only for the
   frame being written, so it can go out between two chunks of a long message
-  (5.4, 5.5.2).
+  (5.4, 5.5.2). It is flushed at once, along with any frames of the message
+  buffered ahead of it.
 - **A slow stream blocks other data sends.** While a stream is open, every
   `SendText`, `SendBinary` and `SendData` on that connection waits for it.
 - **Do not send a data message from inside your own stream.** Calling `SendText`
@@ -256,10 +355,20 @@ want.
 
 ## Control frames and your own frames
 
-`SendClose`, `SendPing` and `SendPong` send one control frame each. RFC 6455 caps
-a control payload at 125 bytes (5.5). For pinging on an interval, see
-[Keepalive](./README.md#keepalive).
+`SendClose`, `SendPing` and `SendPong` send one control frame each, flushed
+before they return. RFC 6455 caps a control payload at 125 bytes (5.5). Only one
+close goes out; a ping or pong still goes out after it (5.5.2). For pinging on
+an interval, see [Keepalive](./README.md#keepalive).
 
-`SendFrame` writes a frame you built with `NewFrame`. It checks almost nothing:
-not the close rule, and not the order of a fragmented message. It only fixes the
-masking to match the `Conn`. Read its doc before you reach for it.
+`SendFrame` writes a frame you built with `NewFrame`, flushed before it returns.
+It settles what the `Conn` knows and leaves the rest to you:
+
+- **Settled, in your frame:** `Mask` and a fresh `MaskingKey` on every send from
+  a client (5.1, 5.3), the length fields from `len(PayloadData)`, and FIN on a
+  close, ping or pong (5.5). So your frame is modified. `PayloadData` never is.
+- **Refused, with nothing written:** a control payload over 125 bytes, and a data
+  frame or second close after this side's close.
+- **Yours:** the order of a fragmented message (5.4), keeping other senders out
+  of it, the opcode and the RSV bits, which go out as you set them.
+
+Read its doc before you reach for it.

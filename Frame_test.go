@@ -3,18 +3,9 @@ package wlgows
 import (
 	"bytes"
 	"errors"
-	"fmt"
+	"reflect"
 	"testing"
 )
-
-func TestBoolToInt(t *testing.T) {
-	if got := boolToInt(true); got != 1 {
-		t.Errorf("boolToInt(true) = %d, want 1", got)
-	}
-	if got := boolToInt(false); got != 0 {
-		t.Errorf("boolToInt(false) = %d, want 0", got)
-	}
-}
 
 func TestFrameGetMaxPayloadLength(t *testing.T) {
 	tests := []struct {
@@ -38,219 +29,148 @@ func TestFrameGetMaxPayloadLength(t *testing.T) {
 	}
 }
 
-func TestFrameSeal(t *testing.T) {
-	tests := []struct {
+func TestBoolToInt(t *testing.T) {
+	if got := boolToInt(true); got != 1 {
+		t.Errorf("boolToInt(true) = %d, want 1", got)
+	}
+	if got := boolToInt(false); got != 0 {
+		t.Errorf("boolToInt(false) = %d, want 0", got)
+	}
+}
+
+func TestFrameGetHeaderSize(t *testing.T) {
+	for _, testCase := range []struct {
+		payloadLength byte
+		mask          bool
+		want          int
+	}{
+		{0, false, 2}, {125, false, 2}, // the length fits in byte 1
+		{126, false, 4},                               // a 2 byte extended length
+		{127, false, 10},                              // an 8 byte extended length
+		{0, true, 6}, {126, true, 8}, {127, true, 14}, // a 4 byte key on top
+	} {
+		f := &Frame{PayloadLength: testCase.payloadLength, Mask: testCase.mask}
+		if got := f.getHeaderSize(); got != testCase.want {
+			t.Errorf("PayloadLength %d mask %v: getHeaderSize = %d, want %d",
+				testCase.payloadLength, testCase.mask, got, testCase.want)
+		}
+	}
+}
+
+func TestFrameAppendSealedHeader(t *testing.T) {
+	for _, testCase := range []struct {
 		name  string
 		frame Frame
 		want  []byte
 	}{
 		{
-			name: "unmasked text frame",
-			frame: Frame{
-				FIN: true, Opcode: 1, PayloadLength: 2, PayloadData: []byte("hi"),
-			},
-			want: []byte{0x81, 0x02, 'h', 'i'},
+			"byte 0 carries FIN, RSV1-3 and the opcode",
+			Frame{FIN: true, RSV1: true, RSV2: false, RSV3: true, Opcode: OpcodePing},
+			[]byte{0b1101_1001, 0x00},
 		},
 		{
-			name: "masked text frame xors the payload",
-			frame: Frame{
-				FIN: true, Opcode: 1, Mask: true, PayloadLength: 2,
-				MaskingKey: []byte{1, 2, 3, 4}, PayloadData: []byte("hi"),
-			},
-			want: []byte{0x81, 0x82, 1, 2, 3, 4, 'h' ^ 1, 'i' ^ 2},
+			"only the low 4 bits of the opcode",
+			Frame{Opcode: 0xF2},
+			[]byte{0x02, 0x00},
 		},
 		{
-			name: "rsv bits and non-final frame",
-			frame: Frame{
-				FIN: false, RSV1: true, RSV2: true, RSV3: true, Opcode: 2,
-				PayloadLength: 1, PayloadData: []byte{0xFF},
-			},
-			want: []byte{0x72, 0x01, 0xFF},
+			"byte 1 carries MASK and the 7 bit length, then the key",
+			Frame{Opcode: OpcodeText, Mask: true, PayloadLength: 125, MaskingKey: [4]byte{0xA, 0xB, 0xC, 0xD}},
+			[]byte{0x01, 0x80 | 125, 0xA, 0xB, 0xC, 0xD},
 		},
 		{
-			name: "opcode is truncated to 4 bits",
-			frame: Frame{
-				FIN: true, Opcode: 0xFF, PayloadLength: 0, PayloadData: []byte{},
-			},
-			want: []byte{0x8F, 0x00},
+			"126 is followed by a big endian uint16",
+			Frame{Opcode: OpcodeBinary, PayloadLength: 126, ExtendedPayloadLength: 0xBEEF},
+			[]byte{0x02, 126, 0xBE, 0xEF},
 		},
 		{
-			name: "126 writes a 2 byte extended length",
-			frame: Frame{
-				FIN: true, Opcode: 1, PayloadLength: 126, ExtendedPayloadLength: 300,
-				PayloadData: bytes.Repeat([]byte{'a'}, 300),
+			"127 is followed by a big endian uint64, then the key",
+			Frame{
+				Opcode: OpcodeBinary, Mask: true, PayloadLength: 127,
+				ExtendedPayloadLength: 0x0102030405060708, MaskingKey: [4]byte{9, 8, 7, 6},
 			},
-			want: append([]byte{0x81, 0x7E, 0x01, 0x2C}, bytes.Repeat([]byte{'a'}, 300)...),
+			[]byte{0x02, 0x80 | 127, 1, 2, 3, 4, 5, 6, 7, 8, 9, 8, 7, 6},
 		},
 		{
-			name: "127 writes an 8 byte extended length",
-			frame: Frame{
-				FIN: true, Opcode: 2, PayloadLength: 127, ExtendedPayloadLength: 70000,
-				PayloadData: bytes.Repeat([]byte{'b'}, 70000),
-			},
-			want: append(
-				[]byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70},
-				bytes.Repeat([]byte{'b'}, 70000)...,
-			),
+			"PayloadData is not written",
+			Frame{Opcode: OpcodeText, PayloadLength: 3, PayloadData: []byte("abc")},
+			[]byte{0x01, 3},
 		},
-	}
-	for _, testCase := range tests {
+	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := testCase.frame.Seal(nil); !bytes.Equal(got, testCase.want) {
-				if len(got) > 32 {
-					t.Errorf("Seal() len = %d (want %d), head = % x (want % x)",
-						len(got), len(testCase.want), got[:12], testCase.want[:12])
-					return
-				}
-				t.Errorf("Seal() = % x, want % x", got, testCase.want)
+			if got := testCase.frame.appendSealedHeader(nil); !bytes.Equal(got, testCase.want) {
+				t.Errorf("appendSealedHeader(nil) = % x, want % x", got, testCase.want)
 			}
 		})
 	}
-}
 
-// Seal masks with key[i%4], so a payload longer than the key cycles it. The mask
-// goes into the sealed bytes only, never back into PayloadData.
-func TestFrameSealCyclesMaskingKey(t *testing.T) {
-	frame := &Frame{
-		FIN: true, Opcode: 1, Mask: true, PayloadLength: 6,
-		MaskingKey: []byte{0x10, 0x20, 0x30, 0x40}, PayloadData: []byte("abcdef"),
-	}
-	got := frame.Seal(nil)
-	want := []byte{
-		0x81, 0x86, 0x10, 0x20, 0x30, 0x40,
-		'a' ^ 0x10, 'b' ^ 0x20, 'c' ^ 0x30, 'd' ^ 0x40, 'e' ^ 0x10, 'f' ^ 0x20,
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("Seal() = % x, want % x", got, want)
-	}
-	if string(frame.PayloadData) != "abcdef" {
-		t.Errorf("PayloadData = %q, want it left plaintext", frame.PayloadData)
-	}
-}
+	t.Run("appends after what buffer holds", func(t *testing.T) {
+		f := &Frame{FIN: true, Opcode: OpcodeText}
+		if got := f.appendSealedHeader([]byte("ab")); !bytes.Equal(got, []byte{'a', 'b', 0x81, 0x00}) {
+			t.Errorf("appendSealedHeader = % x, want 61 62 81 00", got)
+		}
+	})
 
-// Seal masks 8 bytes per step, then byte by byte for the tail. The want is
-// built with a plain byte loop, and the lengths hit each side of the 8 byte
-// boundaries.
-func TestFrameSealMasksEveryLength(t *testing.T) {
-	key := []byte{0x11, 0x22, 0x44, 0x88}
-	for _, length := range []int{0, 1, 3, 4, 7, 8, 9, 12, 15, 16, 17, 23, 24, 25, 125} {
-		t.Run(fmt.Sprintf("%d bytes", length), func(t *testing.T) {
-			payload := make([]byte, length)
-			for i := range payload {
-				payload[i] = byte(i*7 + 1)
+	// Room for the whole header is made once, up front, rather than at each
+	// append. The longest header is 4 appends: bytes 0-1, the length, the key.
+	t.Run("grows buffer at most once", func(t *testing.T) {
+		f := &Frame{
+			Opcode: OpcodeBinary, Mask: true, PayloadLength: 127,
+			ExtendedPayloadLength: 1 << 20, MaskingKey: [4]byte{1, 2, 3, 4},
+		}
+		for _, buffer := range [][]byte{nil, make([]byte, 10, 12)} {
+			var got []byte
+			if allocs := testing.AllocsPerRun(10, func() { got = f.appendSealedHeader(buffer) }); allocs != 1 {
+				t.Errorf("len %d cap %d: allocs = %v, want 1", len(buffer), cap(buffer), allocs)
 			}
-			frame := &Frame{
-				FIN: true, Opcode: 2, Mask: true, PayloadLength: byte(length),
-				MaskingKey: key, PayloadData: bytes.Clone(payload),
-			}
-
-			want := []byte{0x82, 0x80 | byte(length), 0x11, 0x22, 0x44, 0x88}
-			for i := range payload {
-				want = append(want, payload[i]^key[i&3])
-			}
-			if got := frame.Seal(nil); !bytes.Equal(got, want) {
-				t.Errorf("Seal() = % x, want % x", got, want)
-			}
-			if !bytes.Equal(frame.PayloadData, payload) {
-				t.Errorf("PayloadData = % x, want it left plaintext % x", frame.PayloadData, payload)
-			}
-		})
-	}
-}
-
-/*
-Seal empties the buffer it is given. One buffer taken from the largest frame
-down to the smallest must come out identical to a fresh seal every time, with
-nothing of the larger frame left behind — the leftovers would go out on the wire.
-*/
-func TestFrameSealEmptiesAReusedBuffer(t *testing.T) {
-	var buffer []byte
-	for _, size := range []int{70000, 300, 125, 5, 0} {
-		for _, mask := range []bool{true, false} {
-			frame, err := NewFrame(NewFrameConfig{
-				PayloadData: bytes.Repeat([]byte("abcdefg"), size/7+1)[:size],
-				Opcode:      OpcodeBinary, Mask: mask, FIN: true,
-			})
-			if err != nil {
-				t.Fatalf("NewFrame: %v", err)
-			}
-			buffer = frame.Seal(buffer)
-			if want := frame.Seal(nil); !bytes.Equal(buffer, want) {
-				t.Errorf("size %d mask %v: reused buffer is %d bytes, want %d", size, mask, len(buffer), len(want))
+			if len(got) != len(buffer)+14 {
+				t.Errorf("len %d cap %d: appended %d bytes, want 14", len(buffer), cap(buffer), len(got)-len(buffer))
 			}
 		}
-	}
-}
-
-// Once the buffer has grown, sealing a frame that fits allocates nothing.
-func TestFrameSealReusesTheBufferWithoutAllocating(t *testing.T) {
-	frame, err := NewFrame(NewFrameConfig{
-		PayloadData: make([]byte, 64<<10), Opcode: OpcodeBinary, Mask: true, FIN: true,
 	})
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	var buffer []byte
-	buffer = frame.Seal(buffer)
-	if allocs := testing.AllocsPerRun(10, func() { buffer = frame.Seal(buffer) }); allocs != 0 {
-		t.Errorf("Seal into a grown buffer = %v allocs, want 0", allocs)
-	}
+
+	t.Run("allocates nothing when buffer has room", func(t *testing.T) {
+		f := &Frame{Opcode: OpcodeBinary, Mask: true, PayloadLength: 127, ExtendedPayloadLength: 1 << 20}
+		buffer := make([]byte, 0, 14)
+		if allocs := testing.AllocsPerRun(10, func() { f.appendSealedHeader(buffer) }); allocs != 0 {
+			t.Errorf("allocs = %v, want 0", allocs)
+		}
+	})
 }
 
-/*
-NewFrame is the single place the RFC 6455 5.2 length encoding lives, so these
-pin every boundary in it: inline up to 125, a 16 bit extended length up to
-65535, a 64 bit one above that.
-*/
-func TestNewFrameLengthEncoding(t *testing.T) {
-	tests := []struct {
-		name         string
-		size         int
-		wantLen      byte
-		wantExtended uint64
-	}{
-		{"0 bytes", 0, 0, 0},
-		{"1 byte", 1, 1, 0},
-		{"125 bytes uses the 7 bit length", 125, 125, 0},
-		{"126 bytes switches to the 16 bit length", 126, 126, 126},
-		{"65535 bytes is the 16 bit ceiling", 65535, 126, 65535},
-		{"65536 bytes switches to the 64 bit length", 65536, 127, 65536},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			frame, err := newFrame(NewFrameConfig{
-				PayloadData: bytes.Repeat([]byte{'x'}, testCase.size), Opcode: 1, FIN: true,
-			}, newFrameDI{
-				generateMaskingKey: func() ([]byte, error) { return nil, nil },
-			})
-			if err != nil {
-				t.Fatalf("newFrame: %v", err)
-			}
-			if !frame.FIN {
-				t.Error("NewFrame should return a final frame")
-			}
-			if frame.PayloadLength != testCase.wantLen {
-				t.Errorf("PayloadLength = %d, want %d", frame.PayloadLength, testCase.wantLen)
-			}
-			if frame.ExtendedPayloadLength != testCase.wantExtended {
-				t.Errorf("ExtendedPayloadLength = %d, want %d", frame.ExtendedPayloadLength, testCase.wantExtended)
-			}
-			if len(frame.PayloadData) != testCase.size {
-				t.Errorf("len(PayloadData) = %d, want %d", len(frame.PayloadData), testCase.size)
-			}
-		})
+// The want is masked with a plain byte loop. The lengths sit on each side of
+// the 8 byte steps, so the tail always starts on key[0].
+func TestMaskPayload(t *testing.T) {
+	key := [4]byte{0xA5, 0x5A, 0xF0, 0x0F}
+	for _, length := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 16, 19, 64, 1001} {
+		payload := make([]byte, length)
+		for i := range payload {
+			payload[i] = byte(i*13 + 3)
+		}
+		want := make([]byte, length)
+		for i := range payload {
+			want[i] = payload[i] ^ key[i%4]
+		}
+
+		got := bytes.Clone(payload)
+		MaskPayload(got, key)
+		if !bytes.Equal(got, want) {
+			t.Errorf("%d bytes: masked % x, want % x", length, got, want)
+		}
+		// Masking is its own inverse.
+		MaskPayload(got, key)
+		if !bytes.Equal(got, payload) {
+			t.Errorf("%d bytes: masking twice did not restore the payload", length)
+		}
 	}
 }
 
 // Empty data still produces a frame — a zero length frame is legal and is how
 // an empty text message or a bare close goes out.
 func TestNewFrameEmptyDataStillProducesAFrame(t *testing.T) {
-	frame, err := NewFrame(NewFrameConfig{Opcode: 1, FIN: true})
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
+	frame := NewFrame(NewFrameConfig{Opcode: 1, FIN: true})
 	if frame == nil {
-		t.Fatal("NewFrame must never return a nil frame without an error")
+		t.Fatal("NewFrame must never return a nil frame")
 	}
 	if frame.PayloadLength != 0 || len(frame.PayloadData) != 0 {
 		t.Errorf("PayloadLength = %d, len(PayloadData) = %d, want 0 and 0",
@@ -258,114 +178,20 @@ func TestNewFrameEmptyDataStillProducesAFrame(t *testing.T) {
 	}
 }
 
-func TestNewFrameMasking(t *testing.T) {
-	t.Run("masks with the injected key", func(t *testing.T) {
-		frame, err := newFrame(NewFrameConfig{
-			PayloadData: []byte("hi"), Opcode: 1, Mask: true, FIN: true,
-		}, newFrameDI{
-			generateMaskingKey: func() ([]byte, error) { return []byte{1, 2, 3, 4}, nil },
-		})
-		if err != nil {
-			t.Fatalf("newFrame: %v", err)
-		}
-		if !frame.Mask {
-			t.Error("Mask should be true")
-		}
-		if !bytes.Equal(frame.MaskingKey, []byte{1, 2, 3, 4}) {
-			t.Errorf("MaskingKey = % x", frame.MaskingKey)
-		}
-		// PayloadData stays readable; Seal is what applies the mask.
-		if string(frame.PayloadData) != "hi" {
-			t.Errorf("PayloadData = %q, want it unmasked in the struct", frame.PayloadData)
-		}
-		// A fixed key makes the sealed bytes fully assertable.
-		want := []byte{0x81, 0x82, 1, 2, 3, 4, 'h' ^ 1, 'i' ^ 2}
-		if got := frame.Seal(nil); !bytes.Equal(got, want) {
-			t.Errorf("Seal() = % x, want % x", got, want)
-		}
-	})
+// NewFrame copies the config and nothing else: Mask, MaskingKey and the length
+// fields are the send's to set, and PayloadData is carried, not copied.
+func TestNewFrame(t *testing.T) {
+	payload := make([]byte, 300)
+	frame := NewFrame(NewFrameConfig{PayloadData: payload, Opcode: OpcodeBinary, FIN: true})
 
-	t.Run("leaves the frame unmasked when not requested", func(t *testing.T) {
-		frame, err := newFrame(NewFrameConfig{
-			PayloadData: []byte("hi"), Opcode: 1, FIN: true,
-		}, newFrameDI{
-			generateMaskingKey: func() ([]byte, error) {
-				t.Fatal("generateMaskingKey must not be called when Mask is false")
-				return nil, nil
-			},
-		})
-		if err != nil {
-			t.Fatalf("newFrame: %v", err)
-		}
-		if frame.Mask || frame.MaskingKey != nil {
-			t.Error("frame should be unmasked with no key")
-		}
-	})
-
-	t.Run("propagates a masking key error", func(t *testing.T) {
-		want := errors.New("no entropy")
-		_, err := newFrame(NewFrameConfig{
-			PayloadData: []byte("hi"), Opcode: 1, Mask: true, FIN: true,
-		}, newFrameDI{
-			generateMaskingKey: func() ([]byte, error) { return nil, want },
-		})
-		if !errors.Is(err, want) {
-			t.Errorf("err = %v, want %v", err, want)
-		}
-	})
-}
-
-func TestNewFrameOpcode(t *testing.T) {
-	for _, opcode := range []uint8{0, 1, 2, 8, 9, 10} {
-		frame, err := newFrame(NewFrameConfig{
-			PayloadData: []byte("x"), Opcode: opcode, FIN: true,
-		}, newFrameDI{
-			generateMaskingKey: func() ([]byte, error) { return nil, nil },
-		})
-		if err != nil {
-			t.Fatalf("newFrame: %v", err)
-		}
-		if frame.Opcode != opcode {
-			t.Errorf("Opcode = %d, want %d", frame.Opcode, opcode)
-		}
+	if &frame.PayloadData[0] != &payload[0] || len(frame.PayloadData) != len(payload) {
+		t.Error("PayloadData is not the config's slice")
 	}
-}
-
-func TestGenerateMaskingKey(t *testing.T) {
-	t.Run("returns the injected bytes", func(t *testing.T) {
-		got, err := generateMaskingKey(generateMaskingKeyDI{
-			randRead: fixedRandRead(0xAA, 0xBB, 0xCC, 0xDD),
-		})
-		if err != nil {
-			t.Fatalf("generateMaskingKey: %v", err)
-		}
-		if !bytes.Equal(got, []byte{0xAA, 0xBB, 0xCC, 0xDD}) {
-			t.Errorf("got % x", got)
-		}
-	})
-
-	t.Run("propagates the rand error", func(t *testing.T) {
-		want := errors.New("entropy exhausted")
-		got, err := generateMaskingKey(generateMaskingKeyDI{
-			randRead: func([]byte) (int, error) { return 0, want },
-		})
-		if !errors.Is(err, want) {
-			t.Errorf("err = %v, want %v", err, want)
-		}
-		if got != nil {
-			t.Errorf("key should be nil on error, got % x", got)
-		}
-	})
-
-	t.Run("real wiring returns the 4 bytes RFC 6455 requires", func(t *testing.T) {
-		got, err := GenerateMaskingKey()
-		if err != nil {
-			t.Fatalf("GenerateMaskingKey: %v", err)
-		}
-		if len(got) != 4 {
-			t.Errorf("len = %d, want 4", len(got))
-		}
-	})
+	got := *frame
+	got.PayloadData = nil
+	if want := (Frame{Opcode: OpcodeBinary, FIN: true}); !reflect.DeepEqual(got, want) {
+		t.Errorf("frame = %+v, want %+v", got, want)
+	}
 }
 
 /*
@@ -376,42 +202,25 @@ treats as fragmented and then waits for a continuation of.
 func TestNewFrameFIN(t *testing.T) {
 	t.Run("carries FIN through", func(t *testing.T) {
 		for _, want := range []bool{true, false} {
-			frame, err := NewFrame(NewFrameConfig{PayloadData: []byte("x"), Opcode: 1, FIN: want})
-			if err != nil {
-				t.Fatalf("NewFrame: %v", err)
-			}
+			frame := NewFrame(NewFrameConfig{PayloadData: []byte("x"), Opcode: 1, FIN: want})
 			if frame.FIN != want {
 				t.Errorf("FIN = %v, want %v", frame.FIN, want)
-			}
-			// Seal puts FIN in the top bit of byte 0.
-			if got := frame.Seal(nil)[0]>>7 == 1; got != want {
-				t.Errorf("sealed FIN bit = %v, want %v", got, want)
 			}
 		}
 	})
 
 	// Pins the zero value so a change to it cannot pass unnoticed.
 	t.Run("omitting FIN yields a non final frame", func(t *testing.T) {
-		frame, err := NewFrame(NewFrameConfig{PayloadData: []byte("x"), Opcode: 1})
-		if err != nil {
-			t.Fatalf("NewFrame: %v", err)
-		}
+		frame := NewFrame(NewFrameConfig{PayloadData: []byte("x"), Opcode: 1})
 		if frame.FIN {
 			t.Error("an omitted FIN must stay false")
 		}
 	})
 
-	// The fragmentation shape the doc comment describes, round tripped through
-	// Seal and back, then reassembled by Frames.
+	// The fragmentation shape the doc comment describes, reassembled by Frames.
 	t.Run("a fragmented message reassembles", func(t *testing.T) {
-		head, err := NewFrame(NewFrameConfig{PayloadData: []byte("中文"), Opcode: 1})
-		if err != nil {
-			t.Fatalf("NewFrame head: %v", err)
-		}
-		tail, err := NewFrame(NewFrameConfig{PayloadData: []byte("字"), Opcode: 0, FIN: true})
-		if err != nil {
-			t.Fatalf("NewFrame tail: %v", err)
-		}
+		head := NewFrame(NewFrameConfig{PayloadData: []byte("中文"), Opcode: 1})
+		tail := NewFrame(NewFrameConfig{PayloadData: []byte("字"), Opcode: 0, FIN: true})
 		if head.FIN {
 			t.Error("the leading frame must not set FIN")
 		}
@@ -423,6 +232,61 @@ func TestNewFrameFIN(t *testing.T) {
 		}
 		if got := (Frames{head, tail}).String(); got != "中文字" {
 			t.Errorf("reassembled = %q, want 中文字", got)
+		}
+	})
+}
+
+func TestFrameFillPayloadLength(t *testing.T) {
+	for _, testCase := range []struct {
+		size         int
+		wantLen      byte
+		wantExtended uint64
+	}{
+		{0, 0, 0},
+		{125, 125, 0},       // the largest inline length
+		{126, 126, 126},     // the smallest 16 bit one
+		{65535, 126, 65535}, // the largest 16 bit one
+		{65536, 127, 65536}, // the smallest 64 bit one
+	} {
+		// Stale fields from a frame read or sent before must not survive.
+		f := &Frame{PayloadLength: 99, ExtendedPayloadLength: 99, PayloadData: make([]byte, testCase.size)}
+		f.fillPayloadLength()
+		if f.PayloadLength != testCase.wantLen || f.ExtendedPayloadLength != testCase.wantExtended {
+			t.Errorf("%d bytes: PayloadLength=%d ExtendedPayloadLength=%d, want %d and %d",
+				testCase.size, f.PayloadLength, f.ExtendedPayloadLength, testCase.wantLen, testCase.wantExtended)
+		}
+	}
+}
+
+func TestFillMaskingKey(t *testing.T) {
+	t.Run("returns the injected bytes", func(t *testing.T) {
+		var key [4]byte
+		err := fillMaskingKey(&key, fillMaskingKeyDI{
+			randRead: fixedRandRead(0xAA, 0xBB, 0xCC, 0xDD),
+		})
+		if err != nil {
+			t.Fatalf("fillMaskingKey: %v", err)
+		}
+		if key != [4]byte{0xAA, 0xBB, 0xCC, 0xDD} {
+			t.Errorf("got % x", key)
+		}
+	})
+
+	t.Run("propagates the rand error", func(t *testing.T) {
+		want := errors.New("entropy exhausted")
+		var key [4]byte
+		err := fillMaskingKey(&key, fillMaskingKeyDI{
+			randRead: func([]byte) (int, error) { return 0, want },
+		})
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
+		}
+	})
+
+	t.Run("real wiring fills the key", func(t *testing.T) {
+		var key [4]byte
+		if err := FillMaskingKey(&key); err != nil {
+			t.Fatalf("FillMaskingKey: %v", err)
 		}
 	})
 }

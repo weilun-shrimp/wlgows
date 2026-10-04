@@ -1,8 +1,9 @@
 // Streams a file as one binary message, a chunk at a time, without ever holding
 // it whole.
 //
-//	go run ./example/stream_server   # in one terminal
-//	go run ./example/stream_client   # in another, then press enter twice
+//	cd example
+//	go run ./stream_server   # in one terminal
+//	go run ./stream_client   # in another, then press enter twice
 //
 // chunkByteLen is deliberately small so an ordinary file still fragments: at
 // 4 KB this repository's README goes out as one fragment per 4 KB, plus the empty
@@ -24,13 +25,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v5"
-	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
 )
 
 const (
 	defaultURL  = "ws://localhost:8001"
-	defaultPath = "./README.md"
+	defaultPath = "../README.md"
 
 	// One chunk is one frame. Small enough here that a modest file fragments;
 	// 32 KB is a fair default for real use.
@@ -79,7 +80,7 @@ func main() {
 	defer netConn.Close()
 
 	r := bufio.NewReader(netConn)
-	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return

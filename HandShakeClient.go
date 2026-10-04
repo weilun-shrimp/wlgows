@@ -25,8 +25,10 @@ can only consume complete lines, so it may pull bytes past the header block —
 the start of the first frame — into r's internal buffer; handing back a fresh
 reader here would strand them. That's also why the returned *Conn reuses r
 rather than wrapping c again.
+
+w is the returned *Conn's writer, such as bufio.NewWriter(c) — see NewConn.
 */
-func ClientHandShake(c net.Conn, r *bufio.Reader, req *http.Request) (*Conn, *http.Response, error) {
+func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request) (*Conn, *http.Response, error) {
 	res, err := clientHandShake(c, r, req, clientHandShakeDI{
 		upgradeRequest:            UpgradeRequest,
 		sendHandShakeRequest:      SendHandShakeRequest,
@@ -36,7 +38,11 @@ func ClientHandShake(c net.Conn, r *bufio.Reader, req *http.Request) (*Conn, *ht
 	if err != nil {
 		return nil, res, err
 	}
-	return NewConn(c, r, true), res, nil
+	conn, err := NewConn(c, r, w, true)
+	if err != nil {
+		return nil, res, err
+	}
+	return conn, res, nil
 }
 
 type clientHandShakeDI struct {

@@ -4,11 +4,61 @@ import (
 	"bufio"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestClientHandShakeRealWiringReturnsNoConnOnFailure(t *testing.T) {
+	netConn := newFakeConn(nil) // empty: ReadHandShakeResponse fails immediately
+	r := bufio.NewReader(netConn)
+	conn, _, err := ClientHandShake(netConn, r, bufio.NewWriter(netConn), httptestRequest(t))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if conn != nil {
+		t.Error("expected no Conn when the handshake fails")
+	}
+}
+
+// NewConn runs only after a successful handshake, and the real UpgradeRequest
+// picks a fresh crypto/rand key on every call, so a canned response cannot
+// match it. A server goroutine on the other end of a net.Pipe reads the request
+// and answers with the matching accept.
+func TestClientHandShakeRealWiring(t *testing.T) {
+	t.Run("returns NewConn's error with the response and no Conn", func(t *testing.T) {
+		netConn, serverConn := net.Pipe()
+		defer netConn.Close()
+		defer serverConn.Close()
+		go func() {
+			req, err := http.ReadRequest(bufio.NewReader(serverConn))
+			if err != nil {
+				return
+			}
+			fmt.Fprintf(serverConn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+				GenerateSecWebsocketAccept(req.Header.Get("Sec-WebSocket-Key")))
+		}()
+		wantErr := errors.New("socket gone")
+		writerConn := newFakeConn(nil)
+		writerConn.writeErr = wantErr
+		w := bufio.NewWriterSize(writerConn, 5) // small, so NewConn flushes it
+		w.WriteString("abc")
+
+		conn, res, err := ClientHandShake(netConn, bufio.NewReader(netConn), w, httptestRequest(t))
+		if !errors.Is(err, wantErr) {
+			t.Errorf("err = %v, want %v", err, wantErr)
+		}
+		if res == nil || res.StatusCode != http.StatusSwitchingProtocols {
+			t.Error("expected the upgrade response the server sent")
+		}
+		if conn != nil {
+			t.Error("expected no Conn when NewConn fails")
+		}
+	})
+}
 
 func TestClientHandShake(t *testing.T) {
 	// order records which steps ran, so short-circuiting is observable.
@@ -121,23 +171,6 @@ func TestClientHandShake(t *testing.T) {
 				t.Errorf("order = %v, want %s", order, testCase.wantOrder)
 			}
 		})
-	}
-}
-
-// The success path's Conn-wrapping is trivial composition of clientHandShake
-// (tested above via DI) and NewConn (tested in Connection_test.go), and isn't
-// retested here for real: the real UpgradeRequest picks a fresh crypto/rand
-// key on every call, so a canned wire response can't be made to match it
-// without a live two-ended connection.
-func TestClientHandShakeRealWiringReturnsNoConnOnFailure(t *testing.T) {
-	netConn := newFakeConn(nil) // empty: ReadHandShakeResponse fails immediately
-	r := bufio.NewReader(netConn)
-	conn, _, err := ClientHandShake(netConn, r, httptestRequest(t))
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if conn != nil {
-		t.Error("expected no Conn when the handshake fails")
 	}
 }
 

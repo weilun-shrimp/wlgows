@@ -2,6 +2,8 @@ package wlgows
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -90,12 +92,16 @@ func TestListenerListen(t *testing.T) {
 /*
 claimListen decides whether a run may start at all, and every path out of it
 takes the lock and gives it back — a missed Unlock deadlocks the next caller
-rather than failing, so the counting Locker is what makes it visible.
+rather than failing, so the recorded lock steps are what make it visible.
 */
 func TestListenerClaimListen(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
-		locker := &fakeLocker{}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: &fakeListenerConn{}, listenLocker: locker}
+		var steps []string
+		l := &Listener{configLocker: &sync.Mutex{}, conn: &fakeListenerConn{}}
+		l.listenLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "listen lock") },
+			unlock: func() { steps = append(steps, fmt.Sprintf("listen unlock claimed=%v", l.pauseChan != nil)) },
+		}
 
 		pauseChan, err := l.claimListen()
 
@@ -113,16 +119,21 @@ func TestListenerClaimListen(t *testing.T) {
 		if l.currentDataFrames == nil {
 			t.Error("currentDataFrames should be ready for the first frame")
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
+		// The claim is made before the unlock.
+		if want := []string{"listen lock", "listen unlock claimed=true"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
 	// pauseChan being set is what says a run already has the Listener.
 	t.Run("already listening", func(t *testing.T) {
 		running := make(chan error, 1)
-		locker := &fakeLocker{}
-		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: running, listenLocker: locker}
+		var steps []string
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: running}
+		l.listenLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "listen lock") },
+			unlock: func() { steps = append(steps, fmt.Sprintf("listen unlock claimed=%v", l.pauseChan != nil)) },
+		}
 
 		// conn is left nil on purpose: the refusal has to come first, so a
 		// Listener already running is never reported as unbuilt.
@@ -134,17 +145,20 @@ func TestListenerClaimListen(t *testing.T) {
 		if l.pauseChan != running {
 			t.Error("the running channel was replaced")
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d — the refusal path must give the lock back",
-				locker.locks, locker.unlocks, locker.misuse)
+		if want := []string{"listen lock", "listen unlock claimed=true"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q — the refusal path must give the lock back", steps, want)
 		}
 	})
 
 	// NewListener is the only thing that sets conn, so a Listener built by hand
 	// reaches here with nothing to read from.
 	t.Run("nil conn", func(t *testing.T) {
-		locker := &fakeLocker{}
-		l := &Listener{configLocker: &sync.Mutex{}, listenLocker: locker}
+		var steps []string
+		l := &Listener{configLocker: &sync.Mutex{}}
+		l.listenLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "listen lock") },
+			unlock: func() { steps = append(steps, fmt.Sprintf("listen unlock claimed=%v", l.pauseChan != nil)) },
+		}
 
 		_, err := l.claimListen()
 
@@ -155,8 +169,8 @@ func TestListenerClaimListen(t *testing.T) {
 		if l.pauseChan != nil {
 			t.Error("pauseChan was set despite the claim being refused")
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
+		if want := []string{"listen lock", "listen unlock claimed=false"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
@@ -171,7 +185,7 @@ func TestListenerClaimListen(t *testing.T) {
 			currentDataFrameCount:  1,
 			currentDataAccLength:   2,
 			currentDataFrameOpcode: OpcodeText,
-			listenLocker:           &fakeLocker{},
+			listenLocker:           fakeFuncLocker{lock: func() {}, unlock: func() {}},
 		}
 
 		if _, err := l.claimListen(); err != nil {
@@ -439,18 +453,25 @@ func TestListenerListenFrames(t *testing.T) {
 /*
 pauseListen is what releases a claim, so a missed Unlock deadlocks the next
 caller and a missed clear leaves the Listener claimed forever. Neither shows up
-as a wrong answer, which is what the counting Locker is for.
+as a wrong answer, which is what the recorded lock steps are for.
 */
 func TestListenerPauseListen(t *testing.T) {
 	t.Run("hands over the error, closes and clears pauseChan", func(t *testing.T) {
 		want := errors.New("shutting down")
 		pauseChan := make(chan error, 1)
-		locker := &fakeLocker{}
-		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: locker}
+		var steps []string
+		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan}
+		l.listenLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "listen lock") },
+			unlock: func() { steps = append(steps, fmt.Sprintf("listen unlock claimed=%v", l.pauseChan != nil)) },
+		}
 
 		var closed []chan error
 		l.pauseListen(want, pauseListenDI{
-			closeChan: func(c chan error) { closed = append(closed, c) },
+			closeChan: func(c chan error) {
+				steps = append(steps, "close")
+				closed = append(closed, c)
+			},
 		})
 
 		// The send comes before the close, so a run still parked in a read finds
@@ -471,8 +492,9 @@ func TestListenerPauseListen(t *testing.T) {
 		if l.pauseChan != nil {
 			t.Error("pauseChan was not cleared")
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d", locker.locks, locker.unlocks, locker.misuse)
+		// The close and the release both happen before the unlock.
+		if want := []string{"listen lock", "close", "listen unlock claimed=false"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
@@ -480,7 +502,11 @@ func TestListenerPauseListen(t *testing.T) {
 	// and returns nil — sending would leave a value that says the same thing.
 	t.Run("nil error sends nothing", func(t *testing.T) {
 		pauseChan := make(chan error, 1)
-		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: &fakeLocker{}}
+		l := &Listener{
+			configLocker: &sync.Mutex{},
+			pauseChan:    pauseChan,
+			listenLocker: fakeFuncLocker{lock: func() {}, unlock: func() {}},
+		}
 
 		l.pauseListen(nil, pauseListenDI{closeChan: func(chan error) {}})
 
@@ -493,8 +519,12 @@ func TestListenerPauseListen(t *testing.T) {
 	// no-op — listen defers this on every path out, including ones where
 	// PauseListen already ran.
 	t.Run("nil pauseChan", func(t *testing.T) {
-		locker := &fakeLocker{}
-		l := &Listener{configLocker: &sync.Mutex{}, listenLocker: locker}
+		var steps []string
+		l := &Listener{configLocker: &sync.Mutex{}}
+		l.listenLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "listen lock") },
+			unlock: func() { steps = append(steps, fmt.Sprintf("listen unlock claimed=%v", l.pauseChan != nil)) },
+		}
 
 		closes := 0
 		l.pauseListen(errors.New("dropped"), pauseListenDI{
@@ -507,9 +537,8 @@ func TestListenerPauseListen(t *testing.T) {
 		if closes != 0 {
 			t.Errorf("closeChan called %d time(s) with nothing to close", closes)
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d — the no-op path must give the lock back",
-				locker.locks, locker.unlocks, locker.misuse)
+		if want := []string{"listen lock", "listen unlock claimed=false"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q — the no-op path must give the lock back", steps, want)
 		}
 	})
 
@@ -518,7 +547,11 @@ func TestListenerPauseListen(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		first := errors.New("first")
 		pauseChan := make(chan error, 1)
-		l := &Listener{configLocker: &sync.Mutex{}, pauseChan: pauseChan, listenLocker: &fakeLocker{}}
+		l := &Listener{
+			configLocker: &sync.Mutex{},
+			pauseChan:    pauseChan,
+			listenLocker: fakeFuncLocker{lock: func() {}, unlock: func() {}},
+		}
 		closes := 0
 		di := pauseListenDI{
 			closeChan: func(c chan error) { closes++; close(c) },

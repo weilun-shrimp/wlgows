@@ -68,43 +68,15 @@ func (conn *fakeConn) SetDeadline(t time.Time) error      { return nil }
 func (conn *fakeConn) SetReadDeadline(t time.Time) error  { return nil }
 func (conn *fakeConn) SetWriteDeadline(t time.Time) error { return nil }
 
-/*
-fakeLocker counts Lock/Unlock so tests can assert a section was guarded, and how
-widely. Substituted for the *sync.Mutex the constructor puts in di.
-
-It also tracks whether the lock is currently held, so misuse counts the two
-orderings a real sync.Mutex would reject: unlocking one that is not held, and
-locking one that already is. Counting alone cannot catch those — an Unlock/Lock
-pair still totals 1 and 1.
-*/
-type fakeLocker struct {
-	locks   int
-	unlocks int
-	held    bool
-	misuse  int
+// fakeFuncLocker runs lock and unlock, so a test can record when each happens
+// against the other steps. Set both.
+type fakeFuncLocker struct {
+	lock   func()
+	unlock func()
 }
 
-func (locker *fakeLocker) Lock() {
-	if locker.held {
-		locker.misuse++
-	}
-	locker.held = true
-	locker.locks++
-}
-
-func (locker *fakeLocker) Unlock() {
-	if !locker.held {
-		locker.misuse++
-	}
-	locker.held = false
-	locker.unlocks++
-}
-
-// ok reports the lock being taken exactly want times, each properly paired and
-// released by the time the call returned.
-func (locker *fakeLocker) ok(want int) bool {
-	return locker.locks == want && locker.unlocks == want && locker.misuse == 0 && !locker.held
-}
+func (locker fakeFuncLocker) Lock()   { locker.lock() }
+func (locker fakeFuncLocker) Unlock() { locker.unlock() }
 
 // fakeIOWriter is a plain io.Writer double: it records what it's given and can
 // be told to fail, for callers that only need io.Writer rather than the

@@ -15,7 +15,8 @@ server 與 client、手動 handshake，以及 RFC 6455 要求由你負責的每�
 
 **正確性優先。** 不同於許多追求 benchmark 數字的套件，正確性是我們的第一優先。
 我們永遠追求最快的速度，但前提是程式依然正確且安全：不使用 `unsafe`，也不繞過
-bounds check。
+bounds check。如果你清楚自己在做什麼，你自己的程式可以更進一步 —— 見
+[更快、更省記憶體](./SENDING_README.zh-TW.md#更快更省記憶體用-unsafe-送出-string)。
 
 ## Features
 
@@ -26,24 +27,27 @@ bounds check。
 - **Listener**：單一 read loop，依 RFC 6455 驗證每個 frame 後交給你的 hook
 - **Frame-level control**：需要時可自行組出 frame 並送出
 - **Streaming**：以一個個 fragment 傳送比記憶體還大的 message
-- **Memory in your hands**：隨時完整掌控傳送用的記憶體：每次傳送都能自己選 chunk size，也能隨時把 write buffer 釋放到零 —— 見 [SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#掌控權在你手上)
+- **Memory in your hands**：每條連線的 write buffer 由你提供，最小 14 byte，而且隨時可以更換；每次傳送也能自己選 frame 大小 —— 見 [SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#掌控權在你手上)
 - **Keepalive**：定期發送 ping，每次的 payload 由你決定
 - **Concurrent sending**：以 lock 保護，且 control frame 不會被卡在大型 message
   後面
 
 ## Contents
 
+- [Installation](#installation)
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — 三個 echo server、一個 client，以及一組 streaming 範例
-- [從 v4 升級至 v5](#從-v4-升級至-v5)
+- [從 v5 升級](#從-v5-升級) · [從 v4 升級](#從-v4-升級) — [Streaming 的 End 不再釋放連線](#streaming-的-end-不再釋放連線)
 - [Design](#design)
-- [記憶體 vs. 速度](#記憶體-vs-速度自己決定-reader-的大小) — 自行決定 reader 的大小
+- [記憶體 vs. 速度](#記憶體-vs-速度自己決定-buffer-的大小) — [Reader](#reader) · [Writer](#writer) · [最小的連線](#最小的連線)
+- [Benchmark 比較](#benchmark-比較) — 與 gorilla/websocket 和 gobwas/ws 比較
 - [Reading](#reading) — 使用 `Listener`，或一次讀取一個 frame
 - [Sending](#sending) — 完整 message、control frame、streaming、自訂 frame
 - [Keepalive](#keepalive) — 定期 ping，以及如何偵測對方已無回應
 - [Concurrency](#concurrency) — 每個 lock 分別保護什麼
 - [Errors](#errors) — sentinel error 與 `StandardClosePayloadFor`
-- [Testing](#testing)
+- [Testing](#testing) — [替換相依](#替換相依)
+- [License](#license)
 
 `Listener` 有獨立的說明文件：**[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)**，
 傳送也有：**[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)**。
@@ -51,10 +55,10 @@ bounds check。
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v5
+go get github.com/weilun-shrimp/wlgows/v6
 ```
 
-依照 Go 對 major version 2 以上的規定，import path 需要加上 `/v5` 後綴；package
+依照 Go 對 major version 2 以上的規定，import path 需要加上 `/v6` 後綴；package
 名稱仍然是 `wlgows`，所以程式中的寫法依然是 `wlgows.Dial(...)`。
 
 ## Quick Start
@@ -71,7 +75,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v6"
 )
 
 func main() {
@@ -100,7 +104,7 @@ func handle(netConn net.Conn) {
 	if err != nil {
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req) // 每條連線 4096 byte
 	if err != nil {
 		return
 	}
@@ -142,7 +146,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v6"
 )
 
 func main() {
@@ -155,7 +159,7 @@ func main() {
 	defer netConn.Close()
 
 	r := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見「記憶體 vs. 速度」
-	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req) // 每條連線 4096 byte
 	if err != nil {
 		panic(err)
 	}
@@ -186,6 +190,9 @@ func main() {
 `Conn` 時就會設定好 `maskSendFrame`，因此 client 呼叫 `SendText`、`SendPong`
 時會做 mask，server 則不會。
 
+兩個 handshake 都在 reader 旁邊接收一個 `*bufio.Writer`：每個 frame 都經由它送出。
+想自己決定大小請見 [記憶體 vs. 速度](#記憶體-vs-速度自己決定-buffer-的大小)。
+
 ### TLS (wss://)
 
 ```go
@@ -200,14 +207,20 @@ netConn, req, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: ca
 
 ```go
 func handler(w http.ResponseWriter, r *http.Request) {
-	netConn, bufReader, err := wlgows.HijackFromHttp(w) // 或 HijackFromGin(c)
+	hijacker, ok := w.(http.Hijacker) // Gin 之下，c.Writer 也是
+	if !ok {
+		return
+	}
+	netConn, bufRW, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
 	defer netConn.Close()
 
-	// net/http 已經解析過 r(*http.Request)，不需要再讀一次。
-	conn, _, err := wlgows.ServerHandShake(netConn, bufReader, r)
+	// net/http 已經解析過 r(*http.Request)，不需要再讀一次。要傳 bufRW.Reader：
+	// net/http 可能已經把第一個 frame 的開頭讀進去了。
+	// bufRW.Writer 沿用 net/http 的 writer；bufio.NewWriterSize(netConn, size) 也可以。
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, r)
 	if err != nil {
 		return
 	}
@@ -223,22 +236,26 @@ client 可以連到其中任何一個；streaming 範例則自成一組：
 | Example | |
 |---|---|
 | [`echo`](./example/echo/main.go) | 在 raw TCP 上執行的 echo server，使用 `wlgows.Run` 與 `Accept` |
-| [`hijack_http`](./example/hijack_http/main.go) | 同一支 server，改掛在 `net/http` 之下，使用 `HijackFromHttp` |
-| [`hijack_gin`](./example/hijack_gin/main.go) | 同一支 server，改掛在 Gin 之下，使用 `HijackFromGin`。`GET /ping` 依然正常回傳 JSON，與 WebSocket 並存 |
+| [`hijack_http`](./example/hijack_http/main.go) | 同一支 server，改掛在 `net/http` 之下，使用 `http.Hijacker` |
+| [`hijack_gin`](./example/hijack_gin/main.go) | 同一支 server，改掛在 Gin 之下，使用 `c.Writer.Hijack()`。`GET /ping` 依然正常回傳 JSON，與 WebSocket 並存 |
 | [`client`](./example/client/main.go) | 互動式 client。輸入一行文字即送出，輸入 `exit` 會正常關閉連線。啟動時會詢問 CA 路徑，因此也能連線 `wss://` |
 | [`stream_server`](./example/stream_server/main.go) | 逐一接收 streaming message 的 frame 並直接寫入磁碟。使用 `Data` hook，適合大到無法放進記憶體的 message |
 | [`stream_client`](./example/stream_client/main.go) | 將一個檔案當作單一 binary message 串流送出，一次一個 chunk |
 
+範例是獨立的 module，所以要在 `example/` 底下執行：
+
 ```bash
-go run ./example/echo      # 或 hijack_http、hijack_gin
-go run ./example/client    # 另開一個終端機，然後開始輸入
+cd example
+go run ./echo      # 或 hijack_http、hijack_gin
+go run ./client    # 另開一個終端機，然後開始輸入
 ```
 
 streaming 範例是獨立的示範，兩端會各自印出 SHA-256，而且兩者會一致：
 
 ```bash
-go run ./example/stream_server
-go run ./example/stream_client   # 另開一個終端機，按兩次 Enter 就會傳送 README.md
+cd example
+go run ./stream_server
+go run ./stream_client   # 另開一個終端機，按兩次 Enter 就會傳送 README.md
 ```
 
 兩個 hijack server 啟動時都會詢問憑證與金鑰的路徑：直接按兩次 Enter 會以一般的
@@ -248,18 +265,53 @@ go run ./example/stream_client   # 另開一個終端機，按兩次 Enter 就�
 完成 close handshake、擋下 RFC 6455 不允許的 frame，而這些邏輯都不會出現在範例的
 程式碼裡。每個檔案留下的，就只有你本來就要寫的部分：hook。
 
-## 從 v4 升級至 v5
+## 從 v5 升級
+
+v6 改變了 `Conn` 寫出的方式。每個 frame 現在都經過一個固定大小、每條連線由你決定
+大小的 `bufio.Writer`，所以小 frame 會共用一次 socket 寫入，而 client 是對一份複本
+加上 mask，不再動你的 payload。大部分改動都會以編譯錯誤的形式出現：
+
+| v5 | v6 |
+|---|---|
+| `go get .../wlgows/v5` | `go get github.com/weilun-shrimp/wlgows/v6` |
+| `wlgows.ServerHandShake(netConn, r, req)` | `wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)` |
+| `wlgows.ClientHandShake(netConn, r, req)` | `wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)` |
+| `c := wlgows.NewConn(netConn, r, mask)` | `c, err := wlgows.NewConn(netConn, r, bufio.NewWriter(netConn), mask)` |
+| `conn.RenewWriteBuffer(capacity)` | `err := conn.RenewWriter(bufio.NewWriterSize(conn, size))` —— 見下方 |
+| `wlgows.HijackFromHttp(w)` | `w.(http.Hijacker).Hijack()`，再傳入 `bufRW.Reader` 與 `bufRW.Writer` —— 見 [HTTP Hijacking](#http-hijacking) |
+| `wlgows.HijackFromGin(c)` | `c.Writer.Hijack()`，用法相同 |
+| `f, err := wlgows.NewFrame(config)` | `f := wlgows.NewFrame(config)` —— 不再回傳 error |
+| `NewFrameConfig{..., Mask: true}`、`NewControlFrameConfig{..., Mask: true}` | 拿掉 `Mask`：`Conn` 會在傳送時加上 mask |
+| `wire := frame.Seal(buffer)` | 已移除：用 `conn.SendFrame(frame)` 送出 |
+| `wlgows.GenerateMaskingKey()` | `wlgows.FillMaskingKey(&f.MaskingKey)` —— `MaskingKey` 是 `[4]byte` |
+
+不會造成編譯錯誤、但行為改變的地方：
+
+- **write buffer 不再變大，也不再清空。** 在 v5 中，buffer 會長到送過的最大
+  frame，而 `RenewWriteBuffer(0)` 會把它清空。在 v6 中，它就是你傳入的
+  `bufio.Writer`，大小固定，由 `RenewWriter` 更換。最小是 14。見
+  [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
+- **`chunkSize` 不再決定記憶體用量。** 它只決定 frame 在哪裡切開。
+- **`SendFrame` 會拒絕更多東西。** 在這一端送出 close 之後的 data frame 或第二個
+  close 會回傳 `ErrCloseAlreadySent`，超過 125 byte 的 control payload 會回傳
+  `ErrControlFramePayloadTooLong`，兩者都什麼都不寫出。它也會設定 length 欄位、
+  control frame 的 FIN，以及在 client 上每次傳送都換一把新的 masking key（5.3）；
+  v5 則會沿用 frame 上已有的 key。
+- **範例是獨立的 module**，所以 library 本身沒有任何相依。請在 `example/` 裡執行。
+
+## 從 v4 升級
+
+請一併看過 [從 v5 升級](#從-v5-升級)：下方是 v4 到 v5，上方是 v5 到 v6。
 
 大部分 v4 的程式碼在 v5 下會編譯失敗，而編譯器會指出每一個需要修改的地方。只有一個
 改動照樣能編譯，然後卡住：請先讀
 [Streaming 的 End 不再釋放連線](#streaming-的-end-不再釋放連線)。
 
-| v4 | v5 |
+| v4 | v5 與 v6 |
 |---|---|
 | `conn.SendText(text)` | `conn.SendText(text, 0)` —— 0 代表以一個 frame 送出，和 v4 相同 |
 | `conn.SendBinary(data)` | `conn.SendBinary(data, 0)` |
 | `defer conn.EndLongDataTransmission()` | `defer conn.ReleaseLongDataTransmission()`，成功時再 `return conn.EndLongDataTransmission(nil)` |
-| `wire := frame.Seal()` | 單次使用：`wire := frame.Seal(nil)`；重複使用：`buffer = frame.Seal(buffer)` |
 
 v5 新增的：
 
@@ -268,10 +320,6 @@ v5 新增的：
 - `SendText`、`SendBinary` 與 `SendData` 的 `chunkSize`，會把 message 切成每個
   payload 為該 byte 數的 frame。
 - `conn.ReleaseLongDataTransmission()` 在串流結束後釋放連線。
-- `conn.RenewWriteBuffer(capacity)` 把 `Conn` 的 write buffer 還給 GC。`Conn` 現在
-  會把每個 frame 封裝進它保留的同一塊 buffer，所以傳送時不再每次配置記憶體；但在你
-  呼叫它之前，這塊 buffer 會一直維持在送過的最大 frame 的大小。見
-  [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
 
 ### Streaming 的 End 不再釋放連線
 
@@ -310,22 +358,24 @@ return conn.EndLongDataTransmission(nil)
 **單一 package。** 所有功能都在根目錄的 `wlgows` package 中：
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v5"
+import "github.com/weilun-shrimp/wlgows/v6"
 
 netConn, req, _ := wlgows.Dial(url, nil)
 s, _             := wlgows.Run(":8001")
-hjConn, r, _     := wlgows.HijackFromHttp(w)
 ```
 
 **`Conn` 必須透過 constructor 建立。** 它包含未匯出的相依欄位，若自行撰寫 struct
 literal，第一次使用時就會 panic。`ClientHandShake` 與 `ServerHandShake` 已經處理好
-這件事：先用 `Dial`、`Server.Accept` 或 `HijackFromHttp` 建立連線（或接受連線、
+這件事：先用 `Dial`、`Server.Accept` 或 `http.Hijacker` 建立連線（或接受連線、
 hijack），再呼叫其中一個函式取得設定完成的 `Conn`。只有直接建立 `Conn` 時需要
 特別注意：
 
 ```go
-c := wlgows.NewConn(netConn, r, false) // false：server 不做 mask（5.1）
+c, err := wlgows.NewConn(netConn, r, bufio.NewWriter(netConn), false) // false：server 不做 mask（5.1）
 ```
+
+error 只會來自小於 14 byte 的 writer：它在被換掉之前會先 flush，而那次 flush 可能
+失敗。
 
 最後一個參數對應 RFC 6455 5.1，取決於你是哪一端：client 送出的每個 frame 都必須
 mask，server 則一律不 mask，對方收到不符規定的 frame 會直接中斷連線。這個值在建立
@@ -334,7 +384,11 @@ mask，server 則一律不 mask，對方收到不符規定的 frame 會直接中
 
 `Server` 匯出的欄位（`TCPAddr`、`TCPListener`）可以讀取，也可以修改。
 
-## 記憶體 vs. 速度：自己決定 reader 的大小
+## 記憶體 vs. 速度：自己決定 buffer 的大小
+
+`Conn` 持有兩塊 buffer：你交給它的 `*bufio.Reader` 與 `*bufio.Writer`。兩者都是固定的，也都是用每條連線的記憶體換取較少的 syscall。
+
+### Reader
 
 上面每個範例使用的 `bufio.NewReader(netConn)`，預設會為每條連線配置 4096 byte 的
 buffer。`ClientHandShake`、`ServerHandShake` 與 `NewConn` 都不限制這個大小，你傳入
@@ -370,8 +424,71 @@ payload 可以跟 header 在同一次讀取中一起進來；一旦 payload 超�
 （100 個 frame 那一列假設呼叫 `Read` 時資料都已到達，這是穩定串流下的常態；如果
 對方傳送得很慢或斷斷續續，差距就會縮小。）
 
-傳送端也有同樣的取捨，只是方向相反 —— 每個 `Conn` 一塊 write buffer，大小由你決定：
-見 [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
+### Writer
+
+`bufio.NewWriter(netConn)` 同樣是 4096 byte，用同樣的方式自行指定大小即可。下限是
+14，也就是最長的 frame header：更小的 writer 會被 flush，再換成 14 byte 的。
+
+```go
+w := bufio.NewWriterSize(netConn, 14) // 每條連線 14 byte
+conn, _, err := wlgows.ServerHandShake(netConn, r, w, req)
+```
+
+取捨相同，只是方向相反：放得進 buffer 的小 frame 會共用一次 socket 寫入。在 server
+上，大的 payload 會略過 buffer，所以 14 byte 的代價很小；client 則要在 buffer 裡
+加上 mask，所以會送出大 message 的 client 需要大的 buffer。
+`conn.RenewWriter(w)` 隨時可以更換。實測的寫入次數見
+[記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
+
+### 最小的連線
+
+以一條閒置連線實測：一個 `Conn`、它的 `NewStandardListener`，以及執行 `Listen` 的
+goroutine。不包含 `net.Conn` 本身與作業系統的 socket。
+
+| | 每條閒置連線 | 100,000 條連線 |
+|---|---|---|
+| Reader 4096、writer 4096 | 約 14 KB | 約 1.4 GB |
+| Reader 16、writer 14 | 約 5–6 KB | 約 550 MB |
+| Reader 16、writer 14，再加上 `StartPingLoop` | 約 9 KB | 約 900 MB |
+
+用到最小的大小時，buffer 只剩 30 byte，剩下的大多是 goroutine 的 stack：`Listen`
+約 4 KB，每個 `StartPingLoop` 再多約 3 KB。wlgows 沒辦法縮小這些。你可以做的是：
+
+- **連線安靜時換成小的 writer。** 如果你知道這條連線有一陣子不會送任何東西，
+  `conn.RenewWriter(bufio.NewWriterSize(conn, 14))` 會把大的 buffer 還回去；下一波
+  傳送之前，再換回大的 writer 即可。每次更換都會 flush，並配置新的 writer，所以請在
+  安靜開始時換，不要在 message 之間換。hijack 之後，從 Go 1.25 起，net/http 會一直
+  持有 `bufRW.Writer`，直到 handler 返回，所以請在另一個 goroutine 裡執行
+  WebSocket，並讓 handler 先返回；這樣換掉之後它就會被回收。那個 goroutine 不能
+  保留 `http.ResponseWriter`，因為它也持有這個 writer。
+- **用一個 goroutine 送 ping，而不是每條連線一個。** `SendPing` 可以從任何
+  goroutine 呼叫，所以你自己的一個 loop 就能對所有連線送 ping。對方卡住時寫入會讓
+  這個 loop 跟著卡住，所以請替每條連線設定 write deadline。
+- **省掉每則 message 的複製。** 使用 `unsafe` 時，一則 message 只會存在一份，而不是
+  兩份 —— 見 [傳送](./SENDING_README.zh-TW.md#更快更省記憶體用-unsafe-送出-string)與
+  [讀取](./LISTENER_README.zh-TW.md#不複製地讀取-textunsafe)。
+- **用串流接收大的 message。** `Data` hook 一次只持有一個 frame，而不是整則 message
+  —— 見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md#hooks)。
+
+## Benchmark 比較
+
+與 [gorilla/websocket](https://github.com/gorilla/websocket) v1.5.3 和
+[gobwas/ws](https://github.com/gobwas/ws) v1.4.0 比較，使用相同的案例，每條連線都有
+4096 byte 的 reader 與 writer：
+
+| 項目 | 對 gorilla | 對 gobwas |
+|---|---|---|
+| server 送出 | 每種大小都**勝** | 批次送出**勝**，大 frame 平手 |
+| 送出的記憶體 | **勝**：永遠 0 次配置 | **勝**：0 次配置 vs 每個 frame 1 次 |
+| client 送出 | 小 frame 落後 | 落後，為了安全而刻意如此 |
+| 讀取 | **勝**：快 1.4 到 2.8 倍 | 大 frame 平手，小 frame 落後 |
+
+client 送出的落後是刻意的。masking key 來自 `crypto/rand`，從不用 `math/rand`；
+你的 payload 只會被讀取，從不原地加 mask。這兩者都是量測過、但為了
+[正確性優先](#wlgows)而放棄的更快做法。
+
+環境、方法、所有數字，以及每項落後為什麼保留：
+**[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)**。
 
 ## Reading
 
@@ -429,6 +546,11 @@ for {
 切開，也能完整還原。`ByteLen` 計算的是 byte 數而非字元數：`"中文字"` 會回傳 9，
 而不是 3。
 
+**提示：`unsafe` 可以省掉複製。** `frames.String()` 會複製整則 message。如果
+message 只有一個 frame，`unsafe` 可以不複製就轉成 string：1 MB 的 message 只要約
+2 ns，而不是 60 µs，記憶體也省一半。只有在你清楚自己在做什麼時才使用 —— 見
+[不複製地讀取 text](./LISTENER_README.zh-TW.md#不複製地讀取-textunsafe)。
+
 opcode 只存在於第一個 frame，continuation frame 的 opcode 是 0：
 
 ```go
@@ -461,13 +583,21 @@ conn.SendBinary(data, 4*1024)      // 每個 frame 的 payload 為 4 KB
 `chunkSize` 是每個 frame 的 payload 大小。0 或以下代表以一個 frame 送出。
 
 **掌控權在你手上，所以記憶體由你管理。** 大多數 package 會在建立連線時就固定
-frame 大小；wlgows 則讓每一次傳送自己決定。每個 frame 都會封裝進每個 `Conn` 各自
-一塊的 write buffer，它會長到送過的最大 frame 的大小，而且永遠不會自己縮小。用
-固定的 `chunkSize` 限制它的上限，並呼叫 `conn.RenewWriteBuffer(capacity)` 把記憶體
-還回去 —— 見 [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
+frame 大小；wlgows 則讓每一次傳送自己決定，每條連線也有自己的 write buffer。buffer
+就是你傳入的 `bufio.Writer`，大小固定 —— 不會隨你送出的內容變大 —— 而
+`conn.RenewWriter(w)` 隨時可以更換。見
+[記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
 
-**close 之後什麼都不送。** `SendClose` 送出之後，data 傳送會回傳
-`ErrCloseAlreadySent`（5.5.1）。
+**你的 payload 只會被讀取。** client 是對一份複本加上 mask，從不動你的 slice，所以
+把同樣的 byte 送兩次，或送出你之後還要用的 byte，都是安全的。
+
+**提示：`unsafe` 可以省掉複製。** `[]byte(text)` 會複製整個 string。因為 wlgows 只會
+讀取你的 payload，`unsafe` 可以不複製就送出 string：1 MB 的 message 可以省下約 1 MB
+與 60–90 µs。只有在你清楚自己在做什麼時才使用 —— 見
+[更快、更省記憶體](./SENDING_README.zh-TW.md#更快更省記憶體用-unsafe-送出-string)。
+
+**close 之後不送 data。** close 送出之後，data 傳送與第二個 close 都會回傳
+`ErrCloseAlreadySent`（5.5.1）。ping 或 pong 仍然會送出（5.5.2）。
 
 ## Keepalive
 
@@ -527,7 +657,7 @@ wlgows.Loop(func(stop chan<- struct{}) {
 
 | Locker | 保護對象 | 使用者 |
 |---|---|---|
-| `writeLocker` | 同一時間只有一個 frame 在傳送 | 每個 `Send*`，持有時間為傳送一個 frame |
+| `writeLocker` | write buffer，同一時間一個 frame | 每個 `Send*`，持有時間為傳送一個 frame；`RenewWriter` |
 | `dataFramesWriteLocker` | 同一時間只有一個 data message | `SendText`、`SendBinary`、`SendData`，以及 `Start`…`Release` |
 | `readLocker` | 同一時間只有一個讀取者 | `GetNextFrame` |
 
@@ -549,7 +679,7 @@ byte，但它們仍然會各自讀到不完整的 frame。
 比對，不要用 `==`：
 
 ```go
-if _, _, err := wlgows.ServerHandShake(netConn, r, req); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
+if _, _, err := wlgows.ServerHandShake(netConn, r, w, req); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
 	// ...
 }
 ```
@@ -576,7 +706,7 @@ if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 ```bash
 go test ./...                              # 全部
 go test -race ./...                        # integration test 會啟動 goroutine
-go test -cover .                           # 99.7% of statements
+go test -cover .                           # 98.3% of statements
 go test -bench BenchmarkFramesAssembly .   # benchmark，一般的 go test 不會執行
 ```
 
@@ -585,7 +715,7 @@ go test -bench BenchmarkFramesAssembly .   # benchmark，一般的 go test 不�
 
 | 檔案 | 內容 |
 |---|---|
-| [`Fakes_test.go`](./Fakes_test.go) | 共用的測試替身：`fakeConn`（在記憶體中運作的 `net.Conn`）、`fakeIOWriter`/`fakeIOReader`（單純的 `io.Writer`/`io.Reader` 替身）、`fakeLocker`（會計算次數，也會偵測錯誤用法）、`fixedRandRead`、`scriptedReadFromReader` |
+| [`Fakes_test.go`](./Fakes_test.go) | 共用的測試替身：`fakeConn`（在記憶體中運作的 `net.Conn`）、`fakeIOWriter`/`fakeIOReader`（單純的 `io.Writer`/`io.Reader` 替身）、`fakeFuncLocker`（在 `Lock` 與 `Unlock` 時執行一個 func，讓測試把它們和其他步驟記錄在一起）、`fixedRandRead`、`scriptedReadFromReader` |
 | [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | `Listen` 在真正的 `net.Pipe` 上端對端執行，**不**替換任何 `di` |
 
 integration test 能抓到 unit test 在結構上無法發現的串接錯誤，例如 constructor
@@ -605,7 +735,7 @@ Bytes()             5722 ns/op    73729 B/op   1 allocs/op
 
 每個會做 I/O 或用到隨機數的 function，都是一層很薄的匯出包裝，底下實作則接收一個
 `di` struct（內含 function value）；type 則把相依放在由 constructor 填入的 `di`
-欄位中。這些都沒有匯出，所以只有 package 內的測試能存取。純函式（`Frame.Seal`、
+欄位中。這些都沒有匯出，所以只有 package 內的測試能存取。純函式（`MaskPayload`、
 `Frames.String`、`ValidateHandShakeRequest`…）沒有注入點，直接測試即可。
 
 ```go
@@ -613,7 +743,7 @@ Bytes()             5722 ns/op    73729 B/op   1 allocs/op
 netConn, req, err := dial("ws://localhost:8001", nil, dialDI{...})
 
 // method：覆寫 constructor 設定好的欄位
-conn := NewConn(netConn, bufio.NewReader(netConn), false)
+conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 conn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) { ... }
 ```
 
@@ -621,9 +751,11 @@ conn.di.newDataFrame = func(config NewFrameConfig) (*Frame, error) { ... }
 寫出固定的預期值：
 
 ```go
-f, _ := newFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: 1, Mask: true, FIN: true},
-	newFrameDI{generateMaskingKey: func() ([]byte, error) { return []byte{1, 2, 3, 4}, nil }})
-// f.Seal(nil) == []byte{0x81, 0x82, 1, 2, 3, 4, 'h'^1, 'i'^2}
+f := NewFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: 1, FIN: true})
+prepareSendFrame(f, true, prepareSendFrameDI{
+	fillMaskingKey: func(key *[4]byte) error { *key = [4]byte{1, 2, 3, 4}; return nil },
+})
+// f.appendSealedHeader(nil) == []byte{0x81, 0x82, 1, 2, 3, 4}
 ```
 
 有一個測試刻意驗證的是「目前的行為」而非「正確的行為」，並在名稱與註解中清楚說明：
@@ -632,10 +764,11 @@ f, _ := newFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: 1, Mask: true
   switch 沒有 default 分支。正式環境不會走到這裡，因為前面有
   `ValidateWebsocketUrl` 把關；只有使用較寬鬆的 fake 時才會觸發。
 
-測試覆蓋率最主要的缺口是 `ClientHandShake` 本身的成功路徑：真正的 client 每次呼叫
-都會用 `crypto/rand` 產生新的 key，因此無法用固定的 response 內容比對，除非真的
-建立一條雙向連線。它所包裝的 `clientHandShake`（DI 那一層）以及成功時會呼叫的
-`NewConn`，都各自有 100% 的測試覆蓋率。
+測試覆蓋率的缺口，是只把欄位綁進 `di` struct 的那些很薄的 `Conn` 包裝（`SendText`、
+`SendData`、`TransmitData`、`RenewWriter`…），它們的邏輯已透過各自包裝的純函式測到；
+以及 `ClientHandShake` 回傳 `Conn` 的那一行。它的 `NewConn` error 則在 `net.Pipe`
+上測試，由一個 goroutine 扮演 server 回應，因為真正的 client 每次呼叫都會用
+`crypto/rand` 產生新的 key。
 
 ## License
 

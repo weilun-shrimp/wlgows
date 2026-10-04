@@ -8,6 +8,21 @@ import (
 	"testing"
 )
 
+func TestReadFromReaderRealWiring(t *testing.T) {
+	conn := newFakeConn([]byte("hello world"))
+	got, err := ReadFromReader(conn, 5)
+	if err != nil {
+		t.Fatalf("ReadFromReader: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("got %q, want %q", got, "hello")
+	}
+
+	if _, err := ReadFromReader(newFakeConn([]byte("ab")), 10); err == nil {
+		t.Error("expected an error when the reader has fewer bytes than maxLen")
+	}
+}
+
 func TestReadFromReaderInjected(t *testing.T) {
 	t.Run("fills the buffer from ioReadFull", func(t *testing.T) {
 		got, err := readFromReader(newFakeConn(nil), 4, readFromReaderDI{
@@ -52,21 +67,6 @@ func TestReadFromReaderInjected(t *testing.T) {
 	})
 }
 
-func TestReadFromReaderRealWiring(t *testing.T) {
-	conn := newFakeConn([]byte("hello world"))
-	got, err := ReadFromReader(conn, 5)
-	if err != nil {
-		t.Fatalf("ReadFromReader: %v", err)
-	}
-	if string(got) != "hello" {
-		t.Errorf("got %q, want %q", got, "hello")
-	}
-
-	if _, err := ReadFromReader(newFakeConn([]byte("ab")), 10); err == nil {
-		t.Error("expected an error when the reader has fewer bytes than maxLen")
-	}
-}
-
 func TestGetFrameFromReaderParsesWireBytes(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -92,7 +92,7 @@ func TestGetFrameFromReaderParsesWireBytes(t *testing.T) {
 				if !f.Mask {
 					t.Error("Mask should be true")
 				}
-				if !bytes.Equal(f.MaskingKey, []byte{1, 2, 3, 4}) {
+				if f.MaskingKey != [4]byte{1, 2, 3, 4} {
 					t.Errorf("MaskingKey = % x", f.MaskingKey)
 				}
 				// PayloadData is documented as always unmasked.
@@ -155,27 +155,9 @@ func TestGetFrameFromReaderParsesWireBytes(t *testing.T) {
 	}
 }
 
-// Seal and GetFrameFromReader are inverses.
-func TestFrameSealRoundTripsThroughGetFrameFromReader(t *testing.T) {
-	original := &Frame{
-		FIN: true, Opcode: 1, Mask: true, PayloadLength: 5,
-		MaskingKey: []byte{9, 8, 7, 6}, PayloadData: []byte("round"),
-	}
-	got, err := GetFrameFromReader(newFakeConn(original.Seal(nil)), 0)
-	if err != nil {
-		t.Fatalf("GetFrameFromReader: %v", err)
-	}
-	if string(got.PayloadData) != "round" {
-		t.Errorf("PayloadData = %q, want %q", got.PayloadData, "round")
-	}
-	if got.Opcode != original.Opcode || got.FIN != original.FIN || got.Mask != original.Mask {
-		t.Errorf("header mismatch: %+v", got)
-	}
-}
-
-// Unmasking runs 8 bytes per step, then byte by byte for the tail. Seal is the
-// reference, checked against a plain byte loop in TestFrameSealMasksEveryLength.
-// The lengths hit each side of the 8 byte boundaries.
+// Unmasking runs 8 bytes per step, then byte by byte for the tail. The wire is
+// masked with a plain byte loop, and the lengths hit each side of the 8 byte
+// boundaries.
 func TestGetFrameFromReaderUnmasksEveryLength(t *testing.T) {
 	for _, length := range []int{0, 1, 3, 4, 7, 8, 9, 12, 15, 16, 17, 23, 24, 25, 300} {
 		t.Run(fmt.Sprintf("%d bytes", length), func(t *testing.T) {
@@ -183,16 +165,15 @@ func TestGetFrameFromReaderUnmasksEveryLength(t *testing.T) {
 			for i := range payload {
 				payload[i] = byte(i*7 + 1)
 			}
-			frame, err := newFrame(NewFrameConfig{
-				PayloadData: payload, Opcode: 2, Mask: true, FIN: true,
-			}, newFrameDI{
-				generateMaskingKey: func() ([]byte, error) { return []byte{0x11, 0x22, 0x44, 0x88}, nil },
-			})
-			if err != nil {
-				t.Fatalf("newFrame: %v", err)
+			key := [4]byte{0x11, 0x22, 0x44, 0x88}
+			frame := &Frame{FIN: true, Opcode: 2, Mask: true, MaskingKey: key, PayloadData: payload}
+			frame.fillPayloadLength()
+			wire := frame.appendSealedHeader(nil)
+			for i := range payload {
+				wire = append(wire, payload[i]^key[i&3])
 			}
 
-			got, err := GetFrameFromReader(newFakeConn(frame.Seal(nil)), 0)
+			got, err := GetFrameFromReader(newFakeConn(wire), 0)
 			if err != nil {
 				t.Fatalf("GetFrameFromReader: %v", err)
 			}
@@ -263,16 +244,16 @@ func TestGetFrameFromReaderAllocations(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
 		mask       bool
-		maskingKey []byte
+		maskingKey [4]byte
 	}{
-		{"masked", true, []byte{1, 2, 3, 4}},
-		{"unmasked", false, nil},
+		{"masked", true, [4]byte{1, 2, 3, 4}},
+		{"unmasked", false, [4]byte{}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			frame := (&Frame{
+			frame := append((&Frame{
 				FIN: true, Opcode: 2, Mask: testCase.mask, PayloadLength: 126, ExtendedPayloadLength: 300,
-				MaskingKey: testCase.maskingKey, PayloadData: make([]byte, 300),
-			}).Seal(nil)
+				MaskingKey: testCase.maskingKey,
+			}).appendSealedHeader(nil), make([]byte, 300)...)
 			// AllocsPerRun calls once more than runs, as a warm up.
 			reader := bytes.NewReader(bytes.Repeat(frame, runs+1))
 
@@ -304,16 +285,12 @@ func TestGetFrameFromReaderReadsExactlyOneFrame(t *testing.T) {
 		{"masked 64 bit length", 70000, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			frame, err := NewFrame(NewFrameConfig{
-				PayloadData: make([]byte, testCase.payloadLength), Opcode: 2, Mask: testCase.mask, FIN: true,
-			})
-			if err != nil {
-				t.Fatalf("NewFrame: %v", err)
-			}
-			wire := frame.Seal(nil)
+			frame := &Frame{FIN: true, Opcode: 2, Mask: testCase.mask, PayloadData: make([]byte, testCase.payloadLength)}
+			frame.fillPayloadLength()
+			wire := append(frame.appendSealedHeader(nil), frame.PayloadData...)
 
 			var readLength uint64
-			_, err = getFrameFromReader(newFakeConn(nil), 0, getFrameFromReaderDI{
+			_, err := getFrameFromReader(newFakeConn(nil), 0, getFrameFromReaderDI{
 				readFromReader: func(_ io.Reader, maxLen uint64) ([]byte, error) {
 					if readLength+maxLen > uint64(len(wire)) {
 						return nil, io.EOF // past the end of this frame
@@ -345,11 +322,10 @@ that the oversized read was never attempted.
 */
 func TestGetFrameFromReaderMaxByteLength(t *testing.T) {
 	// A header declaring 70000 bytes, forcing the 64 bit extended length path.
-	// PayloadData is nil, so Seal emits the header and nothing else.
 	const declared = 70000
 	header := (&Frame{
 		FIN: true, Opcode: 2, PayloadLength: 127, ExtendedPayloadLength: declared,
-	}).Seal(nil)
+	}).appendSealedHeader(nil)
 
 	// readFromReader replaying that header, recording every length it is asked for.
 	scriptedHeader := func(asked *[]uint64) func(io.Reader, uint64) ([]byte, error) {

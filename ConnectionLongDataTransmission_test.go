@@ -3,13 +3,16 @@ package wlgows
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 )
 
 func TestConnStartLongDataTransmission(t *testing.T) {
 	base_conn := func() *Conn {
 		netConn := newFakeConn(nil)
-		return NewConn(netConn, bufio.NewReader(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+		return conn
 	}
 
 	// A refused Start must leave the lock untaken, or the deferred Release a
@@ -27,15 +30,23 @@ func TestConnStartLongDataTransmission(t *testing.T) {
 			{OpcodePong, ErrNotDataFrameOpcode},
 			{0x3, ErrNotDataFrameOpcode}, // reserved by 5.2
 		} {
-			dataLocker := &fakeLocker{}
+			var steps []string
 			conn := base_conn()
-			conn.di.dataFramesWriteLocker = dataLocker
+			conn.di.writeLocker = fakeFuncLocker{
+				lock:   func() { steps = append(steps, "write lock") },
+				unlock: func() { steps = append(steps, "write unlock") },
+			}
+			conn.di.dataFramesWriteLocker = fakeFuncLocker{
+				lock:   func() { steps = append(steps, "data lock") },
+				unlock: func() { steps = append(steps, "data unlock") },
+			}
 
 			if err := conn.StartLongDataTransmission(testCase.opcode); !errors.Is(err, testCase.want) {
 				t.Errorf("opcode %#x: err = %v, want %v", testCase.opcode, err, testCase.want)
 			}
-			if dataLocker.locks != 0 || conn.currentTransmitDataMsgOpcode != 0 {
-				t.Errorf("opcode %#x: a refused start opened a transmission", testCase.opcode)
+			if len(steps) != 0 || conn.currentTransmitDataMsgOpcode != 0 {
+				t.Errorf("opcode %#x: steps %q, opcode %#x — want no lock taken and nothing opened",
+					testCase.opcode, steps, conn.currentTransmitDataMsgOpcode)
 			}
 		}
 	})
@@ -44,18 +55,22 @@ func TestConnStartLongDataTransmission(t *testing.T) {
 	// data lock is taken and held for the whole message.
 	t.Run("claims the connection for a data opcode", func(t *testing.T) {
 		for _, opcode := range []byte{OpcodeText, OpcodeBinary} {
-			writeLocker, dataLocker := &fakeLocker{}, &fakeLocker{}
+			var steps []string
 			conn := base_conn()
-			conn.di.writeLocker, conn.di.dataFramesWriteLocker = writeLocker, dataLocker
+			conn.di.writeLocker = fakeFuncLocker{
+				lock:   func() { steps = append(steps, "write lock") },
+				unlock: func() { steps = append(steps, "write unlock") },
+			}
+			conn.di.dataFramesWriteLocker = fakeFuncLocker{
+				lock:   func() { steps = append(steps, "data lock") },
+				unlock: func() { steps = append(steps, "data unlock") },
+			}
 
 			if err := conn.StartLongDataTransmission(opcode); err != nil {
 				t.Fatalf("opcode %#x: %v", opcode, err)
 			}
-			if !writeLocker.ok(1) {
-				t.Errorf("opcode %#x: write locks=%d unlocks=%d, want 1/1", opcode, writeLocker.locks, writeLocker.unlocks)
-			}
-			if !dataLocker.held || dataLocker.locks != 1 {
-				t.Errorf("opcode %#x: the data lock was not taken", opcode)
+			if want := []string{"write lock", "write unlock", "data lock"}; !slices.Equal(steps, want) {
+				t.Errorf("opcode %#x: steps %q, want %q", opcode, steps, want)
 			}
 			if conn.currentTransmitDataMsgOpcode != opcode {
 				t.Errorf("opcode %#x: recorded %#x", opcode, conn.currentTransmitDataMsgOpcode)
@@ -65,18 +80,25 @@ func TestConnStartLongDataTransmission(t *testing.T) {
 
 	// 5.5.1: no message can open once a close has gone out.
 	t.Run("refuses after a close", func(t *testing.T) {
-		writeLocker, dataLocker := &fakeLocker{}, &fakeLocker{}
+		var steps []string
 		conn := base_conn()
-		conn.di.writeLocker, conn.di.dataFramesWriteLocker = writeLocker, dataLocker
+		conn.di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		conn.di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
+		}
 		conn.closeSent = true
 
 		if err := conn.StartLongDataTransmission(OpcodeBinary); !errors.Is(err, ErrCloseAlreadySent) {
 			t.Errorf("err = %v, want ErrCloseAlreadySent", err)
 		}
-		if !writeLocker.ok(1) {
-			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		if want := []string{"write lock", "write unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
-		if dataLocker.locks != 0 || conn.currentTransmitDataMsgOpcode != 0 {
+		if conn.currentTransmitDataMsgOpcode != 0 {
 			t.Error("a refused start opened a transmission")
 		}
 	})
@@ -87,7 +109,7 @@ func TestTransmitData(t *testing.T) {
 	// succeeds; each case overrides what it looks at.
 	base_di := func() transmitDataDI {
 		netConn := newFakeConn(nil)
-		conn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 		conn.currentTransmitDataMsgOpcode = OpcodeText
 		return transmitDataDI{
 			conn:      conn,
@@ -96,55 +118,53 @@ func TestTransmitData(t *testing.T) {
 	}
 
 	// 5.4: the message's opcode opens it, the rest continue it, and none of
-	// them is the last. 5.1: masked exactly when the Conn masks.
+	// them is the last. Masking is the send's, so the frame is built unmasked.
 	t.Run("sends the fragment's frame", func(t *testing.T) {
-		for _, maskSendFrame := range []bool{false, true} {
-			for _, opened := range []bool{false, true} {
-				var sent []*Frame
-				di := base_di()
-				di.conn.maskSendFrame = maskSendFrame
-				di.conn.currentTransmitDataMsgOpened = opened
-				di.sendFrame = func(f *Frame) error {
-					sent = append(sent, f)
-					return nil
-				}
+		for _, opened := range []bool{false, true} {
+			var sent []*Frame
+			di := base_di()
+			di.conn.currentTransmitDataMsgOpened = opened
+			di.sendFrame = func(f *Frame) error {
+				sent = append(sent, f)
+				return nil
+			}
 
-				if err := transmitData([]byte("hello"), di); err != nil {
-					t.Fatalf("transmitData: %v", err)
-				}
-				wantOpcode := uint8(OpcodeText)
-				if opened {
-					wantOpcode = OpcodeContinuation
-				}
-				if len(sent) != 1 || sent[0].Opcode != wantOpcode || sent[0].Mask != maskSendFrame ||
-					string(sent[0].PayloadData) != "hello" || sent[0].FIN {
-					t.Fatalf("mask %v opened %v: sent %+v, want one frame opcode %#x mask %v \"hello\" no FIN",
-						maskSendFrame, opened, sent, wantOpcode, maskSendFrame)
-				}
-				if !di.conn.currentTransmitDataMsgOpened {
-					t.Error("a sent fragment did not open the message")
-				}
+			if err := transmitData([]byte("hello"), di); err != nil {
+				t.Fatalf("transmitData: %v", err)
+			}
+			wantOpcode := uint8(OpcodeText)
+			if opened {
+				wantOpcode = OpcodeContinuation
+			}
+			if len(sent) != 1 || sent[0].Opcode != wantOpcode || sent[0].Mask ||
+				string(sent[0].PayloadData) != "hello" || sent[0].FIN {
+				t.Fatalf("opened %v: sent %+v, want one unmasked frame opcode %#x \"hello\" no FIN",
+					opened, sent, wantOpcode)
+			}
+			if !di.conn.currentTransmitDataMsgOpened {
+				t.Error("a sent fragment did not open the message")
 			}
 		}
 	})
 
-	// The check and the write share the lock SendClose sets closeSent under.
+	// The write holds the lock closeSent is set under.
 	t.Run("sends under the write lock", func(t *testing.T) {
-		writeLocker := &fakeLocker{}
+		var steps []string
 		di := base_di()
-		di.conn.di.writeLocker = writeLocker
+		di.conn.di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
 		di.sendFrame = func(*Frame) error {
-			if !writeLocker.held {
-				t.Error("sent without holding writeLocker")
-			}
+			steps = append(steps, "send")
 			return nil
 		}
 
 		if err := transmitData([]byte("hello"), di); err != nil {
 			t.Fatalf("transmitData: %v", err)
 		}
-		if !writeLocker.ok(1) {
-			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		if want := []string{"write lock", "send", "write unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
@@ -173,25 +193,6 @@ func TestTransmitData(t *testing.T) {
 		}
 		if di.conn.currentTransmitDataMsgOpened {
 			t.Error("an empty fragment opened the message")
-		}
-	})
-
-	// 5.5.1: no data frame after a close, checked per fragment.
-	t.Run("refuses after a close", func(t *testing.T) {
-		writeLocker := &fakeLocker{}
-		di := base_di()
-		di.conn.di.writeLocker = writeLocker
-		di.conn.closeSent = true
-		di.sendFrame = func(*Frame) error {
-			t.Error("sent after a close")
-			return nil
-		}
-
-		if err := transmitData([]byte("hello"), di); !errors.Is(err, ErrCloseAlreadySent) {
-			t.Errorf("transmitData = %v, want ErrCloseAlreadySent", err)
-		}
-		if !writeLocker.ok(1) {
-			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
 		}
 	})
 
@@ -229,7 +230,7 @@ func TestEndLongDataTransmission(t *testing.T) {
 	// that succeeds; each case overrides what it looks at.
 	base_di := func() endLongDataTransmissionDI {
 		netConn := newFakeConn(nil)
-		conn := NewConn(netConn, bufio.NewReader(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 		conn.currentTransmitDataMsgOpcode = OpcodeBinary
 		return endLongDataTransmissionDI{
 			conn:      conn,
@@ -237,32 +238,29 @@ func TestEndLongDataTransmission(t *testing.T) {
 		}
 	}
 
-	// FIN set, masked exactly when the Conn masks (5.1), and the message's own
-	// opcode only when nothing went before (5.4).
+	// FIN set, unmasked as the send masks, and the message's own opcode only
+	// when nothing went before (5.4).
 	t.Run("sends the last frame", func(t *testing.T) {
-		for _, maskSendFrame := range []bool{false, true} {
-			for _, opened := range []bool{false, true} {
-				var sent []*Frame
-				di := base_di()
-				di.conn.maskSendFrame = maskSendFrame
-				di.conn.currentTransmitDataMsgOpened = opened
-				di.sendFrame = func(f *Frame) error {
-					sent = append(sent, f)
-					return nil
-				}
+		for _, opened := range []bool{false, true} {
+			var sent []*Frame
+			di := base_di()
+			di.conn.currentTransmitDataMsgOpened = opened
+			di.sendFrame = func(f *Frame) error {
+				sent = append(sent, f)
+				return nil
+			}
 
-				if err := endLongDataTransmission([]byte("last"), di); err != nil {
-					t.Fatalf("endLongDataTransmission: %v", err)
-				}
-				wantOpcode := uint8(OpcodeBinary)
-				if opened {
-					wantOpcode = OpcodeContinuation
-				}
-				if len(sent) != 1 || sent[0].Opcode != wantOpcode || sent[0].Mask != maskSendFrame ||
-					string(sent[0].PayloadData) != "last" || !sent[0].FIN {
-					t.Fatalf("mask %v opened %v: sent %+v, want one frame opcode %#x mask %v \"last\" FIN",
-						maskSendFrame, opened, sent, wantOpcode, maskSendFrame)
-				}
+			if err := endLongDataTransmission([]byte("last"), di); err != nil {
+				t.Fatalf("endLongDataTransmission: %v", err)
+			}
+			wantOpcode := uint8(OpcodeBinary)
+			if opened {
+				wantOpcode = OpcodeContinuation
+			}
+			if len(sent) != 1 || sent[0].Opcode != wantOpcode || sent[0].Mask ||
+				string(sent[0].PayloadData) != "last" || !sent[0].FIN {
+				t.Fatalf("opened %v: sent %+v, want one unmasked frame opcode %#x \"last\" FIN",
+					opened, sent, wantOpcode)
 			}
 		}
 	})
@@ -286,24 +284,28 @@ func TestEndLongDataTransmission(t *testing.T) {
 
 	// Release frees the connection, not End.
 	t.Run("sends under the write lock and keeps the data lock", func(t *testing.T) {
-		writeLocker, dataLocker := &fakeLocker{}, &fakeLocker{}
+		var steps []string
 		di := base_di()
-		di.conn.di.writeLocker = writeLocker
-		di.conn.di.dataFramesWriteLocker = dataLocker
+		di.conn.di.writeLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "write lock") },
+			unlock: func() { steps = append(steps, "write unlock") },
+		}
+		di.conn.di.dataFramesWriteLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "data lock") },
+			unlock: func() { steps = append(steps, "data unlock") },
+		}
 		di.sendFrame = func(*Frame) error {
-			if !writeLocker.held {
-				t.Error("sent without holding writeLocker")
-			}
+			steps = append(steps, "send")
 			return nil
 		}
 
 		if err := endLongDataTransmission(nil, di); err != nil {
 			t.Fatalf("endLongDataTransmission: %v", err)
 		}
-		if !writeLocker.ok(1) {
-			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
+		if want := []string{"write lock", "send", "write unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
-		if dataLocker.unlocks != 0 || di.conn.currentTransmitDataMsgOpcode == 0 {
+		if di.conn.currentTransmitDataMsgOpcode == 0 {
 			t.Error("End released the transmission; Release does that")
 		}
 	})
@@ -318,25 +320,6 @@ func TestEndLongDataTransmission(t *testing.T) {
 
 		if err := endLongDataTransmission(nil, di); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
 			t.Errorf("endLongDataTransmission = %v, want ErrLongDataTransmissionNotStarted", err)
-		}
-	})
-
-	// The FIN frame is a data frame too (5.5.1).
-	t.Run("refuses after a close", func(t *testing.T) {
-		writeLocker := &fakeLocker{}
-		di := base_di()
-		di.conn.di.writeLocker = writeLocker
-		di.conn.closeSent = true
-		di.sendFrame = func(*Frame) error {
-			t.Error("sent after a close")
-			return nil
-		}
-
-		if err := endLongDataTransmission(nil, di); !errors.Is(err, ErrCloseAlreadySent) {
-			t.Errorf("endLongDataTransmission = %v, want ErrCloseAlreadySent", err)
-		}
-		if !writeLocker.ok(1) {
-			t.Errorf("write locks=%d unlocks=%d, want 1/1", writeLocker.locks, writeLocker.unlocks)
 		}
 	})
 
@@ -366,23 +349,25 @@ func TestEndLongDataTransmission(t *testing.T) {
 }
 
 // Both fields, or the next transmission inherits this one: a stale opened
-// would send its first frame as a continuation, a held lock would block it.
+// would send its first frame as a continuation. The unlock comes last, so the
+// next transmission never sees them before they are reset.
 func TestConnReleaseLongDataTransmission(t *testing.T) {
-	dataLocker := &fakeLocker{locks: 1, held: true}
+	var steps []string
 	netConn := newFakeConn(nil)
-	conn := NewConn(netConn, bufio.NewReader(netConn), false)
-	conn.di.dataFramesWriteLocker = dataLocker
+	conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+	conn.di.dataFramesWriteLocker = fakeFuncLocker{
+		lock: func() { steps = append(steps, "data lock") },
+		unlock: func() {
+			steps = append(steps, fmt.Sprintf("data unlock opcode=%#x opened=%v",
+				conn.currentTransmitDataMsgOpcode, conn.currentTransmitDataMsgOpened))
+		},
+	}
 	conn.currentTransmitDataMsgOpcode = OpcodeText
 	conn.currentTransmitDataMsgOpened = true
 
 	conn.ReleaseLongDataTransmission()
 
-	if conn.currentTransmitDataMsgOpcode != 0 || conn.currentTransmitDataMsgOpened {
-		t.Errorf("opcode=%#x opened=%v, want both reset",
-			conn.currentTransmitDataMsgOpcode, conn.currentTransmitDataMsgOpened)
-	}
-	if !dataLocker.ok(1) {
-		t.Errorf("data locks=%d unlocks=%d misuse=%d held=%v, want the one lock released",
-			dataLocker.locks, dataLocker.unlocks, dataLocker.misuse, dataLocker.held)
+	if want := []string{"data unlock opcode=0x0 opened=false"}; !slices.Equal(steps, want) {
+		t.Errorf("steps %q, want %q", steps, want)
 	}
 }

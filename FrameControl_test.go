@@ -13,8 +13,8 @@ func TestNewControlFrame(t *testing.T) {
 	// applied — wrong for anything but a control frame, and impossible to
 	// diagnose from the wire.
 	//
-	// 0x10 and 0x80 are not opcodes at all: the field is 4 bits, and Seal masks
-	// with &15, so accepting them would emit a continuation frame.
+	// 0x10 and 0x80 are not opcodes at all: the field is 4 bits, and the sealed
+	// header masks with &15, so accepting them would emit a continuation frame.
 	t.Run("refuses anything that is not close, ping or pong", func(t *testing.T) {
 		for _, opcode := range []byte{
 			OpcodeContinuation, OpcodeText, OpcodeBinary, // data

@@ -1,9 +1,11 @@
-// The same echo server, reached through Gin. HijackFromGin takes the connection
-// off Gin after routing, so the WebSocket lives on a handler's own goroutine and
-// ordinary routes keep working beside it — GET /ping still answers JSON.
+// The same echo server, reached through Gin. c.Writer is an http.Hijacker, which
+// takes the connection off Gin after routing, so the WebSocket lives on a
+// handler's own goroutine and ordinary routes keep working beside it — GET /ping
+// still answers JSON.
 //
-//	go run ./example/hijack_gin   # in one terminal
-//	go run ./example/client       # in another
+//	cd example
+//	go run ./hijack_gin   # in one terminal
+//	go run ./client       # in another
 //
 // Set the cert paths that LoadServerTlsInfo reads to serve wss:// instead.
 package main
@@ -16,8 +18,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/weilun-shrimp/wlgows/v5"
-	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
 )
 
 const (
@@ -62,7 +64,8 @@ func main() {
 }
 
 func handler(c *gin.Context) {
-	netConn, bufReader, err := wlgows.HijackFromGin(c)
+	// gin.ResponseWriter is an http.Hijacker.
+	netConn, bufRW, err := c.Writer.Hijack()
 	if err != nil {
 		// Still an ordinary response: the hijack failed, so nothing was taken.
 		c.AbortWithError(http.StatusInternalServerError, errors.New("could not hijack connection"))
@@ -74,7 +77,10 @@ func handler(c *gin.Context) {
 	defer netConn.Close()
 
 	// c.Request is already parsed by net/http, so no read step is needed here.
-	conn, _, err := wlgows.ServerHandShake(netConn, bufReader, c.Request)
+	// Pass bufRW.Reader, not a new reader: net/http may have buffered the start
+	// of the first frame in it.
+	// bufRW.Writer reuses net/http's writer; bufio.NewWriterSize(netConn, size) works too.
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, c.Request)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return

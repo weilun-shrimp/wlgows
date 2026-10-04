@@ -1,6 +1,9 @@
 package wlgows
 
-import "unicode/utf8"
+import (
+	"sync"
+	"unicode/utf8"
+)
 
 /*
 SendText sends text as one text message, through SendData.
@@ -51,41 +54,70 @@ chunkSize of 0 or less sends one frame. A positive chunkSize is the payload of
 each frame, header not counted, with FIN on the last (5.4). An empty payload is
 one empty frame.
 
-It runs a long data transmission, the last chunk going to End, so locking and
-ErrCloseAlreadySent work as they do there. The write buffer grows to one frame.
+dataFramesWriteLocker is held throughout, so no other message interleaves.
+writeLocker is held for each frame appended to the write buffer and for the
+final flush, so a control frame sent in between still gets out (5.5.2) — and its
+send flushes the frames buffered so far ahead of it, which 5.4 allows. Frames go
+out as the buffer fills, so small frames share a Write. Once a close has gone
+out, the rest is refused with ErrCloseAlreadySent.
 
-A chunk that fails leaves the message unterminated, as 5.4 has no way to end it
-early: close the connection.
+A failure leaves the message unterminated, as 5.4 has no way to end it early:
+close the connection.
 */
 func (c *Conn) SendData(opcode uint8, payload []byte, chunkSize int) error {
 	return sendData(opcode, payload, chunkSize, sendDataDI{
-		startLongDataTransmission:   c.StartLongDataTransmission,
-		transmitData:                c.TransmitData,
-		endLongDataTransmission:     c.EndLongDataTransmission,
-		releaseLongDataTransmission: c.ReleaseLongDataTransmission,
+		dataFramesWriteLocker: c.di.dataFramesWriteLocker,
+		writeLocker:           c.di.writeLocker,
+		newDataFrame:          c.di.newDataFrame,
+		bufferedWriteFrame:    c.bufferedWriteFrame,
+		// Looked up at flush time, not bound now: RenewWriter may replace
+		// c.writer between frames.
+		flushWriter: func() error { return c.writer.Flush() },
 	})
 }
 
 type sendDataDI struct {
-	startLongDataTransmission   func(opcode uint8) error
-	transmitData                func(data []byte) error
-	endLongDataTransmission     func(data []byte) error
-	releaseLongDataTransmission func()
+	dataFramesWriteLocker sync.Locker
+	writeLocker           sync.Locker
+	newDataFrame          func(config NewFrameConfig) (*Frame, error)
+	bufferedWriteFrame    func(f *Frame) error
+	flushWriter           func() error
 }
 
 func sendData(opcode uint8, payload []byte, chunkSize int, di sendDataDI) error {
-	if err := di.startLongDataTransmission(opcode); err != nil {
-		return err // Nothing was locked.
+	if opcode == OpcodeContinuation {
+		return ErrContinuationFrameWithoutMsg
 	}
-	defer di.releaseLongDataTransmission()
+	// dataFramesWriteLocker first, as a long data transmission takes them, so
+	// this cannot land between its fragments (5.4).
+	di.dataFramesWriteLocker.Lock()
+	defer di.dataFramesWriteLocker.Unlock()
 
-	if chunkSize > 0 {
-		for len(payload) > chunkSize {
-			if err := di.transmitData(payload[:chunkSize]); err != nil {
-				return err // No FIN: the message is missing chunks.
-			}
-			payload = payload[chunkSize:]
+	// One frame for every chunk, built once: it also refuses a non data opcode.
+	f, err := di.newDataFrame(NewFrameConfig{Opcode: opcode})
+	if err != nil {
+		return err
+	}
+
+	// Buffer every frame, then flush what is left.
+	for fin := false; !fin; f.Opcode = OpcodeContinuation { // 5.4: only the first carries the opcode
+		chunk := payload
+		fin = chunkSize <= 0 || len(payload) <= chunkSize
+		if !fin {
+			chunk, payload = payload[:chunkSize], payload[chunkSize:]
+		}
+		f.FIN = fin
+		f.PayloadData = chunk
+
+		di.writeLocker.Lock()
+		err = di.bufferedWriteFrame(f)
+		di.writeLocker.Unlock()
+		if err != nil {
+			return err
 		}
 	}
-	return di.endLongDataTransmission(payload) // The last chunk, or the whole message.
+
+	di.writeLocker.Lock()
+	defer di.writeLocker.Unlock()
+	return di.flushWriter()
 }

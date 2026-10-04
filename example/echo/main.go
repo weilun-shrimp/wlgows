@@ -1,6 +1,7 @@
 // An echo server. Every text or binary message comes back unchanged.
 //
-//	go run ./example/echo
+//	cd example
+//	go run ./echo
 //
 // The read loop is a wlgows.Listener: it validates each frame against RFC 6455,
 // assembles fragmented messages, and calls the hook for the opcode. It never
@@ -15,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v6"
 )
 
 const (
@@ -65,7 +66,7 @@ func handleConn(netConn net.Conn) {
 		fmt.Println("reading request:", err)
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return

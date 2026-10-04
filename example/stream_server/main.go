@@ -2,8 +2,9 @@
 // written straight to disk as it arrives, so memory stays flat however large
 // the message is.
 //
-//	go run ./example/stream_server   # in one terminal
-//	go run ./example/stream_client   # in another
+//	cd example
+//	go run ./stream_server   # in one terminal
+//	go run ./stream_client   # in another
 //
 // The Data hook is what makes this possible: set it and the Listener stops
 // assembling, handing over each data frame instead of the message it would have
@@ -33,7 +34,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v5"
+	"github.com/weilun-shrimp/wlgows/v6"
 )
 
 const (
@@ -85,7 +86,7 @@ func handleConn(netConn net.Conn) {
 		fmt.Println("reading request:", err)
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, r, req)
+	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return

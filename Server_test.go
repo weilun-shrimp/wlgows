@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestRunRejectsABadService(t *testing.T) {
+	if _, err := Run("not-a-valid-address"); err == nil {
+		t.Error("Run should reject an unresolvable service string")
+	}
+}
+
+func TestRunBindsAndReportsItsAddress(t *testing.T) {
+	server, err := Run("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer server.Close()
+
+	if server.TCPAddr == nil || server.TCPListener == nil {
+		t.Fatal("Run should populate both the address and the listener")
+	}
+	// Port 0 asks the OS to choose, so the listener knows the real port.
+	if addr, ok := server.TCPListener.Addr().(*net.TCPAddr); !ok || addr.Port == 0 {
+		t.Errorf("listener address = %v, want a bound port", server.TCPListener.Addr())
+	}
+}
+
 func TestRun(t *testing.T) {
 	t.Run("resolves, listens, and builds the server", func(t *testing.T) {
 		wantAddr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8001}
@@ -115,27 +137,5 @@ func TestServerAcceptAfterClose(t *testing.T) {
 
 	if _, err := server.Accept(); err == nil {
 		t.Error("Accept should fail once the listener is closed")
-	}
-}
-
-func TestRunRejectsABadService(t *testing.T) {
-	if _, err := Run("not-a-valid-address"); err == nil {
-		t.Error("Run should reject an unresolvable service string")
-	}
-}
-
-func TestRunBindsAndReportsItsAddress(t *testing.T) {
-	server, err := Run("127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	defer server.Close()
-
-	if server.TCPAddr == nil || server.TCPListener == nil {
-		t.Fatal("Run should populate both the address and the listener")
-	}
-	// Port 0 asks the OS to choose, so the listener knows the real port.
-	if addr, ok := server.TCPListener.Addr().(*net.TCPAddr); !ok || addr.Port == 0 {
-		t.Errorf("listener address = %v, want a bound port", server.TCPListener.Addr())
 	}
 }

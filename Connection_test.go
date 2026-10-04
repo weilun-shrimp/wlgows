@@ -2,72 +2,99 @@ package wlgows
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"testing"
 )
 
 func TestNewConn(t *testing.T) {
-	netConn := newFakeConn(nil)
-	r := bufio.NewReader(netConn)
+	t.Run("builds a Conn from what it is given", func(t *testing.T) {
+		netConn := newFakeConn(nil)
+		r := bufio.NewReader(netConn)
+		w := bufio.NewWriterSize(netConn, 100)
 
-	wsConn := NewConn(netConn, r, false)
+		wsConn, err := NewConn(netConn, r, w, true)
+		if err != nil {
+			t.Fatalf("NewConn: %v", err)
+		}
+		if wsConn.Conn != net.Conn(netConn) {
+			t.Error("embedded net.Conn was not set")
+		}
+		if wsConn.reader != r {
+			t.Error("reader was not set")
+		}
+		if wsConn.writer != w {
+			t.Error("writer was not set")
+		}
+		if !wsConn.maskSendFrame {
+			t.Error("maskSendFrame was not set")
+		}
+		// Constructors are mandatory precisely because they populate di.
+		if wsConn.di.getFrameFromReader == nil || wsConn.di.newControlFrame == nil {
+			t.Error("NewConn must populate every di field")
+		}
+		if wsConn.di.writeLocker == nil || wsConn.di.readLocker == nil {
+			t.Error("NewConn must populate both lockers")
+		}
+	})
 
-	if wsConn.Conn != net.Conn(netConn) {
-		t.Error("embedded net.Conn was not set")
-	}
-	if wsConn.reader != r {
-		t.Error("reader was not set")
-	}
-	// Constructors are mandatory precisely because they populate di.
-	if wsConn.di.getFrameFromReader == nil || wsConn.di.newControlFrame == nil {
-		t.Error("NewConn must populate every di field")
-	}
-	if wsConn.di.writeLocker == nil || wsConn.di.readLocker == nil {
-		t.Error("NewConn must populate both lockers")
-	}
+	t.Run("a small writer that fails to flush returns no Conn", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		netConn := newFakeConn(nil)
+		netConn.writeErr = wantErr
+		w := bufio.NewWriterSize(netConn, 5)
+		w.WriteString("abc")
+
+		wsConn, err := NewConn(netConn, bufio.NewReader(netConn), w, true)
+		if !errors.Is(err, wantErr) || wsConn != nil {
+			t.Errorf("NewConn = %v, %v, want nil, %v", wsConn, err, wantErr)
+		}
+	})
 }
 
 // The lockers guard the socket against concurrent use. This asserts the read
 // seam is taken, and that the frame is read while the lock is actually held.
 func TestConnLocking(t *testing.T) {
 	t.Run("GetNextFrame locks", func(t *testing.T) {
-		locker := &fakeLocker{}
-		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
-		wsConn.di.readLocker = locker
+		var steps []string
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+		wsConn.di.readLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "read lock") },
+			unlock: func() { steps = append(steps, "read unlock") },
+		}
 		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) {
-			if !locker.held {
-				t.Error("the frame was read outside the lock")
-			}
+			steps = append(steps, "read")
 			return &Frame{}, nil
 		}
 
 		if _, err := wsConn.GetNextFrame(0); err != nil {
 			t.Fatalf("GetNextFrame: %v", err)
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d held=%v, want 1/1/0/false",
-				locker.locks, locker.unlocks, locker.misuse, locker.held)
+		if want := []string{"read lock", "read", "read unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
 	t.Run("GetNextFrame unlocks after a read error", func(t *testing.T) {
-		locker := &fakeLocker{}
-		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
-		wsConn.di.readLocker = locker
+		var steps []string
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+		wsConn.di.readLocker = fakeFuncLocker{
+			lock:   func() { steps = append(steps, "read lock") },
+			unlock: func() { steps = append(steps, "read unlock") },
+		}
 		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) {
+			steps = append(steps, "read")
 			return nil, errors.New("boom")
 		}
 
 		if _, err := wsConn.GetNextFrame(0); err == nil {
 			t.Fatal("GetNextFrame should have failed")
 		}
-		if !locker.ok(1) {
-			t.Errorf("locks=%d unlocks=%d misuse=%d held=%v — the lock must be released on the error path",
-				locker.locks, locker.unlocks, locker.misuse, locker.held)
+		if want := []string{"read lock", "read", "read unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q — the lock must be released on the error path", steps, want)
 		}
 	})
 }
@@ -75,7 +102,7 @@ func TestConnLocking(t *testing.T) {
 func TestConnGetNextFrame(t *testing.T) {
 	t.Run("delegates to di", func(t *testing.T) {
 		want := &Frame{FIN: true, Opcode: 1, PayloadData: []byte("x")}
-		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
 		var gotConn io.Reader
 		wsConn.di.getFrameFromReader = func(r io.Reader, _ uint64) (*Frame, error) {
 			gotConn = r
@@ -97,7 +124,7 @@ func TestConnGetNextFrame(t *testing.T) {
 	// The limit is the caller's, per call — nothing on Conn remembers it, so it
 	// has to arrive at the frame reader untouched.
 	t.Run("passes the max byte length straight through", func(t *testing.T) {
-		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
 		var got uint64
 		wsConn.di.getFrameFromReader = func(_ io.Reader, maxByteLength uint64) (*Frame, error) {
 			got = maxByteLength
@@ -116,7 +143,7 @@ func TestConnGetNextFrame(t *testing.T) {
 
 	t.Run("propagates the error", func(t *testing.T) {
 		want := errors.New("read failed")
-		wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), false)
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
 		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) { return nil, want }
 		if _, err := wsConn.GetNextFrame(0); !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
@@ -127,7 +154,7 @@ func TestConnGetNextFrame(t *testing.T) {
 func TestConnClose(t *testing.T) {
 	t.Run("closes the socket", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
+		wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 
 		if err := wsConn.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -141,7 +168,7 @@ func TestConnClose(t *testing.T) {
 		want := errors.New("close failed")
 		netConn := newFakeConn(nil)
 		netConn.closeErr = want
-		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
+		wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 
 		if err := wsConn.Close(); !errors.Is(err, want) {
 			t.Fatalf("err = %v, want %v", err, want)
@@ -157,174 +184,4 @@ func httptestRequest(t *testing.T) *http.Request {
 		t.Fatalf("http.NewRequest: %v", err)
 	}
 	return request
-}
-
-/*
-RFC 6455 5.1 gives each side one answer, so SendFrame brings the frame into line
-rather than sending what it was handed. Both directions matter: a client frame
-built unmasked has to gain a key, and a server frame built masked has to lose
-one — a server that masks is failed by the client just as surely.
-*/
-func TestConnSendFrameMatchesTheConnsMasking(t *testing.T) {
-	t.Run("client masks a frame built unmasked", func(t *testing.T) {
-		f, err := NewFrame(NewFrameConfig{PayloadData: []byte("hello"), Opcode: OpcodeText, FIN: true})
-		if err != nil {
-			t.Fatalf("NewFrame: %v", err)
-		}
-		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, bufio.NewReader(netConn), true)
-
-		if err := wsConn.SendFrame(f); err != nil {
-			t.Fatalf("SendFrame: %v", err)
-		}
-		if !f.Mask {
-			t.Error("Mask was not set")
-		}
-		if len(f.MaskingKey) != 4 {
-			t.Fatalf("MaskingKey is %d bytes, want 4 — Seal panics without it", len(f.MaskingKey))
-		}
-		// The wire carries masked bytes while PayloadData stays plaintext.
-		if string(f.PayloadData) != "hello" {
-			t.Errorf("PayloadData = %q, want it left plaintext", f.PayloadData)
-		}
-		if bytes.Contains(netConn.written(), []byte("hello")) {
-			t.Error("the payload reached the socket unmasked")
-		}
-	})
-
-	t.Run("server unmasks a frame built masked", func(t *testing.T) {
-		f, err := NewFrame(NewFrameConfig{PayloadData: []byte("hello"), Opcode: OpcodeText, Mask: true, FIN: true})
-		if err != nil {
-			t.Fatalf("NewFrame: %v", err)
-		}
-		netConn := newFakeConn(nil)
-		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-
-		if err := wsConn.SendFrame(f); err != nil {
-			t.Fatalf("SendFrame: %v", err)
-		}
-		if f.Mask {
-			t.Error("Mask was not cleared")
-		}
-		if f.MaskingKey != nil {
-			t.Errorf("MaskingKey = % x, want nil — a key without the bit is a frame no one can read", f.MaskingKey)
-		}
-		if !bytes.Contains(netConn.written(), []byte("hello")) {
-			t.Error("the payload did not reach the socket in plaintext")
-		}
-	})
-
-	// Already correct on both sides: nothing is touched.
-	t.Run("leaves a matching frame alone", func(t *testing.T) {
-		for _, maskSendFrame := range []bool{false, true} {
-			f, err := NewFrame(NewFrameConfig{
-				PayloadData: []byte("hello"), Opcode: OpcodeText, Mask: maskSendFrame, FIN: true,
-			})
-			if err != nil {
-				t.Fatalf("NewFrame: %v", err)
-			}
-			wantKey := f.MaskingKey
-			wsConn := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), maskSendFrame)
-
-			if err := wsConn.SendFrame(f); err != nil {
-				t.Fatalf("SendFrame: %v", err)
-			}
-			if f.Mask != maskSendFrame {
-				t.Errorf("maskSendFrame=%v: Mask became %v", maskSendFrame, f.Mask)
-			}
-			if !bytes.Equal(f.MaskingKey, wantKey) {
-				t.Errorf("maskSendFrame=%v: MaskingKey was replaced", maskSendFrame)
-			}
-		}
-	})
-}
-
-/*
-Every frame is sealed into the Conn's one write buffer. A big frame followed by
-a small one must put exactly the two frames on the wire — nothing of the big
-one may trail the small one.
-*/
-func TestConnSendFrameReusesTheWriteBuffer(t *testing.T) {
-	big, err := NewFrame(NewFrameConfig{PayloadData: bytes.Repeat([]byte("x"), 70000), Opcode: OpcodeBinary, FIN: true})
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	small, err := NewFrame(NewFrameConfig{PayloadData: []byte("hi"), Opcode: OpcodeText, FIN: true})
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-
-	for _, f := range []*Frame{big, small} {
-		if err := wsConn.SendFrame(f); err != nil {
-			t.Fatalf("SendFrame: %v", err)
-		}
-	}
-	want := append(big.Seal(nil), small.Seal(nil)...)
-	if !bytes.Equal(netConn.written(), want) {
-		t.Errorf("wrote %d bytes, want %d", len(netConn.written()), len(want))
-	}
-	if cap(wsConn.writeBuffer) < 70000 {
-		t.Errorf("writeBuffer cap = %d, want it kept at the big frame's size", cap(wsConn.writeBuffer))
-	}
-}
-
-/*
-RenewWriteBuffer is the only thing that gives the grown buffer back, and it
-takes writeLocker to do it, so it cannot race a send.
-*/
-func TestConnRenewWriteBuffer(t *testing.T) {
-	for _, testCase := range []struct {
-		capacity, wantCap int
-	}{
-		{0, 0},
-		{4096, 4096},
-		{-1, 0}, // negative is treated as 0, not a panic
-	} {
-		netConn, locker := newFakeConn(nil), &fakeLocker{}
-		wsConn := NewConn(netConn, bufio.NewReader(netConn), false)
-		wsConn.di.writeLocker = locker
-		wsConn.writeBuffer = make([]byte, 70000)
-
-		wsConn.RenewWriteBuffer(testCase.capacity)
-		if got := cap(wsConn.writeBuffer); got != testCase.wantCap {
-			t.Errorf("RenewWriteBuffer(%d): cap = %d, want %d", testCase.capacity, got, testCase.wantCap)
-		}
-		if len(wsConn.writeBuffer) != 0 {
-			t.Errorf("RenewWriteBuffer(%d): len = %d, want 0", testCase.capacity, len(wsConn.writeBuffer))
-		}
-		if !locker.ok(1) {
-			t.Errorf("RenewWriteBuffer(%d): writeLocker locks=%d unlocks=%d misuse=%d held=%v, want one paired lock",
-				testCase.capacity, locker.locks, locker.unlocks, locker.misuse, locker.held)
-		}
-	}
-}
-
-/*
-A key that cannot be generated must stop the send. Writing the frame anyway
-would put an unmasked frame from a client on the wire, which RFC 6455 5.1
-forbids and the server fails the connection on — the very thing masking here is
-for.
-*/
-func TestConnSendFrameStopsWhenTheKeyCannotBeMade(t *testing.T) {
-	wantErr := errors.New("no entropy")
-	f, err := NewFrame(NewFrameConfig{PayloadData: []byte("hello"), Opcode: OpcodeText, FIN: true})
-	if err != nil {
-		t.Fatalf("NewFrame: %v", err)
-	}
-
-	netConn := newFakeConn(nil)
-	wsConn := NewConn(netConn, bufio.NewReader(netConn), true)
-	wsConn.di.generateMaskingKey = func() ([]byte, error) { return nil, wantErr }
-
-	if err := wsConn.SendFrame(f); !errors.Is(err, wantErr) {
-		t.Errorf("SendFrame = %v, want %v", err, wantErr)
-	}
-	if len(netConn.written()) != 0 {
-		t.Errorf("%d bytes reached the socket after the key failed", len(netConn.written()))
-	}
-	if f.Mask {
-		t.Error("Mask was set even though there is no key — Seal would panic on this frame")
-	}
 }

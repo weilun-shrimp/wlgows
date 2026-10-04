@@ -190,8 +190,9 @@ func TestServerHandShake(t *testing.T) {
 	t.Run("real wiring upgrades a valid request and returns a Conn", func(t *testing.T) {
 		netConn := newFakeConn(nil)
 		r := bufio.NewReader(netConn)
+		w := bufio.NewWriter(netConn)
 		req := validClientHandShakeRequest(t)
-		conn, res, err := ServerHandShake(netConn, r, req)
+		conn, res, err := ServerHandShake(netConn, r, w, req)
 		if err != nil {
 			t.Fatalf("ServerHandShake: %v", err)
 		}
@@ -214,6 +215,9 @@ func TestServerHandShake(t *testing.T) {
 		if conn.maskSendFrame {
 			t.Error("a server Conn must not mask the frames it sends")
 		}
+		if conn.writer != w {
+			t.Error("the returned Conn should use the given *bufio.Writer")
+		}
 	})
 
 	t.Run("real wiring declines an invalid request and returns no Conn", func(t *testing.T) {
@@ -221,7 +225,7 @@ func TestServerHandShake(t *testing.T) {
 		r := bufio.NewReader(netConn)
 		req := validClientHandShakeRequest(t)
 		req.Method = "POST"
-		conn, res, err := ServerHandShake(netConn, r, req)
+		conn, res, err := ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)
 		if !errors.Is(err, ErrHttpMethodNotAllowed) {
 			t.Errorf("err = %v, want ErrHttpMethodNotAllowed", err)
 		}
@@ -232,54 +236,24 @@ func TestServerHandShake(t *testing.T) {
 			t.Error("expected no Conn when the handshake fails")
 		}
 	})
-}
 
-func TestSendHandShakeResponse(t *testing.T) {
-	t.Run("writes the plain http message", func(t *testing.T) {
-		w := &fakeIOWriter{}
-		err := sendHandShakeResponse(w, &http.Response{StatusCode: 101}, sendHandShakeResponseDI{
-			responseToPlainHTTPMsg: func(*http.Response) (string, error) {
-				return "HTTP/1.1 101 Switching Protocols\r\n\r\n", nil
-			},
-		})
-		if err != nil {
-			t.Fatalf("sendHandShakeResponse: %v", err)
-		}
-		if w.String() != "HTTP/1.1 101 Switching Protocols\r\n\r\n" {
-			t.Errorf("written = %q", w.String())
-		}
-	})
+	t.Run("real wiring returns NewConn's error with the response and no Conn", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		netConn := newFakeConn(nil)
+		writerConn := newFakeConn(nil)
+		writerConn.writeErr = wantErr
+		w := bufio.NewWriterSize(writerConn, 5) // small, so NewConn flushes it
+		w.WriteString("abc")
 
-	t.Run("rejects a nil response", func(t *testing.T) {
-		err := sendHandShakeResponse(&fakeIOWriter{}, nil, sendHandShakeResponseDI{
-			responseToPlainHTTPMsg: func(*http.Response) (string, error) {
-				t.Fatal("must not run for a nil response")
-				return "", nil
-			},
-		})
-		if !errors.Is(err, ErrHandshakeResponseNil) {
-			t.Errorf("err = %v, want %v", err, ErrHandshakeResponseNil)
+		conn, res, err := ServerHandShake(netConn, bufio.NewReader(netConn), w, validClientHandShakeRequest(t))
+		if !errors.Is(err, wantErr) {
+			t.Errorf("err = %v, want %v", err, wantErr)
 		}
-	})
-
-	t.Run("propagates a serialisation error", func(t *testing.T) {
-		want := errors.New("cannot serialise")
-		err := sendHandShakeResponse(&fakeIOWriter{}, &http.Response{}, sendHandShakeResponseDI{
-			responseToPlainHTTPMsg: func(*http.Response) (string, error) { return "", want },
-		})
-		if !errors.Is(err, want) {
-			t.Errorf("err = %v, want %v", err, want)
+		if res == nil || res.StatusCode != http.StatusSwitchingProtocols {
+			t.Error("expected the upgrade response that went out")
 		}
-	})
-
-	t.Run("propagates a write error", func(t *testing.T) {
-		want := errors.New("broken pipe")
-		w := &fakeIOWriter{err: want}
-		err := sendHandShakeResponse(w, &http.Response{}, sendHandShakeResponseDI{
-			responseToPlainHTTPMsg: func(*http.Response) (string, error) { return "x", nil },
-		})
-		if !errors.Is(err, want) {
-			t.Errorf("err = %v, want %v", err, want)
+		if conn != nil {
+			t.Error("expected no Conn when NewConn fails")
 		}
 	})
 }
@@ -402,6 +376,56 @@ func TestValidateHandShakeRequest(t *testing.T) {
 		request.Method = "DELETE"
 		if got := ValidateHandShakeRequest(request); !errors.Is(got, ErrHttpMethodNotAllowed) {
 			t.Errorf("err = %v, want the method error first", got)
+		}
+	})
+}
+
+func TestSendHandShakeResponse(t *testing.T) {
+	t.Run("writes the plain http message", func(t *testing.T) {
+		w := &fakeIOWriter{}
+		err := sendHandShakeResponse(w, &http.Response{StatusCode: 101}, sendHandShakeResponseDI{
+			responseToPlainHTTPMsg: func(*http.Response) (string, error) {
+				return "HTTP/1.1 101 Switching Protocols\r\n\r\n", nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("sendHandShakeResponse: %v", err)
+		}
+		if w.String() != "HTTP/1.1 101 Switching Protocols\r\n\r\n" {
+			t.Errorf("written = %q", w.String())
+		}
+	})
+
+	t.Run("rejects a nil response", func(t *testing.T) {
+		err := sendHandShakeResponse(&fakeIOWriter{}, nil, sendHandShakeResponseDI{
+			responseToPlainHTTPMsg: func(*http.Response) (string, error) {
+				t.Fatal("must not run for a nil response")
+				return "", nil
+			},
+		})
+		if !errors.Is(err, ErrHandshakeResponseNil) {
+			t.Errorf("err = %v, want %v", err, ErrHandshakeResponseNil)
+		}
+	})
+
+	t.Run("propagates a serialisation error", func(t *testing.T) {
+		want := errors.New("cannot serialise")
+		err := sendHandShakeResponse(&fakeIOWriter{}, &http.Response{}, sendHandShakeResponseDI{
+			responseToPlainHTTPMsg: func(*http.Response) (string, error) { return "", want },
+		})
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
+		}
+	})
+
+	t.Run("propagates a write error", func(t *testing.T) {
+		want := errors.New("broken pipe")
+		w := &fakeIOWriter{err: want}
+		err := sendHandShakeResponse(w, &http.Response{}, sendHandShakeResponseDI{
+			responseToPlainHTTPMsg: func(*http.Response) (string, error) { return "x", nil },
+		})
+		if !errors.Is(err, want) {
+			t.Errorf("err = %v, want %v", err, want)
 		}
 	})
 }

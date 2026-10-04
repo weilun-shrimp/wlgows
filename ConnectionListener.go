@@ -50,7 +50,7 @@ RFC6455CloseHook answers a close frame and stops l.
 
 RFC 6455 5.5.1: an endpoint that receives a close and has not sent one MUST
 answer with a close, SHOULD echo the status code, and MUST NOT process anything
-further. CloseSent is what decides the first — if this side opened the
+further. ErrCloseAlreadySent is what decides the first — if this side opened the
 handshake, the frame in hand is the peer's answer and answering it again would
 put a second close on the wire.
 

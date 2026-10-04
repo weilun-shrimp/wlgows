@@ -18,8 +18,8 @@ and only fail here.
 */
 func TestListenerIntegration(t *testing.T) {
 	// net.Pipe is a real net.Conn without a port or a network stack, so the
-	// frame reader, Seal and masking all run for real while the test stays
-	// synchronous.
+	// frame reader, the send path and masking all run for real while the test
+	// stays synchronous.
 	netConn, peer := net.Pipe()
 	defer netConn.Close()
 
@@ -27,13 +27,9 @@ func TestListenerIntegration(t *testing.T) {
 	go func() {
 		defer peer.Close()
 
+		peerConn, _ := NewConn(peer, bufio.NewReader(peer), bufio.NewWriter(peer), true)
 		write := func(config NewFrameConfig) {
-			config.Mask = true
-			frame, err := NewFrame(config)
-			if err != nil {
-				return
-			}
-			peer.Write(frame.Seal(nil))
+			peerConn.SendFrame(NewFrame(config))
 		}
 
 		write(NewFrameConfig{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hello")})
@@ -49,7 +45,7 @@ func TestListenerIntegration(t *testing.T) {
 		})
 	}()
 
-	conn := NewConn(netConn, bufio.NewReader(netConn), false)
+	conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
 	defer conn.Close()
 
 	listener := NewListener(conn)

@@ -1,8 +1,9 @@
 // An interactive client for the echo server. Type a line, it goes out as a text
 // message, and whatever comes back is printed. Type "exit" to close cleanly.
 //
-//	go run ./example/echo     # in one terminal
-//	go run ./example/client   # in another
+//	cd example
+//	go run ./echo     # in one terminal
+//	go run ./client   # in another
 //
 // Reading is a wlgows.Listener on its own goroutine, so pings are answered while
 // the main goroutine sits blocked on the keyboard. Only PeerIsClient differs
@@ -18,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v5"
-	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
 )
 
 const (
@@ -62,7 +63,7 @@ func main() {
 	defer netConn.Close()
 
 	r := bufio.NewReader(netConn)
-	conn, _, err := wlgows.ClientHandShake(netConn, r, req)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return

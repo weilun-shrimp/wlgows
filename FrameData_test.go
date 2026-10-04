@@ -9,8 +9,8 @@ func TestNewDataFrame(t *testing.T) {
 	// A control opcode slipping through would build a frame with no 125 byte cap
 	// and no forced FIN, which RFC 6455 5.5 requires of every control frame.
 	//
-	// 0x10 and 0x80 are not opcodes at all: the field is 4 bits and Seal masks
-	// with &15, so accepting them would emit a continuation frame.
+	// 0x10 and 0x80 are not opcodes at all: the field is 4 bits and the sealed
+	// header masks with &15, so accepting them would emit a continuation frame.
 	t.Run("refuses anything that is not continuation, text or binary", func(t *testing.T) {
 		for _, opcode := range []byte{
 			OpcodeClose, OpcodePing, OpcodePong, // control
@@ -60,8 +60,8 @@ func TestNewDataFrame(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewDataFrame: %v", err)
 		}
-		if f.GetMaxPayloadLength() != uint64(len(payload)) {
-			t.Errorf("payload length = %d, want %d", f.GetMaxPayloadLength(), len(payload))
+		if len(f.PayloadData) != len(payload) {
+			t.Errorf("payload length = %d, want %d", len(f.PayloadData), len(payload))
 		}
 	})
 }

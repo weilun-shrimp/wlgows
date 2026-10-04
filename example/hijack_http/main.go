@@ -1,9 +1,10 @@
 // The same echo server, but reached through net/http instead of raw TCP.
-// HijackFromHttp takes the connection off http.Server after routing, so the
+// http.Hijacker takes the connection off http.Server after routing, so the
 // WebSocket lives on a handler's own goroutine.
 //
-//	go run ./example/hijack_http   # in one terminal
-//	go run ./example/client        # in another
+//	cd example
+//	go run ./hijack_http   # in one terminal
+//	go run ./client        # in another
 //
 // Set the cert paths that LoadServerTlsInfo reads to serve wss:// instead.
 package main
@@ -14,8 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/v5"
-	"github.com/weilun-shrimp/wlgows/v5/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
 )
 
 const (
@@ -56,7 +57,12 @@ func main() {
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
-	netConn, bufReader, err := wlgows.HijackFromHttp(w)
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
+		return
+	}
+	netConn, bufRW, err := hijacker.Hijack()
 	if err != nil {
 		// Still an ordinary response: the hijack failed, so nothing was taken.
 		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
@@ -67,8 +73,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	// function return rather than closing underneath it.
 	defer netConn.Close()
 
-	// r is already parsed by net/http, so no read step is needed here.
-	conn, _, err := wlgows.ServerHandShake(netConn, bufReader, r)
+	// r is already parsed by net/http, so no read step is needed here. Pass
+	// bufRW.Reader, not a new reader: net/http may have buffered the start of
+	// the first frame in it.
+	// bufRW.Writer reuses net/http's writer; bufio.NewWriterSize(netConn, size) works too.
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, r)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return

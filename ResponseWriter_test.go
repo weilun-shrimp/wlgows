@@ -44,40 +44,6 @@ func TestResponseWriterHeaderAndWriteHeader(t *testing.T) {
 	}
 }
 
-func TestResponseWriterGenerateResponse(t *testing.T) {
-	writer := NewResponseWriter()
-	writer.WriteHeader(http.StatusSwitchingProtocols)
-	writer.Header().Set("Upgrade", "websocket")
-
-	response := writer.GenerateResponse()
-
-	if response.Proto != "HTTP/1.1" || response.ProtoMajor != 1 || response.ProtoMinor != 1 {
-		t.Errorf("proto = %s %d.%d", response.Proto, response.ProtoMajor, response.ProtoMinor)
-	}
-	if response.StatusCode != 101 {
-		t.Errorf("StatusCode = %d, want 101", response.StatusCode)
-	}
-	if response.Header.Get("Upgrade") != "websocket" {
-		t.Errorf("Upgrade header = %q", response.Header.Get("Upgrade"))
-	}
-	if response.Header.Get("Content-Length") != "0" {
-		t.Errorf("Content-Length = %q, want %q", response.Header.Get("Content-Length"), "0")
-	}
-	// No body was written, so Content-Type is left unset.
-	if response.Header.Get("Content-Type") != "" {
-		t.Errorf("Content-Type = %q, want empty", response.Header.Get("Content-Type"))
-	}
-}
-
-func TestResponseWriterGenerateResponseKeepsExplicitContentLength(t *testing.T) {
-	writer := NewResponseWriter()
-	writer.Header().Set("Content-Length", "42")
-	response := writer.GenerateResponse()
-	if response.Header.Get("Content-Length") != "42" {
-		t.Errorf("Content-Length = %q, want the caller's 42", response.Header.Get("Content-Length"))
-	}
-}
-
 func TestResponseWriterWrittenBodyAppearsInResponse(t *testing.T) {
 	writer := NewResponseWriter()
 	writer.WriteHeader(http.StatusBadRequest)
@@ -144,6 +110,40 @@ func TestResponseWriterMultipleWritesAccumulate(t *testing.T) {
 	}
 	if string(body) != "hello world" {
 		t.Errorf("body = %q, want %q", body, "hello world")
+	}
+}
+
+func TestResponseWriterGenerateResponse(t *testing.T) {
+	writer := NewResponseWriter()
+	writer.WriteHeader(http.StatusSwitchingProtocols)
+	writer.Header().Set("Upgrade", "websocket")
+
+	response := writer.GenerateResponse()
+
+	if response.Proto != "HTTP/1.1" || response.ProtoMajor != 1 || response.ProtoMinor != 1 {
+		t.Errorf("proto = %s %d.%d", response.Proto, response.ProtoMajor, response.ProtoMinor)
+	}
+	if response.StatusCode != 101 {
+		t.Errorf("StatusCode = %d, want 101", response.StatusCode)
+	}
+	if response.Header.Get("Upgrade") != "websocket" {
+		t.Errorf("Upgrade header = %q", response.Header.Get("Upgrade"))
+	}
+	if response.Header.Get("Content-Length") != "0" {
+		t.Errorf("Content-Length = %q, want %q", response.Header.Get("Content-Length"), "0")
+	}
+	// No body was written, so Content-Type is left unset.
+	if response.Header.Get("Content-Type") != "" {
+		t.Errorf("Content-Type = %q, want empty", response.Header.Get("Content-Type"))
+	}
+}
+
+func TestResponseWriterGenerateResponseKeepsExplicitContentLength(t *testing.T) {
+	writer := NewResponseWriter()
+	writer.Header().Set("Content-Length", "42")
+	response := writer.GenerateResponse()
+	if response.Header.Get("Content-Length") != "42" {
+		t.Errorf("Content-Length = %q, want the caller's 42", response.Header.Get("Content-Length"))
 	}
 }
 

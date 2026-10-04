@@ -11,12 +11,12 @@ type Frame struct {
 	RSV1                  bool
 	RSV2                  bool
 	RSV3                  bool
-	Opcode                byte // 7 bit, 1 => text, 2 => byte, 8 => close, 9 => ping, A(10) => pong
-	Mask                  bool
-	PayloadLength         byte
-	ExtendedPayloadLength uint64
-	MaskingKey            []byte // mask == 1
-	PayloadData           []byte // always unmasked
+	Opcode                byte    // 4 bit: 0 continuation, 1 text, 2 binary, 8 close, 9 ping, A(10) pong
+	Mask                  bool    // as read; a send sets it from the Conn's side
+	PayloadLength         byte    // as read; a send rewrites it from len(PayloadData)
+	ExtendedPayloadLength uint64  // as read; a send rewrites it from len(PayloadData)
+	MaskingKey            [4]byte // as read; a client's send draws a fresh one
+	PayloadData           []byte  // always unmasked: a read unmasks it, a send masks a copy
 }
 
 func (f *Frame) GetMaxPayloadLength() uint64 {
@@ -34,33 +34,28 @@ func boolToInt(data bool) uint8 {
 	return 0
 }
 
-/*
-Seal writes the frame, in wire format, into buffer and returns it.
+// getHeaderSize is the wire size of the header: 2 bytes, plus the extended
+// length (2 or 8) and the masking key (4) when present.
+func (f *Frame) getHeaderSize() int {
+	size := 2
+	switch f.PayloadLength {
+	case 126:
+		size += 2
+	case 127:
+		size += 8
+	}
+	if f.Mask {
+		size += 4
+	}
+	return size
+}
 
-buffer is emptied first and then overwritten, so whatever it held before is
-gone. It may be nil or make([]byte, 0): it grows when the frame needs more room.
-Keep the returned slice and pass it back next time, and its capacity is reused
-so that Seal allocates nothing:
+// appendSealedHeader appends the wire header to buffer and returns it; keep the
+// result, it may be a new array. nil is fine.
+func (f *Frame) appendSealedHeader(buffer []byte) []byte {
+	buffer = slices.Grow(buffer, f.getHeaderSize())
 
-	buffer = f.Seal(buffer)
-
-The returned slice may be a new array, so always keep it — the one passed in
-is only the starting point. Its bytes are valid until the next Seal into it.
-
-A one-off frame needs no buffer at all:
-
-	wire := f.Seal(nil)
-
-The payload written is PayloadData, whole, masked with MaskingKey when Mask is
-set. PayloadData itself is never modified — masking is applied to the copy in
-the returned slice.
-*/
-func (f *Frame) Seal(buffer []byte) []byte {
-	// Empty it, then make room once: 14 is the longest header
-	// (2 + 8 extended length + 4 masking key).
-	result := slices.Grow(buffer[:0], 14+len(f.PayloadData))
-
-	result = append(result,
+	buffer = append(buffer,
 		// Byte 0: FIN, RSV1-3, then the 4 bit opcode.
 		boolToInt(f.FIN)<<7|
 			boolToInt(f.RSV1)<<6|
@@ -73,31 +68,30 @@ func (f *Frame) Seal(buffer []byte) []byte {
 	)
 	switch f.PayloadLength {
 	case 126:
-		result = binary.BigEndian.AppendUint16(result, uint16(f.ExtendedPayloadLength))
+		buffer = binary.BigEndian.AppendUint16(buffer, uint16(f.ExtendedPayloadLength))
 	case 127:
-		result = binary.BigEndian.AppendUint64(result, f.ExtendedPayloadLength)
+		buffer = binary.BigEndian.AppendUint64(buffer, f.ExtendedPayloadLength)
 	}
 	if f.Mask {
-		result = append(result, f.MaskingKey...)
+		buffer = append(buffer, f.MaskingKey[:]...)
 	}
+	return buffer
+}
 
-	payloadStart := len(result)
-	result = append(result, f.PayloadData...)
-	if f.Mask {
-		// 8 bytes at a time with the key repeated twice, then the tail byte by
-		// byte. Every step is a multiple of 4, so the tail starts on key[0].
-		payload := result[payloadStart:]
-		key := uint64(binary.LittleEndian.Uint32(f.MaskingKey))
-		key |= key << 32
-		for len(payload) >= 8 {
-			binary.LittleEndian.PutUint64(payload, binary.LittleEndian.Uint64(payload)^key)
-			payload = payload[8:]
-		}
-		for i := range payload {
-			payload[i] ^= f.MaskingKey[i&3]
-		}
+// MaskPayload XORs payload in place with maskingKey, starting on maskingKey[0].
+// Masking is its own inverse: the same call unmasks.
+func MaskPayload(payload []byte, maskingKey [4]byte) {
+	// 8 bytes at a time with the key repeated twice, then the tail byte by
+	// byte. Every step is a multiple of 4, so the tail starts on key[0].
+	key := uint64(binary.LittleEndian.Uint32(maskingKey[:]))
+	key |= key << 32
+	for len(payload) >= 8 {
+		binary.LittleEndian.PutUint64(payload, binary.LittleEndian.Uint64(payload)^key)
+		payload = payload[8:]
 	}
-	return result
+	for i := range payload {
+		payload[i] ^= maskingKey[i&3]
+	}
 }
 
 /*
@@ -109,89 +103,68 @@ omits it gets a frame the peer will wait for a continuation of — set it on eve
 single frame message.
 */
 type NewFrameConfig struct {
-	// Data is the payload, carried whole. Empty is legal: a zero length frame
+	// PayloadData is the payload, carried whole. Empty is legal: a zero length frame
 	// is how an empty text message or a bare close goes out.
 	PayloadData []byte
 	// Opcode is 1 text, 2 binary, 8 close, 9 ping, 0xA pong, 0 continuation.
 	Opcode uint8
-	// Mask must be true on a frame a client sends and may be false on one a
-	// server sends (RFC 6455 5.1).
-	Mask bool
 	// FIN marks this as the final frame of its message.
 	FIN bool
 }
 
 /*
-NewFrame builds one frame, encoding the payload length the way RFC 6455 5.2
-requires: inline up to 125 bytes, a 16 bit extended length up to 65535, a 64 bit
-one above that.
+NewFrame builds one frame.
 
 A single frame message sets FIN:
 
-	f, _ := wlgows.NewFrame(wlgows.NewFrameConfig{
-		Data: []byte("hello"), Opcode: 1, Mask: true, FIN: true,
+	f := wlgows.NewFrame(wlgows.NewFrameConfig{
+		PayloadData: []byte("hello"), Opcode: 1, FIN: true,
 	})
 
 Fragmenting means leaving FIN off every frame but the last, and giving the
 continuation frames opcode 0:
 
-	head, _ := wlgows.NewFrame(wlgows.NewFrameConfig{Data: a, Opcode: 1, Mask: true})
-	tail, _ := wlgows.NewFrame(wlgows.NewFrameConfig{Data: b, Opcode: 0, Mask: true, FIN: true})
+	head := wlgows.NewFrame(wlgows.NewFrameConfig{PayloadData: a, Opcode: 1})
+	tail := wlgows.NewFrame(wlgows.NewFrameConfig{PayloadData: b, Opcode: 0, FIN: true})
 
-Masking is applied by Seal, not here — MaskingKey is generated and stored while
-PayloadData stays readable.
+Masking and the length fields are left unset: the Conn settles both when it
+sends — see SendFrame.
 */
-func NewFrame(config NewFrameConfig) (*Frame, error) {
-	return newFrame(config, newFrameDI{
-		generateMaskingKey: GenerateMaskingKey,
-	})
+func NewFrame(config NewFrameConfig) *Frame {
+	return &Frame{FIN: config.FIN, Opcode: config.Opcode, PayloadData: config.PayloadData}
 }
 
-type newFrameDI struct {
-	generateMaskingKey func() ([]byte, error)
-}
-
-func newFrame(config NewFrameConfig, di newFrameDI) (*Frame, error) {
-	f := &Frame{FIN: config.FIN, Opcode: config.Opcode, PayloadData: config.PayloadData}
-	if config.Mask {
-		f.Mask = true
-		key, err := di.generateMaskingKey()
-		if err != nil {
-			return f, err
-		}
-		f.MaskingKey = key
-	}
-
-	dataLength := uint64(len(config.PayloadData))
+// fillPayloadLength encodes len(PayloadData) the way RFC 6455 5.2 requires:
+// inline up to 125 bytes, a 16 bit extended length up to 65535, a 64 bit one
+// above that.
+func (f *Frame) fillPayloadLength() {
+	dataLength := uint64(len(f.PayloadData))
 	switch {
-	case dataLength <= uint64(125):
+	case dataLength <= 125:
 		f.PayloadLength = uint8(dataLength)
-	case dataLength <= uint64(65535):
-		f.PayloadLength = uint8(126)
+		f.ExtendedPayloadLength = 0
+	case dataLength <= 65535:
+		f.PayloadLength = 126
 		f.ExtendedPayloadLength = dataLength
 	default:
-		f.PayloadLength = uint8(127)
+		f.PayloadLength = 127
 		f.ExtendedPayloadLength = dataLength
 	}
-	return f, nil
 }
 
-// 生成WebSocket的掩码密钥
-func GenerateMaskingKey() ([]byte, error) {
-	return generateMaskingKey(generateMaskingKeyDI{
+// FillMaskingKey fills key with 4 random bytes; on error its contents are unspecified.
+func FillMaskingKey(key *[4]byte) error {
+	return fillMaskingKey(key, fillMaskingKeyDI{
 		randRead: rand.Read,
 	})
 }
 
-type generateMaskingKeyDI struct {
+type fillMaskingKeyDI struct {
 	randRead func(b []byte) (n int, err error)
 }
 
-func generateMaskingKey(di generateMaskingKeyDI) ([]byte, error) {
-	key := make([]byte, 4) // WebSocket规范要求4个字节的掩码密钥
-	_, err := di.randRead(key)
-	if err != nil {
-		return nil, err
-	}
-	return key, nil
+// fillMaskingKey overwrites key; on error its contents are unspecified.
+func fillMaskingKey(key *[4]byte, di fillMaskingKeyDI) error {
+	_, err := di.randRead(key[:]) // WebSocket规范要求4个字节的掩码密钥
+	return err
 }
