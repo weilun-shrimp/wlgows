@@ -51,7 +51,7 @@ type Listener struct {
 	// on what the slice happens to hold. It is also what says a message is open
 	// at all, which the frames cannot answer with a Data hook set.
 	currentDataFrameCount uint64
-	currentDataAccLength  uint64
+	currentDataFramesSize uint64
 	// The message's type, from its first frame — 5.4 makes it the type of every
 	// fragment after it. See GetCurrentMsgOpcode.
 	currentDataFrameOpcode byte
@@ -127,29 +127,33 @@ func (l *Listener) GetCurrentMsgOpcode() byte {
 nextFrameByteLimit is what the next frame is allowed to declare.
 
 The opcode is not known until the frame has been read, so one number has to
-serve both classes. Data frames get whatever is left of MaxMsgPayloadByteLen;
+serve both classes. Data frames get whatever is left of MaxDataFramesSize;
 control frames get their RFC 6455 5.5 allowance of 125, which a ping arriving
 late in a large message still needs. The larger of the two is passed, and the
 class that overshoots is caught once the opcode is known.
 
+The limit applies to the payload only, since the header is already read when it
+is checked. routeFrame adds the header to the budget and refuses a frame it
+pushes over.
+
 0 means no limit, which is the caller's decision to make.
 */
 func (l *Listener) nextFrameByteLimit() uint64 {
-	maxMsgPayloadByteLen := l.GetConfig().MaxMsgPayloadByteLen
+	maxDataFramesSize := l.GetConfig().MaxDataFramesSize
 
-	if maxMsgPayloadByteLen == 0 {
+	if maxDataFramesSize == 0 {
 		return 0
 	}
 	// Guarded, not just subtracted. Pausing mid message and lowering
-	// MaxMsgPayloadByteLen before starting again leaves currentDataAccLength above
-	// the new budget with nothing having gone wrong, and an unguarded uint64
-	// subtraction would wrap to ~1.8e19 there — handing back a limit larger
-	// than the one just tightened.
-	if l.currentDataAccLength > maxMsgPayloadByteLen {
+	// MaxDataFramesSize before starting again leaves currentDataFramesSize
+	// above the new budget with nothing having gone wrong, and an unguarded
+	// uint64 subtraction would wrap to ~1.8e19 there — handing back a limit
+	// larger than the one just tightened.
+	if l.currentDataFramesSize > maxDataFramesSize {
 		return ControlFramePayloadMaxByteLength
 	}
 	return max(
-		maxMsgPayloadByteLen-l.currentDataAccLength, // Remain
+		maxDataFramesSize-l.currentDataFramesSize, // Remain
 		ControlFramePayloadMaxByteLength,
 	)
 }

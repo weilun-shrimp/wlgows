@@ -37,7 +37,7 @@ bounds check。如果你清楚自己在做什麼，你自己的程式可以更�
 - [Installation](#installation)
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — 三個 echo server、一個 client，以及一組 streaming 範例
-- [從 v5 升級](#從-v5-升級) · [從 v4 升級](#從-v4-升級) — [Streaming 的 End 不再釋放連線](#streaming-的-end-不再釋放連線)
+- [從 v6 升級](#從-v6-升級)
 - [Design](#design)
 - [記憶體 vs. 速度](#記憶體-vs-速度自己決定-buffer-的大小) — [Reader](#reader) · [Writer](#writer) · [最小的連線](#最小的連線)
 - [Benchmark 比較](#benchmark-比較) — 與 gorilla/websocket 和 gobwas/ws 比較
@@ -55,10 +55,10 @@ bounds check。如果你清楚自己在做什麼，你自己的程式可以更�
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v6
+go get github.com/weilun-shrimp/wlgows/v7
 ```
 
-依照 Go 對 major version 2 以上的規定，import path 需要加上 `/v6` 後綴；package
+依照 Go 對 major version 2 以上的規定，import path 需要加上 `/v7` 後綴；package
 名稱仍然是 `wlgows`，所以程式中的寫法依然是 `wlgows.Dial(...)`。
 
 ## Quick Start
@@ -75,7 +75,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 func main() {
@@ -114,7 +114,7 @@ func handle(netConn net.Conn) {
 
 	// SetConfig 會整份替換設定，所以請從標準 hook 設好的那份開始修改。
 	config := listener.GetConfig()
-	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
+	config.MaxDataFramesSize = 10 * 1024 * 1024
 	config.Text = func(frames wlgows.Frames) {
 		conn.SendText(frames.Bytes(), 0) // echo
 	}
@@ -146,7 +146,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 func main() {
@@ -167,7 +167,7 @@ func main() {
 	listener := conn.NewStandardListener()
 
 	config := listener.GetConfig() // 標準 hook 設好的那份
-	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
+	config.MaxDataFramesSize = 10 * 1024 * 1024
 	config.Text = func(frames wlgows.Frames) {
 		log.Println("received:", frames.String())
 	}
@@ -265,100 +265,46 @@ go run ./stream_client   # 另開一個終端機，按兩次 Enter 就會傳送 
 完成 close handshake、擋下 RFC 6455 不允許的 frame，而這些邏輯都不會出現在範例的
 程式碼裡。每個檔案留下的，就只有你本來就要寫的部分：hook。
 
-## 從 v5 升級
+## 從 v6 升級
 
-v6 改變了 `Conn` 寫出的方式。每個 frame 現在都經過一個固定大小、每條連線由你決定
-大小的 `bufio.Writer`，所以小 frame 會共用一次 socket 寫入，而 client 是對一份複本
-加上 mask，不再動你的 payload。大部分改動都會以編譯錯誤的形式出現：
+v7 直接從你的 `bufio.Reader` 讀出 frame header，所以讀一個 frame 只會配置 `Frame`
+和它的 payload；Listener 的上限也依照它們實際計算的東西重新命名。`Conn` 的程式碼不用
+改。直接呼叫 frame reader 的地方，以及用到改名項目的程式碼，會編譯失敗：
 
-| v5 | v6 |
+| v6 | v7 |
 |---|---|
-| `go get .../wlgows/v5` | `go get github.com/weilun-shrimp/wlgows/v6` |
-| `wlgows.ServerHandShake(netConn, r, req)` | `wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)` |
-| `wlgows.ClientHandShake(netConn, r, req)` | `wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)` |
-| `c := wlgows.NewConn(netConn, r, mask)` | `c, err := wlgows.NewConn(netConn, r, bufio.NewWriter(netConn), mask)` |
-| `conn.RenewWriteBuffer(capacity)` | `err := conn.RenewWriter(bufio.NewWriterSize(conn, size))` —— 見下方 |
-| `wlgows.HijackFromHttp(w)` | `w.(http.Hijacker).Hijack()`，再傳入 `bufRW.Reader` 與 `bufRW.Writer` —— 見 [HTTP Hijacking](#http-hijacking) |
-| `wlgows.HijackFromGin(c)` | `c.Writer.Hijack()`，用法相同 |
-| `f, err := wlgows.NewFrame(config)` | `f := wlgows.NewFrame(config)` —— 不再回傳 error |
-| `NewFrameConfig{..., Mask: true}`、`NewControlFrameConfig{..., Mask: true}` | 拿掉 `Mask`：`Conn` 會在傳送時加上 mask |
-| `wire := frame.Seal(buffer)` | 已移除：用 `conn.SendFrame(frame)` 送出 |
-| `wlgows.GenerateMaskingKey()` | `wlgows.FillMaskingKey(&f.MaskingKey)` —— `MaskingKey` 是 `[4]byte` |
+| `go get .../wlgows/v6` | `go get github.com/weilun-shrimp/wlgows/v7` |
+| `wlgows.GetFrameFromReader(netConn, max)` | `wlgows.GetFrameFromReader(r, max)`，其中 `r := bufio.NewReader(netConn)`。每條連線只用同一個 `r`：它保存著已經讀進來的 bytes。 |
+| `wlgows.ReadFromReader(r, length)` | 已移除：`buffer := make([]byte, length)`，再 `io.ReadFull(r, buffer)` |
+| `ListenerConfig{MaxMsgFrameCount: n}` | `ListenerConfig{MaxDataFrameCount: n}` |
+| `ListenerConfig{MaxMsgPayloadByteLen: n}` | `ListenerConfig{MaxDataFramesSize: n}` |
+| `wlgows.ErrMsgFrameCountExceeded` | `wlgows.ErrDataFrameCountExceeded` |
 
-不會造成編譯錯誤、但行為改變的地方：
+不會出現編譯錯誤、但行為改變的地方：
 
-- **write buffer 不再變大，也不再清空。** 在 v5 中，buffer 會長到送過的最大
-  frame，而 `RenewWriteBuffer(0)` 會把它清空。在 v6 中，它就是你傳入的
-  `bufio.Writer`，大小固定，由 `RenewWriter` 更換。最小是 14。見
-  [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
-- **`chunkSize` 不再決定記憶體用量。** 它只決定 frame 在哪裡切開。
-- **`SendFrame` 會拒絕更多東西。** 在這一端送出 close 之後的 data frame 或第二個
-  close 會回傳 `ErrCloseAlreadySent`，超過 125 byte 的 control payload 會回傳
-  `ErrControlFramePayloadTooLong`，兩者都什麼都不寫出。它也會設定 length 欄位、
-  control frame 的 FIN，以及在 client 上每次傳送都換一把新的 masking key（5.3）；
-  v5 則會沿用 frame 上已有的 key。
-- **範例是獨立的 module**，所以 library 本身沒有任何相依。請在 `example/` 裡執行。
-
-## 從 v4 升級
-
-請一併看過 [從 v5 升級](#從-v5-升級)：下方是 v4 到 v5，上方是 v5 到 v6。
-
-大部分 v4 的程式碼在 v5 下會編譯失敗，而編譯器會指出每一個需要修改的地方。只有一個
-改動照樣能編譯，然後卡住：請先讀
-[Streaming 的 End 不再釋放連線](#streaming-的-end-不再釋放連線)。
-
-| v4 | v5 與 v6 |
-|---|---|
-| `conn.SendText(text)` | `conn.SendText(text, 0)` —— 0 代表以一個 frame 送出，和 v4 相同 |
-| `conn.SendBinary(data)` | `conn.SendBinary(data, 0)` |
-| `defer conn.EndLongDataTransmission()` | `defer conn.ReleaseLongDataTransmission()`，成功時再 `return conn.EndLongDataTransmission(nil)` |
-
-v5 新增的：
-
-- `conn.SendData(opcode, payload, chunkSize)` 送出一則在執行時才決定 opcode 的
-  message。
-- `SendText`、`SendBinary` 與 `SendData` 的 `chunkSize`，會把 message 切成每個
-  payload 為該 byte 數的 frame。
-- `conn.ReleaseLongDataTransmission()` 在串流結束後釋放連線。
-
-### Streaming 的 End 不再釋放連線
-
-在 v4 中，`EndLongDataTransmission` 會送出 FIN 並釋放連線，所以一般的寫法會 defer
-它。在 v5 中，它只送出 FIN，釋放連線則由 `ReleaseLongDataTransmission` 負責。
-
-最直覺的一字修改可以編譯，但是錯的：
-
-```go
-defer conn.EndLongDataTransmission(nil) // 可以編譯，但永遠不會釋放連線
-```
-
-第一次串流會正常運作，但之後這條連線上的每一個 data 傳送都會永遠等下去。請改成：
-
-```go
-if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
-	return err
-}
-defer conn.ReleaseLongDataTransmission()
-
-// ... 每個 chunk 呼叫 TransmitData，出錯就 return ...
-
-return conn.EndLongDataTransmission(nil)
-```
-
-另外兩個行為上的改變：
-
-- **失敗的串流不再被當成完整的 message 送達。** 在 v4 中，chunk 失敗後被 defer 的
-  End 仍會送出 FIN，所以對方會把被截斷的 message 當成完整的收下。在 v5 中，除非你
-  走到 End，否則不會送出 FIN。失敗後請關閉連線。
-- **Start 之後什麼都沒送就 End，現在會送出一則空的 message。** v4 什麼都不送。
-  RFC 6455 允許空的 message。
+- **`io.EOF` 現在只代表 stream 在兩個 frame 之間結束。** 如果 stream 在 frame 的第一個
+  byte 之後才結束，會回傳 `io.ErrUnexpectedEOF`。在 v6 中，frame 剛好在前 2 個 bytes
+  之後、或剛好在 header 之後被截斷時，回傳的是 `io.EOF`。
+- **64 bit 長度的最高位元（most significant bit）為 1 時，會回傳
+  `ErrPayloadLengthMSBSet`。** RFC 6455 5.2 禁止這個位元為 1。
+  `StandardClosePayloadFor` 已經把它對應到 1002，所以像範例那樣送出它回傳值的迴圈，
+  不需要任何修改。在 v6 中，這樣的 frame 會讓 `make` panic。
+- **`MaxDataFramesSize` 現在連 frame header 也一起計算。** 每個 data frame 除了
+  payload，也會扣掉它 2 到 14 byte 的 header，空的 continuation frame 也一樣。在 v6
+  中只計算 payload，所以原本剛好放得下的 message 現在可能會被拒絕。請在你接受的最大
+  message 之上多留一點空間。
+- **空的 continuation frame 不再被丟掉。** `Text`、`Binary` 和 `Data` 會依抵達順序
+  收到這個 message 的每一個 frame，每一個也都會算進 `MaxDataFrameCount`。在 v6 中，
+  message 中間的空 frame 會被直接略過。
+- **`TransmitData` 會把空的 chunk 以空的 frame 送出。** 在 v6 中它會被略過。如果你不想
+  送出那個 frame，請像 streaming 範例那樣先檢查長度。
 
 ## Design
 
 **單一 package。** 所有功能都在根目錄的 `wlgows` package 中：
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v6"
+import "github.com/weilun-shrimp/wlgows/v7"
 
 netConn, req, _ := wlgows.Dial(url, nil)
 s, _             := wlgows.Run(":8001")
@@ -478,10 +424,10 @@ goroutine。不包含 `net.Conn` 本身與作業系統的 socket。
 
 | 項目 | 對 gorilla | 對 gobwas |
 |---|---|---|
-| server 送出 | 每種大小都**勝** | 批次送出**勝**，大 frame 平手 |
+| server 送出 | 每種大小都**勝** | 批次送出**勝**，單一 frame 平手 |
 | 送出的記憶體 | **勝**：永遠 0 次配置 | **勝**：0 次配置 vs 每個 frame 1 次 |
 | client 送出 | 小 frame 落後 | 落後，為了安全而刻意如此 |
-| 讀取 | **勝**：快 1.4 到 2.8 倍 | 大 frame 平手，小 frame 落後 |
+| 讀取 | **勝**：快 1.5 到 3.4 倍 | server 小 frame **勝**，client 單一 frame 平手，其餘落後 |
 
 client 送出的落後是刻意的。masking key 來自 `crypto/rand`，從不用 `math/rand`；
 你的 payload 只會被讀取，從不原地加 mask。這兩者都是量測過、但為了
@@ -503,7 +449,7 @@ client 送出的落後是刻意的。masking key 來自 `crypto/rand`，從不�
 listener := conn.NewStandardListener() // 或 wlgows.NewListener(conn)，不含任何 hook
 
 config := listener.GetConfig()
-config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
+config.MaxDataFramesSize = 10 * 1024 * 1024
 config.Text = func(frames wlgows.Frames) { log.Print(frames.String()) }
 listener.SetConfig(config)
 
@@ -715,7 +661,7 @@ go test -bench BenchmarkFramesAssembly .   # benchmark，一般的 go test 不�
 
 | 檔案 | 內容 |
 |---|---|
-| [`Fakes_test.go`](./Fakes_test.go) | 共用的測試替身：`fakeConn`（在記憶體中運作的 `net.Conn`）、`fakeIOWriter`/`fakeIOReader`（單純的 `io.Writer`/`io.Reader` 替身）、`fakeFuncLocker`（在 `Lock` 與 `Unlock` 時執行一個 func，讓測試把它們和其他步驟記錄在一起）、`fixedRandRead`、`scriptedReadFromReader` |
+| [`Fakes_test.go`](./Fakes_test.go) | 共用的測試替身：`fakeConn`（在記憶體中運作的 `net.Conn`）、`fakeIOWriter`/`fakeIOReader`（單純的 `io.Writer`/`io.Reader` 替身）、`fakeFuncLocker`（在 `Lock` 與 `Unlock` 時執行一個 func，讓測試把它們和其他步驟記錄在一起）、`fixedRandRead`、`fakeGetFrameFromReaderBufioReader`（為 frame reader 模擬 `Peek` 與 `Discard`） |
 | [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | `Listen` 在真正的 `net.Pipe` 上端對端執行，**不**替換任何 `di` |
 
 integration test 能抓到 unit test 在結構上無法發現的串接錯誤，例如 constructor

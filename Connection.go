@@ -2,7 +2,6 @@ package wlgows
 
 import (
 	"bufio"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -57,7 +56,7 @@ type Conn struct {
 }
 
 type connDI struct {
-	getFrameFromReader    func(r io.Reader, maxByteLength uint64) (*Frame, error)
+	getFrameFromReader    func(r *bufio.Reader, maxByteLength uint64) (*Frame, error)
 	newControlFrame       func(config NewControlFrameConfig) (*Frame, error)
 	newDataFrame          func(config NewFrameConfig) (*Frame, error)
 	fillMaskingKey        func(key *[4]byte) error

@@ -13,7 +13,7 @@ import (
 func TestListenerGetConfig(t *testing.T) {
 	var steps []string
 	l := &Listener{configLocker: &sync.Mutex{}}
-	l.SetConfig(ListenerConfig{MaxMsgFrameCount: 4000, Text: func(Frames) {}})
+	l.SetConfig(ListenerConfig{MaxDataFrameCount: 4000, Text: func(Frames) {}})
 	l.configLocker = fakeFuncLocker{
 		lock:   func() { steps = append(steps, "config lock") },
 		unlock: func() { steps = append(steps, "config unlock") },
@@ -21,16 +21,16 @@ func TestListenerGetConfig(t *testing.T) {
 
 	got := l.GetConfig()
 
-	if got.MaxMsgFrameCount != 4000 || got.Text == nil {
+	if got.MaxDataFrameCount != 4000 || got.Text == nil {
 		t.Errorf("got %+v, want what was set", got)
 	}
 	if want := []string{"config lock", "config unlock"}; !slices.Equal(steps, want) {
 		t.Errorf("steps %q, want %q", steps, want)
 	}
 
-	got.MaxMsgFrameCount = 1
+	got.MaxDataFrameCount = 1
 
-	if l.config.MaxMsgFrameCount != 4000 {
+	if l.config.MaxDataFrameCount != 4000 {
 		t.Error("writing to the returned config reached the Listener")
 	}
 }
@@ -50,25 +50,25 @@ func TestListenerSetConfig(t *testing.T) {
 	l.configLocker = fakeFuncLocker{
 		lock: func() { steps = append(steps, "config lock") },
 		unlock: func() {
-			steps = append(steps, fmt.Sprintf("config unlock frames=%d", l.config.MaxMsgFrameCount))
+			steps = append(steps, fmt.Sprintf("config unlock frames=%d", l.config.MaxDataFrameCount))
 		},
 	}
 	called := 0
 
 	l.SetConfig(ListenerConfig{
-		PeerIsClient:         true,
-		MaxMsgPayloadByteLen: 1000,
-		MaxMsgFrameCount:     4000,
-		FrameReadTimeout:     30 * time.Second,
-		Text:                 func(Frames) { called++ },
+		PeerIsClient:      true,
+		MaxDataFramesSize: 1000,
+		MaxDataFrameCount: 4000,
+		FrameReadTimeout:  30 * time.Second,
+		Text:              func(Frames) { called++ },
 	})
 
 	// The config is replaced before the unlock.
 	if want := []string{"config lock", "config unlock frames=4000"}; !slices.Equal(steps, want) {
 		t.Errorf("steps %q, want %q", steps, want)
 	}
-	if !l.config.PeerIsClient || l.config.MaxMsgPayloadByteLen != 1000 ||
-		l.config.MaxMsgFrameCount != 4000 || l.config.FrameReadTimeout != 30*time.Second {
+	if !l.config.PeerIsClient || l.config.MaxDataFramesSize != 1000 ||
+		l.config.MaxDataFrameCount != 4000 || l.config.FrameReadTimeout != 30*time.Second {
 		t.Errorf("config = %+v, want what was set", l.config)
 	}
 	l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hi")})
@@ -78,7 +78,7 @@ func TestListenerSetConfig(t *testing.T) {
 
 	l.SetConfig(ListenerConfig{})
 
-	if l.config.MaxMsgPayloadByteLen != 0 || l.config.Text != nil {
+	if l.config.MaxDataFramesSize != 0 || l.config.Text != nil {
 		t.Error("the previous config survived being replaced")
 	}
 	// A hook replaced by nil drops the frames rather than being called through.

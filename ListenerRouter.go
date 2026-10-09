@@ -53,37 +53,22 @@ func (l *Listener) routeFrame(f *Frame) error {
 		return nil
 	}
 
-	/*
-		An empty continuation adds nothing to the message RFC 6455 5.4 defines
-		as the concatenation of its fragments, so dropping it leaves the
-		assembled bytes identical.
-
-		Dropping it is also what bounds memory. MaxMsgPayloadByteLen counts
-		payload bytes, so empty frames never touch it and a peer could grow
-		currentDataFrames without limit. With them gone every retained frame
-		carries at least one byte, and the frame count cannot outrun the budget.
-
-		A frame with FIN ends the message whether or not it carries payload, and
-		the first frame of a message names its type, so neither is dropped.
-	*/
-	if f.Opcode == OpcodeContinuation && !f.FIN && len(f.PayloadData) == 0 {
-		return nil
-	}
-
-	// The read limit granted the larger of the control allowance and what the
-	// message had left, so a data frame can still arrive over budget.
-	l.currentDataAccLength += uint64(len(f.PayloadData))
-	if config.MaxMsgPayloadByteLen > 0 && l.currentDataAccLength > config.MaxMsgPayloadByteLen {
+	// The header counts too, so every frame spends budget, an empty one
+	// included. The read limit only saw the payload, and granted the larger of
+	// the control allowance and what the message had left, so a data frame can
+	// still arrive over budget.
+	l.currentDataFramesSize += uint64(f.getHeaderSize() + len(f.PayloadData))
+	if config.MaxDataFramesSize > 0 && l.currentDataFramesSize > config.MaxDataFramesSize {
 		l.resetCurrentDataFrames() // it can never complete now
 		return ErrFrameByteLengthExceeded
 	}
 
 	// Counted before the append, the way the byte budget above is, so a message
-	// of exactly MaxMsgFrameCount frames is allowed and the next one is not.
+	// of exactly MaxDataFrameCount frames is allowed and the next one is not.
 	l.currentDataFrameCount++
-	if config.MaxMsgFrameCount > 0 && l.currentDataFrameCount > config.MaxMsgFrameCount {
+	if config.MaxDataFrameCount > 0 && l.currentDataFrameCount > config.MaxDataFrameCount {
 		l.resetCurrentDataFrames() // it can never complete now
-		return ErrMsgFrameCountExceeded
+		return ErrDataFrameCountExceeded
 	}
 
 	// Only text or binary can be first: validateFrame refuses a continuation
@@ -137,7 +122,7 @@ func (l *Listener) routeFrame(f *Frame) error {
 func (l *Listener) resetCurrentDataFrames() {
 	l.currentDataFrames = Frames{}
 	l.currentDataFrameCount = 0
-	l.currentDataAccLength = 0
+	l.currentDataFramesSize = 0
 	l.currentDataFrameOpcode = OpcodeContinuation // 0: no message open
 }
 

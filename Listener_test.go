@@ -9,15 +9,15 @@ import (
 /*
 nextFrameByteLimit is what the next frame may declare. One number serves both
 classes, because the opcode is not known until the frame has been read: data
-frames get whatever is left of MaxMsgPayloadByteLen, control frames get their
+frames get whatever is left of MaxDataFramesSize, control frames get their
 RFC 6455 5.5 allowance of 125 whatever is left.
 */
 func TestListenerNextFrameByteLimit(t *testing.T) {
 	tests := []struct {
-		name                 string
-		maxMsgPayloadByteLen uint64
-		currentDataAccLength uint64
-		want                 uint64
+		name                  string
+		maxDataFramesSize     uint64
+		currentDataFramesSize uint64
+		want                  uint64
 	}{
 		{"no limit", 0, 0, 0},
 		{"nothing spent", 1000, 0, 1000},
@@ -26,15 +26,15 @@ func TestListenerNextFrameByteLimit(t *testing.T) {
 		// late in a large message would be refused for being 125 bytes.
 		{"remainder under the floor", 1000, 900, ControlFramePayloadMaxByteLength},
 		{"exactly spent", 1000, 1000, ControlFramePayloadMaxByteLength},
-		// Pausing mid message and lowering MaxMsgPayloadByteLen leaves
-		// currentDataAccLength above it. An unguarded uint64 subtraction would
+		// Pausing mid message and lowering MaxDataFramesSize leaves
+		// currentDataFramesSize above it. An unguarded uint64 subtraction would
 		// wrap to ~1.8e19 and hand back a limit larger than the one just set.
 		{"overspent", 1000, 5000, ControlFramePayloadMaxByteLength},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			l := &Listener{configLocker: &sync.Mutex{}, currentDataAccLength: testCase.currentDataAccLength}
-			l.config.MaxMsgPayloadByteLen = testCase.maxMsgPayloadByteLen
+			l := &Listener{configLocker: &sync.Mutex{}, currentDataFramesSize: testCase.currentDataFramesSize}
+			l.config.MaxDataFramesSize = testCase.maxDataFramesSize
 
 			if got := l.nextFrameByteLimit(); got != testCase.want {
 				t.Errorf("nextFrameByteLimit() = %d, want %d", got, testCase.want)

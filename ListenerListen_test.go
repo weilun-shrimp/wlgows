@@ -183,7 +183,7 @@ func TestListenerClaimListen(t *testing.T) {
 			conn:                   &fakeListenerConn{},
 			currentDataFrames:      Frames{{Opcode: OpcodeText, PayloadData: []byte("he")}},
 			currentDataFrameCount:  1,
-			currentDataAccLength:   2,
+			currentDataFramesSize:  2,
 			currentDataFrameOpcode: OpcodeText,
 			listenLocker:           fakeFuncLocker{lock: func() {}, unlock: func() {}},
 		}
@@ -192,9 +192,9 @@ func TestListenerClaimListen(t *testing.T) {
 			t.Fatalf("claimListen: %v", err)
 		}
 
-		if len(l.currentDataFrames) != 1 || l.currentDataFrameCount != 1 || l.currentDataAccLength != 2 {
-			t.Errorf("currentDataFrames=%d currentDataFrameCount=%d currentDataAccLength=%d, want all untouched",
-				len(l.currentDataFrames), l.currentDataFrameCount, l.currentDataAccLength)
+		if len(l.currentDataFrames) != 1 || l.currentDataFrameCount != 1 || l.currentDataFramesSize != 2 {
+			t.Errorf("currentDataFrames=%d currentDataFrameCount=%d currentDataFramesSize=%d, want all untouched",
+				len(l.currentDataFrames), l.currentDataFrameCount, l.currentDataFramesSize)
 		}
 		if l.currentDataFrameOpcode != OpcodeText {
 			t.Error("the message type should have survived the restart")

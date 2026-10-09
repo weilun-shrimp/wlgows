@@ -181,18 +181,23 @@ func TestTransmitData(t *testing.T) {
 		}
 	})
 
-	t.Run("drops empty data", func(t *testing.T) {
+	t.Run("sends empty data", func(t *testing.T) {
+		var sent []*Frame
 		di := base_di()
-		di.sendFrame = func(*Frame) error {
-			t.Error("sent an empty fragment")
+		di.sendFrame = func(f *Frame) error {
+			sent = append(sent, f)
 			return nil
 		}
 
 		if err := transmitData(nil, di); err != nil {
 			t.Fatalf("transmitData: %v", err)
 		}
-		if di.conn.currentTransmitDataMsgOpened {
-			t.Error("an empty fragment opened the message")
+		if len(sent) != 1 || sent[0].Opcode != OpcodeText || sent[0].Mask ||
+			len(sent[0].PayloadData) != 0 || sent[0].FIN {
+			t.Fatalf("sent %+v, want one unmasked empty frame opcode %#x no FIN", sent, OpcodeText)
+		}
+		if !di.conn.currentTransmitDataMsgOpened {
+			t.Error("an empty fragment did not open the message")
 		}
 	})
 

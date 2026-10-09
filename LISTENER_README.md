@@ -38,10 +38,10 @@ func handleConn(conn *wlgows.Conn) {
 
 	listener := wlgows.NewListener(conn)
 	listener.SetConfig(wlgows.ListenerConfig{
-		PeerIsClient:         true,             // we are the server, so the peer masks
-		MaxMsgPayloadByteLen: 10 * 1024 * 1024, // 10 MB per message
-		MaxMsgFrameCount:     4000,             // see Configuration
-		FrameReadTimeout:     60 * time.Second,
+		PeerIsClient:      true,             // we are the server, so the peer masks
+		MaxDataFramesSize: 10 * 1024 * 1024, // 10 MB per message
+		MaxDataFrameCount: 4000,             // see Configuration
+		FrameReadTimeout:  60 * time.Second,
 
 		Text: func(frames wlgows.Frames) {
 			log.Printf("text: %s", frames.String())
@@ -140,8 +140,8 @@ Every item, and what leaving it out means:
 | item | type | zero value | |
 |---|---|---|---|
 | `PeerIsClient` | `bool` | the peer is a **server** | which side the peer is on, which decides masking (5.1) |
-| `MaxMsgPayloadByteLen` | `uint64` | no limit | payload budget for one message, checked at each header |
-| `MaxMsgFrameCount` | `uint64` | no limit | how many frames one message may arrive in |
+| `MaxDataFramesSize` | `uint64` | no limit | byte budget for one message's data frames, headers included, checked at each header |
+| `MaxDataFrameCount` | `uint64` | no limit | how many frames one message may arrive in |
 | `FrameReadTimeout` | `time.Duration` | no timeout | per frame, armed before each read |
 | `Ping` | `func(*Frame)` | frames dropped | [5.5.2](#hooks): answer with a pong echoing the payload |
 | `Pong` | `func(*Frame)` | frames dropped | [5.5.3](#hooks): MUST NOT answer — nil is the conforming setting |
@@ -156,7 +156,7 @@ alone, so changing one thing means reading the rest back first:
 
 ```go
 config := listener.GetConfig() // a copy of what it is running on
-config.MaxMsgFrameCount = 4000
+config.MaxDataFrameCount = 4000
 listener.SetConfig(config)
 ```
 
@@ -169,21 +169,21 @@ never called on still reads — though `PeerIsClient` is the one to get right,
 since its zero value says the peer is a server and a server that leaves it
 refuses every frame a client sends.
 
-`MaxMsgPayloadByteLen` is the one worth setting. A peer can claim a 10 GB
+`MaxDataFramesSize` is the one worth setting. A peer can claim a 10 GB
 payload in a 10 byte header, and without a limit that claim becomes a 10 GB
 allocation before a single payload byte arrives.
 
-**Picking `MaxMsgFrameCount`.** You do not control how the peer fragments, so
+**Picking `MaxDataFrameCount`.** You do not control how the peer fragments, so
 start from the smallest fragment you are willing to accept:
 
-	MaxMsgFrameCount = MaxMsgPayloadByteLen / smallest fragment expected
+	MaxDataFrameCount = MaxDataFramesSize / smallest fragment expected
 
 A 10 MB budget arriving in 4 KB fragments is 2560 frames, so 4000 leaves room.
-Err high: too high only weakens a bound on memory `MaxMsgPayloadByteLen` already
+Err high: too high only weakens a bound on memory `MaxDataFramesSize` already
 caps, while too low refuses messages a conforming peer was entitled to send, and
-you will not see why. It exists because an empty continuation frame is dropped
-rather than kept, so it never spends the byte budget — a peer could otherwise
-hold a message open forever with frames that cost nothing.
+you will not see why. It exists because a held frame costs more memory than it
+spends from the byte budget: an empty fragment spends 2 bytes, its header, but
+keeping it costs a whole `Frame`.
 
 **With `Data` set, size the byte budget for the whole stream**, not one frame:
 it is still spent across the message, and nothing is retained between frames.
@@ -193,7 +193,7 @@ Each item carries its own detail in full — which frames it covers, and the
 reasoning behind the numbers:
 
 ```bash
-go doc github.com/weilun-shrimp/wlgows/v6.ListenerConfig
+go doc github.com/weilun-shrimp/wlgows/v7.ListenerConfig
 ```
 
 ## Hooks
@@ -235,9 +235,9 @@ of it for you.
 What comes with them: FIN is yours to watch for, and 5.6 cannot be judged on one
 frame — it may end mid rune — so nothing checks it.
 `Listener.GetCurrentMsgOpcode` says whether the message is text and owes you that
-check, since a continuation frame does not carry the type. The budgets, 5.4 and
-the empty continuation drop are unchanged, so these are the frames the message is
-made of. Set it between messages, not during one.
+check, since a continuation frame does not carry the type. The budgets and 5.4
+are unchanged, so these are the frames the message is made of, empty ones
+included. Set it between messages, not during one.
 
 Receiving a message straight to disk, however large — memory stays flat because
 nothing is held between frames:
@@ -251,9 +251,9 @@ defer out.Close()
 
 listener := wlgows.NewListener(conn)
 listener.SetConfig(wlgows.ListenerConfig{
-	PeerIsClient:         true,
-	MaxMsgPayloadByteLen: 2 * 1024 * 1024 * 1024, // the whole message, so size it for the stream
-	FrameReadTimeout:     60 * time.Second,
+	PeerIsClient:      true,
+	MaxDataFramesSize: 2 * 1024 * 1024 * 1024, // the whole message, so size it for the stream
+	FrameReadTimeout:  60 * time.Second,
 
 	Data: func(f *wlgows.Frame) {
 		// Binary only. A text message would need 5.6 checked on the joined
@@ -285,7 +285,7 @@ listener.SetConfig(wlgows.ListenerConfig{
 return listener.Listen()
 ```
 
-`MaxMsgPayloadByteLen` is the one to think about here. It is still spent across
+`MaxDataFramesSize` is the one to think about here. It is still spent across
 the whole message, so it has to cover the entire stream — and since it is also
 what bounds a single frame at the header, a budget that large lets one frame
 claim it all. Bounding every frame tightly while letting the message run long is
@@ -377,11 +377,12 @@ The peer violated RFC 6455. Answer with a close frame, then close.
 | `ErrControlFrameFragmented` | 1002 |
 | `ErrControlFramePayloadTooLong` | 1002 |
 | `ErrClosePayloadTooShort` | 1002 |
+| `ErrPayloadLengthMSBSet` | 1002 |
 | `ErrContinuationFrameWithoutMsg`, `ErrDataFrameDuringMsg` | 1002 |
 | `ErrInvalidCloseStatusCode` | 1002 |
 | `ErrInvalidUTF8` | 1007 |
 | `ErrFrameByteLengthExceeded` | 1009 |
-| `ErrMsgFrameCountExceeded` | 1009 |
+| `ErrDataFrameCountExceeded` | 1009 |
 
 **The stream is unusable after any of them.** A refused frame was already partly
 read, so the next read starts mid frame and parses payload bytes as a header.
@@ -390,7 +391,7 @@ goes out, but you must not read again.
 
 ### 2. The connection failed
 
-`io.EOF`, `os.ErrDeadlineExceeded`, `net.ErrClosed`, connection reset. These
+`io.EOF`, `io.ErrUnexpectedEOF`, `os.ErrDeadlineExceeded`, `net.ErrClosed`, connection reset. These
 come from the socket, not from this package, and the peer broke no rule. There
 is nothing to send a close frame to. §7.4.1 calls this **1006 abnormal closure**
 and forbids 1006 on the wire, because it is what an endpoint records about

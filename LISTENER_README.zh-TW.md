@@ -36,10 +36,10 @@ func handleConn(conn *wlgows.Conn) {
 
 	listener := wlgows.NewListener(conn)
 	listener.SetConfig(wlgows.ListenerConfig{
-		PeerIsClient:         true,             // 我們是 server，所以對方會 mask
-		MaxMsgPayloadByteLen: 10 * 1024 * 1024, // 每個 message 最多 10 MB
-		MaxMsgFrameCount:     4000,             // 見 Configuration
-		FrameReadTimeout:     60 * time.Second,
+		PeerIsClient:      true,             // 我們是 server，所以對方會 mask
+		MaxDataFramesSize: 10 * 1024 * 1024, // 每個 message 最多 10 MB
+		MaxDataFrameCount: 4000,             // 見 Configuration
+		FrameReadTimeout:  60 * time.Second,
 
 		Text: func(frames wlgows.Frames) {
 			log.Printf("text: %s", frames.String())
@@ -136,8 +136,8 @@ server MUST 立刻關閉 TCP 連線；client 則 SHOULD 等 server 先關，等�
 | 項目 | 型別 | 零值 | |
 |---|---|---|---|
 | `PeerIsClient` | `bool` | 對方是 **server** | 對方是哪一端，決定 masking 的規則（5.1） |
-| `MaxMsgPayloadByteLen` | `uint64` | 不限制 | 單一 message 的 payload 上限，每讀到一個 header 就檢查一次 |
-| `MaxMsgFrameCount` | `uint64` | 不限制 | 單一 message 最多可以由幾個 frame 組成 |
+| `MaxDataFramesSize` | `uint64` | 不限制 | 單一 message 所有 data frame 的 byte 上限（包含 header），每讀到一個 header 就檢查一次 |
+| `MaxDataFrameCount` | `uint64` | 不限制 | 單一 message 最多可以由幾個 frame 組成 |
 | `FrameReadTimeout` | `time.Duration` | 不逾時 | 每個 frame 各自計時，每次讀取前重新設定 |
 | `Ping` | `func(*Frame)` | 直接丟掉 | [5.5.2](#hooks)：回一個 pong，payload 原樣帶回 |
 | `Pong` | `func(*Frame)` | 直接丟掉 | [5.5.3](#hooks)：MUST NOT 回應，所以設為 nil 就符合規範 |
@@ -152,7 +152,7 @@ server MUST 立刻關閉 TCP 連線；client 則 SHOULD 等 server 先關，等�
 
 ```go
 config := listener.GetConfig() // 目前使用中的設定的複本
-config.MaxMsgFrameCount = 4000
+config.MaxDataFrameCount = 4000
 listener.SetConfig(config)
 ```
 
@@ -163,20 +163,20 @@ hook 在執行中要改設定，也是用同樣的方式。正在處理的 frame
 Listener 也能讀。不過 `PeerIsClient` 一定要設對：它的零值代表「對方是 server」，
 如果 server 沒有設它，就會拒絕 client 送來的每一個 frame。
 
-`MaxMsgPayloadByteLen` 則是最值得設定的一項。對方只要用 10 byte 的 header，就能
+`MaxDataFramesSize` 則是最值得設定的一項。對方只要用 10 byte 的 header，就能
 宣稱 payload 有 10 GB。沒有上限的話，在第一個 payload byte 抵達之前，就會先配置
 10 GB 的記憶體。
 
-**`MaxMsgFrameCount` 怎麼設。** 對方怎麼分段不是你能控制的，所以從「你願意接受的
+**`MaxDataFrameCount` 怎麼設。** 對方怎麼分段不是你能控制的，所以從「你願意接受的
 最小 fragment」來算：
 
-	MaxMsgFrameCount = MaxMsgPayloadByteLen / 你預期的最小 fragment
+	MaxDataFrameCount = MaxDataFramesSize / 你預期的最小 fragment
 
 上限 10 MB、每段 4 KB，就是 2560 個 frame，所以設 4000 還有餘裕。寧可設高一點：設
-太高只是稍微放寬記憶體上限，而 `MaxMsgPayloadByteLen` 本來就已經擋住了；設太低則
-會拒絕對方完全合法的 message，而且你很難查出原因。這個設定存在的原因是：空的
-continuation frame 會被直接丟掉，不會算進 byte 上限。如果沒有它，對方可以一直送
-不佔任何 byte 的 frame，讓一個 message 永遠不結束。
+太高只是稍微放寬記憶體上限，而 `MaxDataFramesSize` 本來就已經擋住了；設太低則
+會拒絕對方完全合法的 message，而且你很難查出原因。這個設定存在的原因是：保留一個
+frame 所佔的記憶體，比它從 byte 上限扣掉的還多。空的 fragment 只扣掉 2 byte 的
+header，保留它卻要一整個 `Frame`。
 
 **如果設了 `Data`，byte 上限要用整個串流的大小來算**，而不是單一 frame：上限仍然是
 整個 message 一起計算的，只是 frame 之間不會保留任何東西。這樣做的代價，請見
@@ -185,7 +185,7 @@ continuation frame 會被直接丟掉，不會算進 byte 上限。如果沒有�
 每一項設定的完整說明（包含適用哪些 frame，以及這些數字的理由）可以這樣查：
 
 ```bash
-go doc github.com/weilun-shrimp/wlgows/v6.ListenerConfig
+go doc github.com/weilun-shrimp/wlgows/v7.ListenerConfig
 ```
 
 ## Hooks
@@ -225,9 +225,9 @@ frame 本身時才使用，例如大到放不進記憶體的傳輸，或要轉�
 你需要額外處理的是：FIN 要自己判斷；5.6 的 UTF-8 檢查也沒辦法只看一個 frame 就判斷
 （frame 可能切在字元中間），所以不會有人幫你檢查。continuation frame 本身不帶
 message 的型別，所以要用 `Listener.GetCurrentMsgOpcode` 確認這個 message 是不是
-text，也就是需不需要你自己檢查。各種上限、5.4 的規則，以及丟掉空 continuation
-frame 的行為都不變，所以交給你的，就是組成這個 message 的那些 frame。請在兩個
-message 之間設定 `Data`，不要在 message 傳到一半時設定。
+text，也就是需不需要你自己檢查。各種上限和 5.4 的規則都不變，所以交給你的，就是
+組成這個 message 的那些 frame，空的也包含在內。請在兩個 message 之間設定 `Data`，
+不要在 message 傳到一半時設定。
 
 把一個 message 直接寫進磁碟，不管它有多大。因為 frame 之間不保留任何東西，記憶體
 用量不會增加：
@@ -241,9 +241,9 @@ defer out.Close()
 
 listener := wlgows.NewListener(conn)
 listener.SetConfig(wlgows.ListenerConfig{
-	PeerIsClient:         true,
-	MaxMsgPayloadByteLen: 2 * 1024 * 1024 * 1024, // 整個 message 一起計算，所以要用整個串流的大小
-	FrameReadTimeout:     60 * time.Second,
+	PeerIsClient:      true,
+	MaxDataFramesSize: 2 * 1024 * 1024 * 1024, // 整個 message 一起計算，所以要用整個串流的大小
+	FrameReadTimeout:  60 * time.Second,
 
 	Data: func(f *wlgows.Frame) {
 		// 只接受 binary。text message 必須在組好的內容上檢查 5.6，所以要先確認
@@ -275,7 +275,7 @@ listener.SetConfig(wlgows.ListenerConfig{
 return listener.Listen()
 ```
 
-這裡最需要考慮的是 `MaxMsgPayloadByteLen`。它是整個 message 一起計算的，所以必須
+這裡最需要考慮的是 `MaxDataFramesSize`。它是整個 message 一起計算的，所以必須
 涵蓋整個串流；但它同時也是讀到 header 時，單一 frame 的上限。設得這麼大，等於允許
 單一 frame 用掉全部的上限。「每個 frame 都限制得很緊，但 message 可以很長」是這種
 做法唯一做不到的事。`Conn.GetNextFrame(max)` 做得到，因為它的上限是每次讀取各自
@@ -357,11 +357,12 @@ nil，不一定代表是對方或協定出了問題。
 | `ErrControlFrameFragmented` | 1002 |
 | `ErrControlFramePayloadTooLong` | 1002 |
 | `ErrClosePayloadTooShort` | 1002 |
+| `ErrPayloadLengthMSBSet` | 1002 |
 | `ErrContinuationFrameWithoutMsg`、`ErrDataFrameDuringMsg` | 1002 |
 | `ErrInvalidCloseStatusCode` | 1002 |
 | `ErrInvalidUTF8` | 1007 |
 | `ErrFrameByteLengthExceeded` | 1009 |
-| `ErrMsgFrameCountExceeded` | 1009 |
+| `ErrDataFrameCountExceeded` | 1009 |
 
 **只要發生其中任何一個，這條 stream 就不能再讀了。** 被拒絕的 frame 已經讀了一部分，
 下一次讀取會從 frame 的中間開始，把 payload 當成 header 解析。絕對不要繼續讀。寫入的
@@ -369,7 +370,7 @@ nil，不一定代表是對方或協定出了問題。
 
 ### 2. 連線斷了
 
-`io.EOF`、`os.ErrDeadlineExceeded`、`net.ErrClosed`、connection reset。這些 error
+`io.EOF`、`io.ErrUnexpectedEOF`、`os.ErrDeadlineExceeded`、`net.ErrClosed`、connection reset。這些 error
 來自 socket，不是這個 package 產生的，對方也沒有違反任何規則。連線已經斷了，也沒辦法
 送 close frame。7.4.1 把這種情況稱為 **1006 abnormal closure**，而且禁止把 1006
 送出去，因為這是 endpoint 留給自己的紀錄。所以記錄下來，然後關閉連線。

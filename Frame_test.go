@@ -142,7 +142,7 @@ func TestFrameAppendSealedHeader(t *testing.T) {
 // the 8 byte steps, so the tail always starts on key[0].
 func TestMaskPayload(t *testing.T) {
 	key := [4]byte{0xA5, 0x5A, 0xF0, 0x0F}
-	for _, length := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 16, 19, 64, 1001} {
+	for _, length := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 15, 16, 17, 19, 23, 24, 25, 64, 300, 1001} {
 		payload := make([]byte, length)
 		for i := range payload {
 			payload[i] = byte(i*13 + 3)
