@@ -1,10 +1,10 @@
-module github.com/weilun-shrimp/wlgows/v6/example
+module github.com/weilun-shrimp/wlgows/v7/example
 
 go 1.22.1
 
 require (
 	github.com/gin-gonic/gin v1.10.0
-	github.com/weilun-shrimp/wlgows/v6 v6.0.0
+	github.com/weilun-shrimp/wlgows/v7 v7.0.0
 )
 
 require (
@@ -37,4 +37,4 @@ require (
 )
 
 // The examples build against this checkout, not a published release.
-replace github.com/weilun-shrimp/wlgows/v6 => ../
+replace github.com/weilun-shrimp/wlgows/v7 => ../

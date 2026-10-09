@@ -52,12 +52,12 @@ func TestListenerIntegration(t *testing.T) {
 	var got []string
 
 	listener.SetConfig(ListenerConfig{
-		PeerIsClient:         true,
-		MaxMsgPayloadByteLen: 1024,
-		FrameReadTimeout:     5 * time.Second,
+		PeerIsClient:      true,
+		MaxDataFramesSize: 1024,
+		FrameReadTimeout:  5 * time.Second,
 
-		Text:   func(frames Frames) { got = append(got, "Text:"+frames.String()) },
-		Binary: func(frames Frames) { got = append(got, fmt.Sprintf("Binary:% x", frames.Bytes())) },
+		Text:   func(frames DataFrames) { got = append(got, "Text:"+frames.String()) },
+		Binary: func(frames DataFrames) { got = append(got, fmt.Sprintf("Binary:% x", frames.Bytes())) },
 		Ping:   func(frame *Frame) { got = append(got, "Ping:"+string(frame.PayloadData)) },
 		Close: func(frame *Frame) {
 			payload, err := frame.GetClosePayload()

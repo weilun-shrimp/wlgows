@@ -15,8 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/weilun-shrimp/wlgows/v6"
-	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v7"
+	"github.com/weilun-shrimp/wlgows/v7/example/example_helpers"
 )
 
 const (
@@ -24,7 +24,7 @@ const (
 
 	// A peer can claim a 10 GB payload in a 10 byte header. Without this that
 	// claim becomes a 10 GB allocation before a byte of payload arrives.
-	maxMsgPayloadByteLen = 10 * 1024 * 1024 // 10 MB
+	maxDataFramesSize = 10 * 1024 * 1024 // 10 MB
 
 	// Armed before each frame read, and only fires when no bytes arrive at all.
 	frameReadTimeout = 60 * time.Second
@@ -92,12 +92,12 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	// SetConfig replaces all of it, so start from what the standard hooks left
 	// rather than from an empty ListenerConfig.
 	config := listener.GetConfig()
-	config.MaxMsgPayloadByteLen = maxMsgPayloadByteLen
+	config.MaxDataFramesSize = maxDataFramesSize
 	config.FrameReadTimeout = frameReadTimeout
 
 	// A whole message, assembled across every fragment. The payload is already
 	// checked as valid UTF-8 (5.6, 8.1).
-	config.Text = func(frames wlgows.Frames) {
+	config.Text = func(frames wlgows.DataFrames) {
 		text := frames.String()
 		fmt.Printf("text: frames=%d bytes=%d runes=%d: %s\n",
 			len(frames), frames.ByteLen(), utf8.RuneCountInString(text), text)
@@ -108,7 +108,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Arbitrary bytes — 5.6 gives binary no encoding at all.
-	config.Binary = func(frames wlgows.Frames) {
+	config.Binary = func(frames wlgows.DataFrames) {
 		fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), frames.ByteLen())
 
 		if err := conn.SendBinary(frames.Bytes(), 0); err != nil {

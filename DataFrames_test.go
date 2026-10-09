@@ -6,16 +6,16 @@ import (
 	"unicode/utf8"
 )
 
-func TestFramesString(t *testing.T) {
+func TestDataFramesString(t *testing.T) {
 	t.Run("empty message", func(t *testing.T) {
-		msg := Frames{}
+		msg := DataFrames{}
 		if got := msg.String(); got != "" {
 			t.Errorf("GetStr() = %q, want empty", got)
 		}
 	})
 
 	t.Run("concatenates every frame payload", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: []byte("hello ")},
 			{PayloadData: []byte("wl")},
 			{PayloadData: []byte("gows")},
@@ -28,7 +28,7 @@ func TestFramesString(t *testing.T) {
 	// The whole reason GetStr uses strings.Builder over string([]byte) per
 	// frame: a multi-byte rune may straddle a frame boundary.
 	t.Run("rejoins a utf-8 rune split across frames", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: []byte{0xE4, 0xB8}}, // first 2 bytes of 中
 			{PayloadData: []byte{0xAD}},       // last byte of 中
 		}
@@ -38,16 +38,16 @@ func TestFramesString(t *testing.T) {
 	})
 }
 
-func TestFramesBytes(t *testing.T) {
+func TestDataFramesBytes(t *testing.T) {
 	t.Run("empty message", func(t *testing.T) {
-		msg := Frames{}
+		msg := DataFrames{}
 		if got := msg.Bytes(); len(got) != 0 {
 			t.Errorf("GetBytes() = % x, want empty", got)
 		}
 	})
 
 	t.Run("concatenates every frame payload", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: []byte("hello ")},
 			{PayloadData: []byte("wl")},
 			{PayloadData: []byte("gows")},
@@ -61,7 +61,7 @@ func TestFramesBytes(t *testing.T) {
 	// untouched, including ones that are not valid UTF-8.
 	t.Run("carries bytes no string round trip would survive", func(t *testing.T) {
 		want := []byte{0x00, 0xFF, 0xFE, 0x80, 0x00}
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: want[:2]},
 			{PayloadData: want[2:]},
 		}
@@ -71,7 +71,7 @@ func TestFramesBytes(t *testing.T) {
 	})
 
 	t.Run("agrees with GetStr", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: []byte{0xE4, 0xB8}}, // first 2 bytes of 中
 			{PayloadData: []byte{0xAD}},       // last byte of 中
 		}
@@ -82,7 +82,7 @@ func TestFramesBytes(t *testing.T) {
 
 	// The documented contract: the caller owns the result outright.
 	t.Run("returns a copy the caller may mutate", func(t *testing.T) {
-		msg := Frames{{PayloadData: []byte("hello")}}
+		msg := DataFrames{{PayloadData: []byte("hello")}}
 		got := msg.Bytes()
 		got[0] = 'j'
 		if string(msg[0].PayloadData) != "hello" {
@@ -93,7 +93,7 @@ func TestFramesBytes(t *testing.T) {
 	// The whole reason for the method — one allocation, exactly sized, where
 	// []byte(GetStr()) needs the builder's buffer plus the conversion's copy.
 	t.Run("allocates once at the exact size", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: bytes.Repeat([]byte{'x'}, 700)},
 			{PayloadData: bytes.Repeat([]byte{'y'}, 300)},
 		}
@@ -111,16 +111,16 @@ func TestFramesBytes(t *testing.T) {
 	})
 }
 
-func TestFramesByteLen(t *testing.T) {
+func TestDataFramesByteLen(t *testing.T) {
 	t.Run("empty message", func(t *testing.T) {
-		msg := Frames{}
+		msg := DataFrames{}
 		if got := msg.ByteLen(); got != 0 {
 			t.Errorf("PayloadByteLength() = %d, want 0", got)
 		}
 	})
 
 	t.Run("sums every frame", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: []byte("hello ")},
 			{PayloadData: []byte("wl")},
 			{PayloadData: []byte("gows")},
@@ -133,7 +133,7 @@ func TestFramesByteLen(t *testing.T) {
 	// It has to be what the assemblers actually produce, or the exact-size
 	// allocation they share with it is wrong.
 	t.Run("matches what GetStr and GetBytes return", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: bytes.Repeat([]byte{'x'}, 700)},
 			{PayloadData: bytes.Repeat([]byte{'y'}, 300)},
 		}
@@ -149,7 +149,7 @@ func TestFramesByteLen(t *testing.T) {
 	// The exact claim the doc comment makes. Each CJK rune is 3 bytes in UTF-8,
 	// so a 3 character payload is 9 bytes.
 	t.Run("counts bytes rather than characters", func(t *testing.T) {
-		msg := Frames{{PayloadData: []byte("中文字")}}
+		msg := DataFrames{{PayloadData: []byte("中文字")}}
 		if got := msg.ByteLen(); got != 9 {
 			t.Errorf("PayloadByteLength() = %d, want 9", got)
 		}
@@ -160,7 +160,7 @@ func TestFramesByteLen(t *testing.T) {
 
 	// A rune straddling a frame boundary is counted once, not per fragment.
 	t.Run("counts a rune split across frames once", func(t *testing.T) {
-		msg := Frames{
+		msg := DataFrames{
 			{PayloadData: []byte{0xE4, 0xB8}}, // first 2 bytes of 中
 			{PayloadData: []byte{0xAD}},       // last byte of 中
 		}
@@ -175,7 +175,7 @@ func TestFramesByteLen(t *testing.T) {
 	// Reading the size must not cost an allocation — that is the point of
 	// having it instead of len(msg.Bytes()).
 	t.Run("allocates nothing", func(t *testing.T) {
-		msg := Frames{{PayloadData: bytes.Repeat([]byte{'x'}, 1000)}}
+		msg := DataFrames{{PayloadData: bytes.Repeat([]byte{'x'}, 1000)}}
 		var got int
 		if allocs := testing.AllocsPerRun(100, func() { got = msg.ByteLen() }); allocs != 0 {
 			t.Errorf("PayloadByteLength() allocated %v times, want 0", allocs)
@@ -195,14 +195,14 @@ var (
 
 // Plain `go test` skips benchmarks. Run this one with:
 //
-//	go test -bench BenchmarkFramesAssembly .
+//	go test -bench BenchmarkDataFramesAssembly .
 //
 // The B/op and allocs/op columns come from the b.ReportAllocs() calls below, so
 // no -benchmem flag is needed here.
-func BenchmarkFramesAssembly(b *testing.B) {
+func BenchmarkDataFramesAssembly(b *testing.B) {
 	// A 70000 byte message split the way the reader delivers it, mirroring the
 	// large payload case Integration_test.go covers.
-	frames := make(Frames, 0, 7)
+	frames := make(DataFrames, 0, 7)
 	for i := 0; i < 7; i++ {
 		frames = append(frames, &Frame{PayloadData: bytes.Repeat([]byte{'x'}, 10000)})
 	}

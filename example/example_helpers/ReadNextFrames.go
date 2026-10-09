@@ -1,7 +1,7 @@
 package example_helpers
 
 import (
-	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 // FrameReader is what *wlgows.Conn satisfies, so one helper serves every example.
@@ -17,11 +17,11 @@ maxByteLength caps each individual frame, refused at its header before anything
 is allocated. Pass 0 for no limit.
 
 A control frame (close, ping, pong) always arrives unfragmented, so it comes
-back as a Frames of one — check frames[0].Opcode before treating the payload as
+back as a DataFrames of one — check frames[0].Opcode before treating the payload as
 message data.
 */
-func ReadNextFrames(conn FrameReader, maxByteLength uint64) (wlgows.Frames, error) {
-	var frames wlgows.Frames
+func ReadNextFrames(conn FrameReader, maxByteLength uint64) (wlgows.DataFrames, error) {
+	var frames wlgows.DataFrames
 	for {
 		f, err := conn.GetNextFrame(maxByteLength)
 		if err != nil {

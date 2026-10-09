@@ -35,8 +35,7 @@ wlgows 把這兩者都交給你，而且它們是兩個獨立的旋鈕：
 - [Concurrency](#concurrency)
 - [Control frame 與自訂 frame](#control-frame-與自訂-frame)
 
-library 的其他部分在 [main README](./README.zh-TW.md)。從 v5 升級？見
-[從 v5 升級](./README.zh-TW.md#從-v5-升級)。
+library 的其他部分在 [main README](./README.zh-TW.md)。
 
 ## 選擇要用哪個呼叫
 
@@ -118,7 +117,7 @@ for {
 | 呼叫 | 做什麼 |
 |---|---|
 | `StartLongDataTransmission(opcode)` | 開啟一則文字或二進位 message，並為它佔用連線。 |
-| `TransmitData(chunk)` | 把一個 chunk 當作一個 frame 送出。空的 chunk 會被略過。 |
+| `TransmitData(chunk)` | 把一個 chunk 當作一個 frame 送出。空的 chunk 會以空的 frame 送出。 |
 | `EndLongDataTransmission(last)` | 把 `last` 當作最後一個 frame 送出，帶有 FIN。 |
 | `ReleaseLongDataTransmission()` | 釋放連線，不送出任何東西。 |
 
@@ -247,8 +246,8 @@ WebSocket，並讓 handler 先返回；這樣改用 14 byte 的 writer 時，那
   frame 越小，它就能越早插進去。
 - **對方的限制。** 太大，一個 frame 可能超過對方對單一 frame 或單一 message 的
   限制。太小，大型 message 會變成很多個 frame，而對方可能會限制一則 message 的
-  frame 數量。wlgows 自己的 `Listener` 就可以用 `MaxMsgFrameCount` 設定這個上限
-  （預設沒有限制），超過時會以 `ErrMsgFrameCountExceeded` 拒絕這則 message。請讓
+  frame 數量。wlgows 自己的 `Listener` 就可以用 `MaxDataFrameCount` 設定這個上限
+  （預設沒有限制），超過時會以 `ErrDataFrameCountExceeded` 拒絕這則 message。請讓
   message 大小 ÷ `chunkSize` 保持在這個上限以下。例如 16 MB 以 4 KB 為一個 chunk
   是 4,096 個 frame，比 [Listener 說明文件](./LISTENER_README.zh-TW.md#configuration)
   範例中使用的 4,000 還多。

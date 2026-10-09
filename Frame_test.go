@@ -142,7 +142,7 @@ func TestFrameAppendSealedHeader(t *testing.T) {
 // the 8 byte steps, so the tail always starts on key[0].
 func TestMaskPayload(t *testing.T) {
 	key := [4]byte{0xA5, 0x5A, 0xF0, 0x0F}
-	for _, length := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 16, 19, 64, 1001} {
+	for _, length := range []int{0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 15, 16, 17, 19, 23, 24, 25, 64, 300, 1001} {
 		payload := make([]byte, length)
 		for i := range payload {
 			payload[i] = byte(i*13 + 3)
@@ -217,7 +217,7 @@ func TestNewFrameFIN(t *testing.T) {
 		}
 	})
 
-	// The fragmentation shape the doc comment describes, reassembled by Frames.
+	// The fragmentation shape the doc comment describes, reassembled by DataFrames.
 	t.Run("a fragmented message reassembles", func(t *testing.T) {
 		head := NewFrame(NewFrameConfig{PayloadData: []byte("中文"), Opcode: 1})
 		tail := NewFrame(NewFrameConfig{PayloadData: []byte("字"), Opcode: 0, FIN: true})
@@ -230,7 +230,7 @@ func TestNewFrameFIN(t *testing.T) {
 		if tail.Opcode != 0 {
 			t.Errorf("continuation Opcode = %d, want 0", tail.Opcode)
 		}
-		if got := (Frames{head, tail}).String(); got != "中文字" {
+		if got := (DataFrames{head, tail}).String(); got != "中文字" {
 			t.Errorf("reassembled = %q, want 中文字", got)
 		}
 	})

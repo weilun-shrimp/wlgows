@@ -57,7 +57,7 @@ one empty frame.
 dataFramesWriteLocker is held throughout, so no other message interleaves.
 writeLocker is held for each frame appended to the write buffer and for the
 final flush, so a control frame sent in between still gets out (5.5.2) — and its
-send flushes the frames buffered so far ahead of it, which 5.4 allows. Frames go
+send flushes the frames buffered so far ahead of it, which 5.4 allows. DataFrames go
 out as the buffer fills, so small frames share a Write. Once a close has gone
 out, the rest is refused with ErrCloseAlreadySent.
 

@@ -21,8 +21,16 @@ the sentinel itself.
 var (
 	// ErrFrameByteLengthExceeded is returned by GetFrameFromReader before it
 	// allocates, when the frame header declares a payload larger than the max
-	// the caller allowed. RFC 6455 close code 1009 is the matching response.
+	// the caller allowed. Listen also returns it when a message's data frames,
+	// headers included, go over MaxDataFramesSize. RFC 6455 close code 1009 is
+	// the matching response.
 	ErrFrameByteLengthExceeded = errors.New("frame payload exceeds the max byte length")
+
+	// ErrPayloadLengthMSBSet is returned by GetFrameFromReader when a 64 bit
+	// payload length has its most significant bit set. RFC 6455 5.2 requires
+	// that bit to be 0, so this is a protocol error. Answer it with close code
+	// 1002.
+	ErrPayloadLengthMSBSet = errors.New("64 bit payload length has its most significant bit set")
 
 	// ErrControlFramePayloadTooLong is returned before anything reaches the
 	// socket. RFC 6455 5.5 caps a control frame payload at 125 bytes so it
@@ -90,9 +98,9 @@ var (
 	// 6455 7.4 does not allow on the wire — answer with close code 1002.
 	ErrInvalidCloseStatusCode = errors.New("close frame status code is not one the RFC allows on the wire")
 
-	// ErrMsgFrameCountExceeded is a message arriving in more frames than
-	// MaxMsgFrameCount allows — answer with close code 1009.
-	ErrMsgFrameCountExceeded = errors.New("message arrived in more frames than allowed")
+	// ErrDataFrameCountExceeded is a message arriving in more frames than
+	// MaxDataFrameCount allows — answer with close code 1009.
+	ErrDataFrameCountExceeded = errors.New("message arrived in more frames than allowed")
 
 	// ErrReservedBitsSet is a frame with RSV1, RSV2 or RSV3 set. RFC 6455 5.2
 	// requires them clear unless an extension defining them was negotiated in
@@ -185,7 +193,7 @@ which status code names each one. This is that table:
 
 	ErrInvalidUTF8                                -> 1007 CloseInvalidFramePayloadData
 	ErrFrameByteLengthExceeded,
-	ErrMsgFrameCountExceeded                      -> 1009 CloseMessageTooBig
+	ErrDataFrameCountExceeded                     -> 1009 CloseMessageTooBig
 	every other violation a frame can commit      -> 1002 CloseProtocolError
 
 Reason is left empty. What to tell the peer about your own internals is a policy
@@ -194,10 +202,11 @@ this package has no opinion on — set it before sending if you want one.
 Everything else gets nil. That is the absence of an attribution, not a claim
 that the connection is healthy, and it never means "close the connection":
 
-  - The connection already failed. io.EOF, os.ErrDeadlineExceeded and
-    net.ErrClosed arrive here through GetNextFrame, and the peer broke no rule.
-    7.4.1 calls this 1006 abnormal closure and forbids putting 1006 on the wire,
-    because it is what an endpoint records about itself.
+  - The connection already failed. io.EOF, io.ErrUnexpectedEOF,
+    os.ErrDeadlineExceeded and net.ErrClosed arrive here through GetNextFrame,
+    and the peer broke no rule. 7.4.1 calls this 1006 abnormal closure and
+    forbids putting 1006 on the wire, because it is what an endpoint records
+    about itself.
 
   - ErrListenerConnIsNil or ErrListenerIsListening, which Listen returns before
     it reads anything. ErrListenerIsListening means another goroutine holds a
@@ -223,7 +232,7 @@ func StandardClosePayloadFor(err error) *ClosePayload {
 		return &ClosePayload{StatusCode: CloseInvalidFramePayloadData}
 
 	case errors.Is(err, ErrFrameByteLengthExceeded),
-		errors.Is(err, ErrMsgFrameCountExceeded):
+		errors.Is(err, ErrDataFrameCountExceeded):
 		return &ClosePayload{StatusCode: CloseMessageTooBig}
 
 	case errors.Is(err, ErrReservedBitsSet),
@@ -234,7 +243,8 @@ func StandardClosePayloadFor(err error) *ClosePayload {
 		errors.Is(err, ErrContinuationFrameWithoutMsg),
 		errors.Is(err, ErrDataFrameDuringMsg),
 		errors.Is(err, ErrInvalidCloseStatusCode),
-		errors.Is(err, ErrClosePayloadTooShort):
+		errors.Is(err, ErrClosePayloadTooShort),
+		errors.Is(err, ErrPayloadLengthMSBSet):
 		return &ClosePayload{StatusCode: CloseProtocolError}
 	}
 	return nil

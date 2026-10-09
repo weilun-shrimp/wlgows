@@ -37,7 +37,7 @@ Your own code may go further, if you know what you are doing — see
 - [Installation](#installation)
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
-- [Coming from v5](#coming-from-v5) · [from v4](#coming-from-v4) — [Streaming: End no longer releases](#streaming-end-no-longer-releases)
+- [Coming from v6](#coming-from-v6)
 - [Design](#design)
 - [Memory vs. speed](#memory-vs-speed-sizing-the-buffers-yourself) — [the reader](#the-reader) · [the writer](#the-writer) · [the smallest connection](#the-smallest-connection)
 - [Benchmark comparison](#benchmark-comparison) — against gorilla/websocket and gobwas/ws
@@ -55,10 +55,10 @@ and so does sending: **[SENDING_README.md](./SENDING_README.md)**.
 ## Installation
 
 ```bash
-go get github.com/weilun-shrimp/wlgows/v6
+go get github.com/weilun-shrimp/wlgows/v7
 ```
 
-The import path carries the `/v6` suffix Go requires for major version 2 and
+The import path carries the `/v7` suffix Go requires for major version 2 and
 above; the package name is still `wlgows`, so call sites read `wlgows.Dial(...)`.
 
 ## Quick Start
@@ -75,7 +75,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 func main() {
@@ -115,8 +115,8 @@ func handle(netConn net.Conn) {
 
 	// SetConfig replaces all of it, so start from what the standard hooks left.
 	config := listener.GetConfig()
-	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
-	config.Text = func(frames wlgows.Frames) {
+	config.MaxDataFramesSize = 10 * 1024 * 1024
+	config.Text = func(frames wlgows.DataFrames) {
 		conn.SendText(frames.Bytes(), 0) // echo
 	}
 	listener.SetConfig(config)
@@ -148,7 +148,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 func main() {
@@ -169,8 +169,8 @@ func main() {
 	listener := conn.NewStandardListener()
 
 	config := listener.GetConfig() // what the standard hooks left
-	config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
-	config.Text = func(frames wlgows.Frames) {
+	config.MaxDataFramesSize = 10 * 1024 * 1024
+	config.Text = func(frames wlgows.DataFrames) {
 		log.Println("received:", frames.String())
 	}
 	listener.SetConfig(config)
@@ -270,106 +270,52 @@ pings, echo the close handshake, and reject frames RFC 6455 forbids without any
 of that appearing in the example. What is left in each file is the part you
 would write yourself: the hooks.
 
-## Coming from v5
+## Coming from v6
 
-v6 changes how a `Conn` writes. Every frame now goes through a fixed size
-`bufio.Writer` you size per connection, so small frames share a socket write,
-and a client masks a copy instead of your payload. Most of it shows up as
-compile errors:
+v7 reads a frame header straight out of your `bufio.Reader`, so reading a frame
+allocates only the `Frame` and its payload, and renames the Listener's limits
+after what they count. `Conn` code is unchanged. Direct callers of the frame
+reader and code that names the renamed items see a compile error:
 
-| v5 | v6 |
+| v6 | v7 |
 |---|---|
-| `go get .../wlgows/v5` | `go get github.com/weilun-shrimp/wlgows/v6` |
-| `wlgows.ServerHandShake(netConn, r, req)` | `wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)` |
-| `wlgows.ClientHandShake(netConn, r, req)` | `wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)` |
-| `c := wlgows.NewConn(netConn, r, mask)` | `c, err := wlgows.NewConn(netConn, r, bufio.NewWriter(netConn), mask)` |
-| `conn.RenewWriteBuffer(capacity)` | `err := conn.RenewWriter(bufio.NewWriterSize(conn, size))` — see below |
-| `wlgows.HijackFromHttp(w)` | `w.(http.Hijacker).Hijack()`, then pass `bufRW.Reader` and `bufRW.Writer` — see [HTTP Hijacking](#http-hijacking) |
-| `wlgows.HijackFromGin(c)` | `c.Writer.Hijack()`, the same way |
-| `f, err := wlgows.NewFrame(config)` | `f := wlgows.NewFrame(config)` — no error |
-| `NewFrameConfig{..., Mask: true}`, `NewControlFrameConfig{..., Mask: true}` | drop `Mask`: the `Conn` masks when it sends |
-| `wire := frame.Seal(buffer)` | gone: send it with `conn.SendFrame(frame)` |
-| `wlgows.GenerateMaskingKey()` | `wlgows.FillMaskingKey(&f.MaskingKey)` — `MaskingKey` is a `[4]byte` |
+| `go get .../wlgows/v6` | `go get github.com/weilun-shrimp/wlgows/v7` |
+| `wlgows.GetFrameFromReader(netConn, max)` | `wlgows.GetFrameFromReader(r, max)` with `r := bufio.NewReader(netConn)`. Keep one `r` per connection: it holds bytes already read. |
+| `wlgows.ReadFromReader(r, length)` | gone: `buffer := make([]byte, length)`, then `io.ReadFull(r, buffer)` |
+| `ListenerConfig{MaxMsgFrameCount: n}` | `ListenerConfig{MaxDataFrameCount: n}` |
+| `ListenerConfig{MaxMsgPayloadByteLen: n}` | `ListenerConfig{MaxDataFramesSize: n}` |
+| `wlgows.ErrMsgFrameCountExceeded` | `wlgows.ErrDataFrameCountExceeded` |
+| `wlgows.Frames`, `func(frames wlgows.Frames)` hooks | `wlgows.DataFrames`, `func(frames wlgows.DataFrames)` |
 
 Behaviour that changes without a compile error:
 
-- **The write buffer no longer grows or empties.** In v5 it grew to the largest
-  frame and `RenewWriteBuffer(0)` emptied it. In v6 it is the `bufio.Writer` you
-  pass, fixed at its size, and `RenewWriter` swaps it. The smallest is 14. See
-  [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer).
-- **`chunkSize` no longer decides memory.** It only decides where frames are cut.
-- **`SendFrame` refuses more.** A data frame or a second close after this side's
-  close returns `ErrCloseAlreadySent`, and a control payload over 125 bytes
-  returns `ErrControlFramePayloadTooLong`, with nothing written. It also sets the
-  length fields, FIN on a control frame, and on a client a fresh masking key on
-  every send (5.3), where v5 kept the key a frame already had.
-- **The examples are their own module**, so the library has no dependencies.
-  Run them from `example/`.
-
-## Coming from v4
-
-Go through [Coming from v5](#coming-from-v5) as well: v4 to v5 is below, and v5
-to v6 is above it.
-
-Most v4 code fails to compile against v5, and the compiler points at each place
-to change. One change compiles anyway and then hangs: read
-[Streaming: End no longer releases](#streaming-end-no-longer-releases) first.
-
-| v4 | v5 and v6 |
-|---|---|
-| `conn.SendText(text)` | `conn.SendText(text, 0)` — 0 sends one frame, as v4 did |
-| `conn.SendBinary(data)` | `conn.SendBinary(data, 0)` |
-| `defer conn.EndLongDataTransmission()` | `defer conn.ReleaseLongDataTransmission()`, then `return conn.EndLongDataTransmission(nil)` on success |
-
-New in v5:
-
-- `conn.SendData(opcode, payload, chunkSize)` sends a message whose opcode you pick at
-  run time.
-- `chunkSize` on `SendText`, `SendBinary` and `SendData` splits a message into
-  frames of that many payload bytes.
-- `conn.ReleaseLongDataTransmission()` frees the connection after a stream.
-
-### Streaming: End no longer releases
-
-In v4, `EndLongDataTransmission` sent FIN and freed the connection, so the usual
-code deferred it. In v5 it only sends FIN, and `ReleaseLongDataTransmission`
-frees the connection.
-
-The obvious one-word fix compiles, and is wrong:
-
-```go
-defer conn.EndLongDataTransmission(nil) // compiles, never frees the connection
-```
-
-The first stream works. Every data send after it on that connection waits
-forever. Write this instead:
-
-```go
-if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
-	return err
-}
-defer conn.ReleaseLongDataTransmission()
-
-// ... TransmitData for each chunk, returning on error ...
-
-return conn.EndLongDataTransmission(nil)
-```
-
-Two more behaviour changes:
-
-- **A failed stream is no longer delivered as complete.** In v4 the deferred End
-  sent FIN after a failed chunk, so the peer received a cut-off message as whole.
-  In v5 nothing sends FIN unless you reach End. Close the connection after a
-  failure.
-- **Start then End with nothing sent now sends an empty message.** v4 sent
-  nothing. RFC 6455 allows an empty message.
+- **`io.EOF` now only means the stream ended between frames.** A stream that
+  ends after a frame's first byte returns `io.ErrUnexpectedEOF`. In v6 a frame
+  cut right after its first 2 bytes, or right after its header, returned
+  `io.EOF`.
+- **A 64 bit length with its most significant bit set returns
+  `ErrPayloadLengthMSBSet`.** RFC 6455 5.2 forbids that bit.
+  `StandardClosePayloadFor` already maps it to 1002, so a loop that sends its
+  result, as the examples do, needs no change. In v6 such a frame made `make`
+  panic.
+- **`MaxDataFramesSize` counts frame headers too.** Every data frame spends
+  its 2 to 14 header bytes as well as its payload, empty continuations included.
+  In v6 only the payload counted, so a message that just fitted may now be
+  refused. Leave a little room above the largest message you accept.
+- **Empty continuation frames are no longer dropped.** `Text`, `Binary` and
+  `Data` get every frame of the message as it arrived, and each one counts
+  toward `MaxDataFrameCount`. In v6 an empty frame in the middle of a message
+  was silently skipped.
+- **`TransmitData` sends an empty chunk as an empty frame.** In v6 it skipped
+  it. Check the length first, as the streaming example does, if you do not want
+  that frame.
 
 ## Design
 
 **Single package.** Everything is in the root `wlgows` package:
 
 ```go
-import "github.com/weilun-shrimp/wlgows/v6"
+import "github.com/weilun-shrimp/wlgows/v7"
 
 netConn, req, _ := wlgows.Dial(url, nil)
 s, _             := wlgows.Run(":8001")
@@ -498,10 +444,10 @@ byte reader and writer on each:
 
 | Area | vs gorilla | vs gobwas |
 |---|---|---|
-| Server send | **Win** at every size | **Win** on batched frames, tie on large ones |
+| Server send | **Win** at every size | **Win** on batched frames, tie on single ones |
 | Send memory | **Win**: 0 allocs, always | **Win**: 0 allocs vs 1 per frame |
 | Client send | Lose on small frames | Lose, on purpose for safety |
-| Read | **Win**: 1.4x to 2.8x faster | Tie on large frames, lose on small ones |
+| Read | **Win**: 1.5x to 3.4x faster | **Win** on small server frames, tie on single client frames, lose on the rest |
 
 The client send losses are on purpose. The masking key comes from
 `crypto/rand`, never `math/rand`, and your payload is only read, never masked in
@@ -525,8 +471,8 @@ inside a hook:
 listener := conn.NewStandardListener() // or wlgows.NewListener(conn), no hooks
 
 config := listener.GetConfig()
-config.MaxMsgPayloadByteLen = 10 * 1024 * 1024
-config.Text = func(frames wlgows.Frames) { log.Print(frames.String()) }
+config.MaxDataFramesSize = 10 * 1024 * 1024
+config.Text = func(frames wlgows.DataFrames) { log.Print(frames.String()) }
 listener.SetConfig(config)
 
 err := listener.Listen()
@@ -542,7 +488,7 @@ what each error means.
 **`GetNextFrame`** hands you one frame at a time, and you assemble:
 
 ```go
-var frames wlgows.Frames
+var frames wlgows.DataFrames
 for {
 	f, err := conn.GetNextFrame(10 * 1024 * 1024) // 0 for no limit
 	if err != nil {
@@ -556,7 +502,7 @@ for {
 ```
 
 One frame at a time is what lets a huge message be streamed somewhere else
-instead of held whole. `Frames` assembles when you want it to:
+instead of held whole. `DataFrames` assembles when you want it to:
 
 | Call | Returns |
 |---|---|
@@ -736,7 +682,7 @@ not know. Map yours before calling. See the Errors section of
 go test ./...                              # full suite
 go test -race ./...                        # the integration tests spawn goroutines
 go test -cover .                           # 98.3% of statements
-go test -bench BenchmarkFramesAssembly .   # benchmarks, which plain `go test` skips
+go test -bench BenchmarkDataFramesAssembly .   # benchmarks, which plain `go test` skips
 ```
 
 One `_test.go` per source file, all in package `wlgows` so the `di` seams are
@@ -744,14 +690,14 @@ reachable. Two files have no source counterpart:
 
 | File | Contents |
 |---|---|
-| [`Fakes_test.go`](./Fakes_test.go) | Shared doubles — `fakeConn` (in-memory `net.Conn`), `fakeIOWriter`/`fakeIOReader` (plain `io.Writer`/`io.Reader` doubles), `fakeFuncLocker` (runs a func on `Lock` and `Unlock`, so a test records them among its other steps), `fixedRandRead`, `scriptedReadFromReader` |
+| [`Fakes_test.go`](./Fakes_test.go) | Shared doubles — `fakeConn` (in-memory `net.Conn`), `fakeIOWriter`/`fakeIOReader` (plain `io.Writer`/`io.Reader` doubles), `fakeFuncLocker` (runs a func on `Lock` and `Unlock`, so a test records them among its other steps), `fixedRandRead`, `fakeGetFrameFromReaderBufioReader` (scripts `Peek` and `Discard` for the frame reader) |
 | [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | `Listen` end to end over a real `net.Pipe`, with **no** `di` substitution |
 
 The integration tests catch wiring mistakes the unit tests structurally cannot —
 a constructor that forgets a `di` field, or a default pointing at the wrong
 function.
 
-`BenchmarkFramesAssembly` justifies `Bytes()` over `[]byte(String())` on a
+`BenchmarkDataFramesAssembly` justifies `Bytes()` over `[]byte(String())` on a
 70000 byte message:
 
 ```
@@ -768,7 +714,7 @@ Every function that performs I/O or uses randomness is a thin exported wrapper
 over an implementation taking a `di` struct of function values; types hold their
 dependencies in a `di` field populated by the constructor. All of it is
 unexported, so only in-package tests can reach it. Deterministic functions
-(`MaskPayload`, `Frames.String`, `ValidateHandShakeRequest`, …) have no seam and
+(`MaskPayload`, `DataFrames.String`, `ValidateHandShakeRequest`, …) have no seam and
 are tested directly.
 
 ```go

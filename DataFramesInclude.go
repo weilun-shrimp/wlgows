@@ -1,6 +1,6 @@
 package wlgows
 
-func (f Frames) IsIncludedMaskedFrame() bool {
+func (f DataFrames) IsIncludedMaskedFrame() bool {
 	for _, frame := range f {
 		if frame.Mask {
 			return true
@@ -9,7 +9,7 @@ func (f Frames) IsIncludedMaskedFrame() bool {
 	return false
 }
 
-func (f Frames) IsIncludedUnMaskedFrame() bool {
+func (f DataFrames) IsIncludedUnMaskedFrame() bool {
 	for _, frame := range f {
 		if !frame.Mask {
 			return true

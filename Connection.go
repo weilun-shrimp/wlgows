@@ -2,7 +2,6 @@ package wlgows
 
 import (
 	"bufio"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -57,7 +56,7 @@ type Conn struct {
 }
 
 type connDI struct {
-	getFrameFromReader    func(r io.Reader, maxByteLength uint64) (*Frame, error)
+	getFrameFromReader    func(r *bufio.Reader, maxByteLength uint64) (*Frame, error)
 	newControlFrame       func(config NewControlFrameConfig) (*Frame, error)
 	newDataFrame          func(config NewFrameConfig) (*Frame, error)
 	fillMaskingKey        func(key *[4]byte) error
@@ -110,11 +109,11 @@ GetNextFrame reads one frame, refusing any whose header declares a payload
 larger than maxByteLength. Pass 0 for no limit.
 
 One frame is the whole unit this returns: a message split across frames is
-assembled by the caller, appending into a Frames until a frame with FIN set
+assembled by the caller, appending into a DataFrames until a frame with FIN set
 arrives. That is what lets a caller stream a huge message somewhere else instead
 of holding it:
 
-	var frames wlgows.Frames
+	var frames wlgows.DataFrames
 	for {
 		f, err := conn.GetNextFrame(10 << 20)
 		if err != nil {

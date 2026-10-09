@@ -38,8 +38,7 @@ bytes a connection, for a price in writes. See
 - [Concurrency](#concurrency)
 - [Control frames and your own frames](#control-frames-and-your-own-frames)
 
-The rest of the library is in the [main README](./README.md). Coming from v5?
-See [Coming from v5](./README.md#coming-from-v5).
+The rest of the library is in the [main README](./README.md).
 
 ## Choosing a call
 
@@ -123,7 +122,7 @@ The four calls:
 | Call | What it does |
 |---|---|
 | `StartLongDataTransmission(opcode)` | Opens a text or binary message and takes the connection for it. |
-| `TransmitData(chunk)` | Sends one chunk as one frame. Empty chunks are skipped. |
+| `TransmitData(chunk)` | Sends one chunk as one frame. An empty chunk is sent as an empty frame. |
 | `EndLongDataTransmission(last)` | Sends `last` as the final frame, with FIN. |
 | `ReleaseLongDataTransmission()` | Frees the connection. Sends nothing. |
 
@@ -261,8 +260,8 @@ already in memory. What it changes:
 - **Your peer's limits.** Too large, and a frame may pass a peer's per-frame or
   per-message limit. Too small, and a large message becomes many frames, and a
   peer may cap frames per message. wlgows' own `Listener` can, with
-  `MaxMsgFrameCount` (no limit by default), and refuses the message with
-  `ErrMsgFrameCountExceeded`. Keep message size ÷ `chunkSize` under that cap.
+  `MaxDataFrameCount` (no limit by default), and refuses the message with
+  `ErrDataFrameCountExceeded`. Keep message size ÷ `chunkSize` under that cap.
   For example, 16 MB in 4 KB chunks is 4,096 frames, more than the 4,000 the
   [Listener guide](./LISTENER_README.md#configuration) uses as its example.
 

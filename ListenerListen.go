@@ -91,7 +91,7 @@ func (l *Listener) claimListen() (chan error, error) {
 	// same — this only makes "never nil" true literally, so the rest never has
 	// to ask. A restart leaves an open message alone.
 	if l.currentDataFrames == nil {
-		l.currentDataFrames = Frames{}
+		l.currentDataFrames = DataFrames{}
 	}
 	return l.pauseChan, nil
 }
