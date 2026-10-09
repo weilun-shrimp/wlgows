@@ -2,17 +2,17 @@ package wlgows
 
 import "testing"
 
-func TestFramesIsIncludedMaskedFrame(t *testing.T) {
+func TestDataFramesIsIncludedMaskedFrame(t *testing.T) {
 	tests := []struct {
 		name string
-		msg  Frames
+		msg  DataFrames
 		want bool
 	}{
-		{"empty message", Frames{}, false},
-		{"all unmasked", Frames{{Mask: false}, {Mask: false}}, false},
-		{"all masked", Frames{{Mask: true}, {Mask: true}}, true},
-		{"mixed, masked last", Frames{{Mask: false}, {Mask: true}}, true},
-		{"mixed, masked first", Frames{{Mask: true}, {Mask: false}}, true},
+		{"empty message", DataFrames{}, false},
+		{"all unmasked", DataFrames{{Mask: false}, {Mask: false}}, false},
+		{"all masked", DataFrames{{Mask: true}, {Mask: true}}, true},
+		{"mixed, masked last", DataFrames{{Mask: false}, {Mask: true}}, true},
+		{"mixed, masked first", DataFrames{{Mask: true}, {Mask: false}}, true},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -23,17 +23,17 @@ func TestFramesIsIncludedMaskedFrame(t *testing.T) {
 	}
 }
 
-func TestFramesIsIncludedUnMaskedFrame(t *testing.T) {
+func TestDataFramesIsIncludedUnMaskedFrame(t *testing.T) {
 	tests := []struct {
 		name string
-		msg  Frames
+		msg  DataFrames
 		want bool
 	}{
-		{"empty message", Frames{}, false},
-		{"all unmasked", Frames{{Mask: false}, {Mask: false}}, true},
-		{"all masked", Frames{{Mask: true}, {Mask: true}}, false},
-		{"mixed, unmasked last", Frames{{Mask: true}, {Mask: false}}, true},
-		{"mixed, unmasked first", Frames{{Mask: false}, {Mask: true}}, true},
+		{"empty message", DataFrames{}, false},
+		{"all unmasked", DataFrames{{Mask: false}, {Mask: false}}, true},
+		{"all masked", DataFrames{{Mask: true}, {Mask: true}}, false},
+		{"mixed, unmasked last", DataFrames{{Mask: true}, {Mask: false}}, true},
+		{"mixed, unmasked first", DataFrames{{Mask: false}, {Mask: true}}, true},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -45,12 +45,12 @@ func TestFramesIsIncludedUnMaskedFrame(t *testing.T) {
 }
 
 // A mixed message is reported by both predicates; they are not complements.
-func TestFramesIncludePredicatesAreIndependent(t *testing.T) {
-	msg := Frames{{Mask: true}, {Mask: false}}
+func TestDataFramesIncludePredicatesAreIndependent(t *testing.T) {
+	msg := DataFrames{{Mask: true}, {Mask: false}}
 	if !msg.IsIncludedMaskedFrame() || !msg.IsIncludedUnMaskedFrame() {
 		t.Error("a mixed message should report true for both predicates")
 	}
-	empty := Frames{}
+	empty := DataFrames{}
 	if empty.IsIncludedMaskedFrame() || empty.IsIncludedUnMaskedFrame() {
 		t.Error("an empty message should report false for both predicates")
 	}

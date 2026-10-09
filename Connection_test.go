@@ -3,7 +3,6 @@ package wlgows
 import (
 	"bufio"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"slices"
@@ -65,7 +64,7 @@ func TestConnLocking(t *testing.T) {
 			lock:   func() { steps = append(steps, "read lock") },
 			unlock: func() { steps = append(steps, "read unlock") },
 		}
-		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) {
+		wsConn.di.getFrameFromReader = func(*bufio.Reader, uint64) (*Frame, error) {
 			steps = append(steps, "read")
 			return &Frame{}, nil
 		}
@@ -85,7 +84,7 @@ func TestConnLocking(t *testing.T) {
 			lock:   func() { steps = append(steps, "read lock") },
 			unlock: func() { steps = append(steps, "read unlock") },
 		}
-		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) {
+		wsConn.di.getFrameFromReader = func(*bufio.Reader, uint64) (*Frame, error) {
 			steps = append(steps, "read")
 			return nil, errors.New("boom")
 		}
@@ -103,8 +102,8 @@ func TestConnGetNextFrame(t *testing.T) {
 	t.Run("delegates to di", func(t *testing.T) {
 		want := &Frame{FIN: true, Opcode: 1, PayloadData: []byte("x")}
 		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
-		var gotConn io.Reader
-		wsConn.di.getFrameFromReader = func(r io.Reader, _ uint64) (*Frame, error) {
+		var gotConn *bufio.Reader
+		wsConn.di.getFrameFromReader = func(r *bufio.Reader, _ uint64) (*Frame, error) {
 			gotConn = r
 			return want, nil
 		}
@@ -126,7 +125,7 @@ func TestConnGetNextFrame(t *testing.T) {
 	t.Run("passes the max byte length straight through", func(t *testing.T) {
 		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
 		var got uint64
-		wsConn.di.getFrameFromReader = func(_ io.Reader, maxByteLength uint64) (*Frame, error) {
+		wsConn.di.getFrameFromReader = func(_ *bufio.Reader, maxByteLength uint64) (*Frame, error) {
 			got = maxByteLength
 			return &Frame{}, nil
 		}
@@ -144,7 +143,7 @@ func TestConnGetNextFrame(t *testing.T) {
 	t.Run("propagates the error", func(t *testing.T) {
 		want := errors.New("read failed")
 		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
-		wsConn.di.getFrameFromReader = func(io.Reader, uint64) (*Frame, error) { return nil, want }
+		wsConn.di.getFrameFromReader = func(*bufio.Reader, uint64) (*Frame, error) { return nil, want }
 		if _, err := wsConn.GetNextFrame(0); !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
 		}

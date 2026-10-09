@@ -86,8 +86,7 @@ type transmitDataDI struct {
 
 /*
 TransmitData adds one fragment, sealed and written before it returns. Empty data
-is dropped — a zero length fragment adds nothing to the message 5.4 defines as
-the concatenation of its fragments.
+is sent too, as a zero length fragment.
 
 data is not retained, so the buffer you read into can be reused straight away.
 Not after End: the message is over.
@@ -103,10 +102,6 @@ func transmitData(data []byte, di transmitDataDI) error {
 	if di.conn.currentTransmitDataMsgOpcode == 0 {
 		return ErrLongDataTransmissionNotStarted
 	}
-	if len(data) == 0 {
-		return nil // Useless action.
-	}
-
 	// 5.4: the message's own opcode opens it, every frame after continues it.
 	opcode := di.conn.currentTransmitDataMsgOpcode
 	if di.conn.currentTransmitDataMsgOpened {

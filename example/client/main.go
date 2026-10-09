@@ -19,14 +19,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
-	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v7"
+	"github.com/weilun-shrimp/wlgows/v7/example/example_helpers"
 )
 
 const (
 	// A peer can claim a 10 GB payload in a 10 byte header. Without this that
 	// claim becomes a 10 GB allocation before a byte of payload arrives.
-	maxMsgPayloadByteLen = 10 * 1024 * 1024 // 10 MB
+	maxDataFramesSize = 10 * 1024 * 1024 // 10 MB
 
 	// Armed before each frame read, and only fires when no bytes arrive at all.
 	frameReadTimeout = 60 * time.Second
@@ -83,13 +83,13 @@ func main() {
 
 	// SetConfig replaces all of it, so start from what the standard hooks left.
 	config := listener.GetConfig()
-	config.MaxMsgPayloadByteLen = maxMsgPayloadByteLen
+	config.MaxDataFramesSize = maxDataFramesSize
 	config.FrameReadTimeout = frameReadTimeout
 
-	config.Text = func(frames wlgows.Frames) {
+	config.Text = func(frames wlgows.DataFrames) {
 		fmt.Println("echo server return: ", frames.String())
 	}
-	config.Binary = func(frames wlgows.Frames) {
+	config.Binary = func(frames wlgows.DataFrames) {
 		fmt.Printf("echo server return %d binary bytes\n", frames.ByteLen())
 	}
 

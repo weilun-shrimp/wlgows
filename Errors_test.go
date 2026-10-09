@@ -31,6 +31,7 @@ func TestStandardClosePayloadFor(t *testing.T) {
 			ErrDataFrameDuringMsg,
 			ErrInvalidCloseStatusCode,
 			ErrClosePayloadTooShort,
+			ErrPayloadLengthMSBSet,
 		}, &ClosePayload{StatusCode: CloseProtocolError}},
 
 		{"the payload did not match its opcode", []error{
@@ -39,7 +40,7 @@ func TestStandardClosePayloadFor(t *testing.T) {
 
 		{"a limit the caller set was passed", []error{
 			ErrFrameByteLengthExceeded,
-			ErrMsgFrameCountExceeded,
+			ErrDataFrameCountExceeded,
 		}, &ClosePayload{StatusCode: CloseMessageTooBig}},
 
 		// The connection is already gone, so there is nothing to send it. 7.4.1

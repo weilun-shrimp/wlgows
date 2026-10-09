@@ -1,3 +1,3 @@
-module github.com/weilun-shrimp/wlgows/v6
+module github.com/weilun-shrimp/wlgows/v7
 
 go 1.22.1

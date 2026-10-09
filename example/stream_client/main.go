@@ -25,8 +25,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
-	"github.com/weilun-shrimp/wlgows/v6/example/example_helpers"
+	"github.com/weilun-shrimp/wlgows/v7"
+	"github.com/weilun-shrimp/wlgows/v7/example/example_helpers"
 )
 
 const (

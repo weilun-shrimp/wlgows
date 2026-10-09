@@ -10,8 +10,8 @@ what is here and add to it, since SetConfig replaces all of it at once:
 
 	listener := conn.NewStandardListener()
 	config := listener.GetConfig()
-	config.MaxMsgPayloadByteLen = 10 << 20
-	config.Text = func(frames wlgows.Frames) { ... }
+	config.MaxDataFramesSize = 10 << 20
+	config.Text = func(frames wlgows.DataFrames) { ... }
 	listener.SetConfig(config)
 	err := listener.Listen()
 

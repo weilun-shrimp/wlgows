@@ -34,7 +34,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/weilun-shrimp/wlgows/v6"
+	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 const (
@@ -49,7 +49,7 @@ const (
 	// but only by what the message has left, so early on a frame may claim most
 	// of this. Bounding every frame tightly while letting the message run long is
 	// what reading with conn.GetNextFrame(max) yourself still does better.
-	maxMsgPayloadByteLen = 2 * 1024 * 1024 * 1024 // 2 GB
+	maxDataFramesSize = 2 * 1024 * 1024 * 1024 // 2 GB
 
 	frameReadTimeout = 60 * time.Second
 
@@ -113,7 +113,7 @@ func handleConn(netConn net.Conn) {
 	listener := conn.NewStandardListener()
 
 	config := listener.GetConfig()
-	config.MaxMsgPayloadByteLen = maxMsgPayloadByteLen
+	config.MaxDataFramesSize = maxDataFramesSize
 	config.FrameReadTimeout = frameReadTimeout
 
 	// Care: setting this replaces assembly outright. Text and Binary never run,
