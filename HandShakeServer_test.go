@@ -318,6 +318,23 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			wantErr: ErrHttpSecWebSocketKeyHeaderNotSet,
 		},
 		{
+			name:    "websocket key not base64",
+			mutate:  func(r *http.Request) { r.Header.Set("Sec-WebSocket-Key", "not base64!") },
+			wantErr: ErrHttpSecWebSocketKeyInvalid,
+		},
+		{
+			name:    "websocket key decodes to 15 bytes",
+			mutate:  func(r *http.Request) { r.Header.Set("Sec-WebSocket-Key", "AAAAAAAAAAAAAAAAAAAA") },
+			wantErr: ErrHttpSecWebSocketKeyInvalid,
+		},
+		// The right 16 bytes with the trailing "==" dropped. Standard base64
+		// requires that padding.
+		{
+			name:    "websocket key without padding",
+			mutate:  func(r *http.Request) { r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ") },
+			wantErr: ErrHttpSecWebSocketKeyInvalid,
+		},
+		{
 			name:    "connection header not upgrade",
 			mutate:  func(r *http.Request) { r.Header.Set("Connection", "keep-alive") },
 			wantErr: ErrHttpConnectionHeaderNotUpgrade,

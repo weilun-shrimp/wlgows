@@ -158,6 +158,7 @@ func TestResponseWriterDeclineByError(t *testing.T) {
 		{"method not allowed", ErrHttpMethodNotAllowed, http.StatusMethodNotAllowed},
 		{"protocol not allowed", ErrHttpProtocolOrVersionNotAllowed, http.StatusHTTPVersionNotSupported},
 		{"websocket key not set", ErrHttpSecWebSocketKeyHeaderNotSet, http.StatusBadRequest},
+		{"websocket key invalid", ErrHttpSecWebSocketKeyInvalid, http.StatusBadRequest},
 		{"connection not upgrade", ErrHttpConnectionHeaderNotUpgrade, http.StatusBadRequest},
 		{"upgrade not websocket", ErrHttpUpgradeHeaderNotWebsocket, http.StatusBadRequest},
 		{"websocket version not 13", ErrHttpSecWebSocketVersionNotSupported, http.StatusUpgradeRequired},

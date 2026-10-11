@@ -32,6 +32,7 @@ func TestStandardClosePayloadFor(t *testing.T) {
 			ErrInvalidCloseStatusCode,
 			ErrClosePayloadTooShort,
 			ErrPayloadLengthMSBSet,
+			ErrPayloadLengthNotMinimal,
 		}, &ClosePayload{StatusCode: CloseProtocolError}},
 
 		{"the payload did not match its opcode", []error{

@@ -246,6 +246,28 @@ func TestGetFrameFromReaderErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("16 bit length under 126", func(t *testing.T) {
+		reader := fakeGetFrameFromReaderBufioReader{
+			peek: func(n int) ([]byte, error) {
+				return []byte{0x82, 0x7E, 0x00, 0x7D}[:n], nil
+			},
+		}
+		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, ErrPayloadLengthNotMinimal) {
+			t.Errorf("err = %v, want ErrPayloadLengthNotMinimal", err)
+		}
+	})
+
+	t.Run("64 bit length under 65536", func(t *testing.T) {
+		reader := fakeGetFrameFromReaderBufioReader{
+			peek: func(n int) ([]byte, error) {
+				return []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF}[:n], nil
+			},
+		}
+		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, ErrPayloadLengthNotMinimal) {
+			t.Errorf("err = %v, want ErrPayloadLengthNotMinimal", err)
+		}
+	})
+
 	t.Run("discard fails", func(t *testing.T) {
 		reader := fakeGetFrameFromReaderBufioReader{
 			peek: func(int) ([]byte, error) {

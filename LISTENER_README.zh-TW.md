@@ -359,6 +359,7 @@ nil，不一定代表是對方或協定出了問題。
 | `ErrControlFramePayloadTooLong` | 1002 |
 | `ErrClosePayloadTooShort` | 1002 |
 | `ErrPayloadLengthMSBSet` | 1002 |
+| `ErrPayloadLengthNotMinimal` | 1002 |
 | `ErrContinuationFrameWithoutMsg`、`ErrDataFrameDuringMsg` | 1002 |
 | `ErrInvalidCloseStatusCode` | 1002 |
 | `ErrInvalidUTF8` | 1007 |

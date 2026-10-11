@@ -17,7 +17,8 @@ req before sending it:
 
 	netConn, req, err := wlgows.Dial(url, tlsConfig)
 	r := bufio.NewReader(netConn)
-	conn, res, err := wlgows.ClientHandShake(netConn, r, 4096, req)
+	w := bufio.NewWriterSize(netConn, 4096)
+	conn, res, err := wlgows.ClientHandShake(netConn, r, w, req)
 
 r must be the same *bufio.Reader you pass to both ClientHandShake and
 NewConn — see ClientHandShake's doc comment for why.

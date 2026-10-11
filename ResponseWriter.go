@@ -99,6 +99,7 @@ func (w *ResponseWriter) DeclineByError(err error) {
 		w.Write([]byte(err.Error()))
 
 	case errors.Is(err, ErrHttpSecWebSocketKeyHeaderNotSet),
+		errors.Is(err, ErrHttpSecWebSocketKeyInvalid),
 		errors.Is(err, ErrHttpConnectionHeaderNotUpgrade),
 		errors.Is(err, ErrHttpUpgradeHeaderNotWebsocket):
 		w.WriteHeader(http.StatusBadRequest)

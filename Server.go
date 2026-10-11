@@ -52,8 +52,9 @@ request or run the handshake, so you're free to do both yourself:
 
 	netConn, err := server.Accept()
 	r := bufio.NewReader(netConn)
+	w := bufio.NewWriterSize(netConn, 4096)
 	req, err := http.ReadRequest(r)
-	conn, res, err := wlgows.ServerHandShake(netConn, r, 4096, req)
+	conn, res, err := wlgows.ServerHandShake(netConn, r, w, req)
 
 r must be the same *bufio.Reader you pass to both http.ReadRequest and
 NewConn — see ClientHandShake's doc comment for why the same reasoning

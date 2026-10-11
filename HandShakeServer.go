@@ -3,6 +3,7 @@ package wlgows
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -89,7 +90,8 @@ returning the first rule it breaks wrapped around the sentinel for it, which is
 what DeclineByError routes on to pick a status code.
 
 Connection and Upgrade are read as token lists rather than compared whole — see
-headerHasToken. The rest are single values the RFC fixes exactly.
+headerHasToken. Sec-WebSocket-Key must be base64 of 16 bytes. The rest are
+single values the RFC fixes exactly.
 
 The failing value is reported as it arrived, joined across lines if it came on
 more than one, so a rejected handshake says what the peer actually sent.
@@ -105,6 +107,8 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 	// header validation
 	if val := client_request.Header.Get("Sec-WebSocket-Key"); val == "" {
 		return fmt.Errorf("validate handshake: %w", ErrHttpSecWebSocketKeyHeaderNotSet)
+	} else if key, err := base64.StdEncoding.DecodeString(val); err != nil || len(key) != 16 {
+		return fmt.Errorf("validate handshake: Sec-WebSocket-Key %q: %w", val, ErrHttpSecWebSocketKeyInvalid)
 	}
 	if !headerHasToken(client_request.Header, "Connection", "upgrade") {
 		return fmt.Errorf("validate handshake: Connection is %q: %w",

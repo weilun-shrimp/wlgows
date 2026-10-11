@@ -379,6 +379,7 @@ The peer violated RFC 6455. Answer with a close frame, then close.
 | `ErrControlFramePayloadTooLong` | 1002 |
 | `ErrClosePayloadTooShort` | 1002 |
 | `ErrPayloadLengthMSBSet` | 1002 |
+| `ErrPayloadLengthNotMinimal` | 1002 |
 | `ErrContinuationFrameWithoutMsg`, `ErrDataFrameDuringMsg` | 1002 |
 | `ErrInvalidCloseStatusCode` | 1002 |
 | `ErrInvalidUTF8` | 1007 |

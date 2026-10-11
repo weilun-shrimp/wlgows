@@ -32,6 +32,11 @@ var (
 	// 1002.
 	ErrPayloadLengthMSBSet = errors.New("64 bit payload length has its most significant bit set")
 
+	// ErrPayloadLengthNotMinimal is returned by GetFrameFromReader when a payload
+	// length uses more bytes than it needs. RFC 6455 5.2 requires the shortest
+	// form. Answer it with close code 1002.
+	ErrPayloadLengthNotMinimal = errors.New("payload length is not in its shortest encoding")
+
 	// ErrControlFramePayloadTooLong is returned before anything reaches the
 	// socket. RFC 6455 5.5 caps a control frame payload at 125 bytes so it
 	// always fits in the 7 bit inline length.
@@ -149,8 +154,12 @@ var (
 	ErrHttpMethodNotAllowed            = errors.New("http method not allowed")
 	ErrHttpProtocolOrVersionNotAllowed = errors.New("http protocol or version not allowed")
 	ErrHttpSecWebSocketKeyHeaderNotSet = errors.New("Sec-WebSocket-Key header is not set")
-	ErrHttpConnectionHeaderNotUpgrade  = errors.New("Connection header is not Upgrade")
-	ErrHttpUpgradeHeaderNotWebsocket   = errors.New("Upgrade header is not websocket")
+
+	// ErrHttpSecWebSocketKeyInvalid is a Sec-WebSocket-Key that is not base64 of
+	// 16 bytes, as RFC 6455 4.2.1 requires.
+	ErrHttpSecWebSocketKeyInvalid     = errors.New("Sec-WebSocket-Key is not base64 of 16 bytes")
+	ErrHttpConnectionHeaderNotUpgrade = errors.New("Connection header is not Upgrade")
+	ErrHttpUpgradeHeaderNotWebsocket  = errors.New("Upgrade header is not websocket")
 
 	// ErrHttpSecWebSocketVersionNotSupported is a handshake request whose
 	// Sec-WebSocket-Version is missing or is not 13. RFC 6455 4.2.1 requires the
@@ -244,7 +253,8 @@ func StandardClosePayloadFor(err error) *ClosePayload {
 		errors.Is(err, ErrDataFrameDuringMsg),
 		errors.Is(err, ErrInvalidCloseStatusCode),
 		errors.Is(err, ErrClosePayloadTooShort),
-		errors.Is(err, ErrPayloadLengthMSBSet):
+		errors.Is(err, ErrPayloadLengthMSBSet),
+		errors.Is(err, ErrPayloadLengthNotMinimal):
 		return &ClosePayload{StatusCode: CloseProtocolError}
 	}
 	return nil

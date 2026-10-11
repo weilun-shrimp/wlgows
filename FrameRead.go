@@ -65,6 +65,10 @@ func getFrameFromReader(r getFrameFromReaderBufioReader, maxByteLength uint64, d
 		switch f.PayloadLength {
 		case 126:
 			f.ExtendedPayloadLength = uint64(binary.BigEndian.Uint16(header[2:]))
+			if f.ExtendedPayloadLength < 126 {
+				return f, fmt.Errorf("16 bit payload length %d fits in 7 bits: %w",
+					f.ExtendedPayloadLength, ErrPayloadLengthNotMinimal)
+			}
 		case 127:
 			f.ExtendedPayloadLength = binary.BigEndian.Uint64(header[2:])
 			// RFC 6455 5.2 says the 64 bit length's most significant bit must be
@@ -73,6 +77,10 @@ func getFrameFromReader(r getFrameFromReaderBufioReader, maxByteLength uint64, d
 			if f.ExtendedPayloadLength>>63 == 1 {
 				return f, fmt.Errorf("64 bit payload length %d has its most significant bit set: %w",
 					f.ExtendedPayloadLength, ErrPayloadLengthMSBSet)
+			}
+			if f.ExtendedPayloadLength < 65536 {
+				return f, fmt.Errorf("64 bit payload length %d fits in 16 bits: %w",
+					f.ExtendedPayloadLength, ErrPayloadLengthNotMinimal)
 			}
 		}
 		if f.Mask {
