@@ -46,12 +46,16 @@ func (w *ResponseWriter) WriteHeader(statusCode int) {
 }
 
 /*
-Will set the Content-Length automatically if header inexists
+Sets Content-Length when it is not set, except on 1xx, 204 and 304 (RFC 7230 3.3.2).
 
-Will set Content-Type to text/plain automatically if body is not empty and Content-Type is not set
+Sets Content-Type to text/plain when the body is not empty and Content-Type is not set.
+
+Those statuses carry no body. Don't write a body or set Content-Length on them.
 */
 func (w *ResponseWriter) GenerateResponse() *http.Response {
-	if w.header.Get("Content-Length") == "" {
+	noBody := w.statusCode >= 100 && w.statusCode < 200 ||
+		w.statusCode == http.StatusNoContent || w.statusCode == http.StatusNotModified
+	if !noBody && w.header.Get("Content-Length") == "" {
 		w.header.Set("Content-Length", strconv.Itoa(len(w.body)))
 	}
 	if len(w.body) > 0 && w.header.Get("Content-Type") == "" {

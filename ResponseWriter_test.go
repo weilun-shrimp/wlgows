@@ -129,8 +129,9 @@ func TestResponseWriterGenerateResponse(t *testing.T) {
 	if response.Header.Get("Upgrade") != "websocket" {
 		t.Errorf("Upgrade header = %q", response.Header.Get("Upgrade"))
 	}
-	if response.Header.Get("Content-Length") != "0" {
-		t.Errorf("Content-Length = %q, want %q", response.Header.Get("Content-Length"), "0")
+	// RFC 7230 3.3.2: a 1xx response must not carry Content-Length.
+	if response.Header.Get("Content-Length") != "" {
+		t.Errorf("Content-Length = %q, want empty", response.Header.Get("Content-Length"))
 	}
 	// No body was written, so Content-Type is left unset.
 	if response.Header.Get("Content-Type") != "" {
