@@ -84,6 +84,7 @@ func main() {
 	// SetConfig replaces all of it, so start from what the standard hooks left.
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxDataFrameCount = maxDataFramesSize / 256 // fragments of 256 bytes or more
 	config.FrameReadTimeout = frameReadTimeout
 
 	config.Text = func(frames wlgows.DataFrames) {

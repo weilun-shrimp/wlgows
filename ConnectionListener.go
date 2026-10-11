@@ -1,16 +1,36 @@
 package wlgows
 
+import "time"
+
+// NewStandardListener's limits. Raise them together: the count is derived from
+// the size, so a message may arrive in fragments of 256 bytes or more.
+const (
+	// StandardMaxDataFramesSize is 4 KB per message, headers included.
+	StandardMaxDataFramesSize = 4 << 10
+	// StandardMaxDataFrameCount is 16 frames per message.
+	StandardMaxDataFrameCount = StandardMaxDataFramesSize / 256
+	// StandardFrameReadTimeout counts the wait for a frame to start too, so a
+	// peer silent this long is cut off. Ping at no more than half of it, and the
+	// pongs keep a healthy peer alive.
+	StandardFrameReadTimeout = 60 * time.Second
+)
+
 /*
 NewStandardListener builds a Listener with every obligation RFC 6455 puts on a
 receiver already answered — ping (5.5.2), pong (5.5.3), close (5.5.1) and
-reserved opcodes (5.2) — and PeerIsClient settled from which side this Conn is.
+reserved opcodes (5.2) — PeerIsClient settled from which side this Conn is, and
+the limits at StandardMaxDataFramesSize, StandardMaxDataFrameCount and
+StandardFrameReadTimeout.
 
-Left to you: the message hooks, the limits, and closing the connection. Take
+The timeout cuts off an idle peer, so run StartPingLoop at 30 seconds or less.
+
+Left to you: the message hooks and closing the connection. Take
 what is here and add to it, since SetConfig replaces all of it at once:
 
 	listener := conn.NewStandardListener()
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = 10 << 20
+	config.MaxDataFrameCount = 10 << 20 / 256
 	config.Text = func(frames wlgows.DataFrames) { ... }
 	listener.SetConfig(config)
 	err := listener.Listen()
@@ -21,7 +41,10 @@ func (c *Conn) NewStandardListener() *Listener {
 	l := NewListener(c)
 
 	l.SetConfig(ListenerConfig{
-		PeerIsClient: !c.maskSendFrame, // 5.1: the peer is the side this one is not
+		PeerIsClient:      !c.maskSendFrame, // 5.1: the peer is the side this one is not
+		MaxDataFramesSize: StandardMaxDataFramesSize,
+		MaxDataFrameCount: StandardMaxDataFrameCount,
+		FrameReadTimeout:  StandardFrameReadTimeout,
 
 		Ping:    c.RFC6455PingHook,
 		Pong:    c.RFC6455PongHook,

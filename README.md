@@ -116,6 +116,7 @@ func handle(netConn net.Conn) {
 	// SetConfig replaces all of it, so start from what the standard hooks left.
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = 10 * 1024 * 1024
+	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 	config.Text = func(frames wlgows.DataFrames) {
 		conn.SendText(frames.Bytes(), 0) // echo
 	}
@@ -170,6 +171,7 @@ func main() {
 
 	config := listener.GetConfig() // what the standard hooks left
 	config.MaxDataFramesSize = 10 * 1024 * 1024
+	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 	config.Text = func(frames wlgows.DataFrames) {
 		log.Println("received:", frames.String())
 	}
@@ -472,6 +474,7 @@ listener := conn.NewStandardListener() // or wlgows.NewListener(conn), no hooks
 
 config := listener.GetConfig()
 config.MaxDataFramesSize = 10 * 1024 * 1024
+config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 config.Text = func(frames wlgows.DataFrames) { log.Print(frames.String()) }
 listener.SetConfig(config)
 
@@ -479,8 +482,10 @@ err := listener.Listen()
 ```
 
 `NewStandardListener` is the same Listener with the protocol's own duties already
-answered — ping, pong, close and reserved opcodes — and `PeerIsClient` taken from
-which side the connection is. Every one of those hooks can be replaced.
+answered — ping, pong, close and reserved opcodes — `PeerIsClient` taken from
+which side the connection is, and the limits at 4 KB per message, 16 frames per
+message and a 60 second `FrameReadTimeout`. That timeout cuts off an idle peer,
+so run `StartPingLoop` at 30 seconds or less. Every one of those can be replaced.
 
 See **[LISTENER_README.md](./LISTENER_README.md)** — hooks, limits, pausing, and
 what each error means.

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"testing"
+	"time"
 )
 
 // hookConn records what a hook builds, so a test reads the answer without
@@ -31,6 +32,15 @@ func TestConnNewStandardListener(t *testing.T) {
 	// 5.1: this Conn does not mask, so it is a server and the peer is a client.
 	if !l.config.PeerIsClient {
 		t.Error("PeerIsClient = false, want true for a server Conn")
+	}
+	if l.config.MaxDataFramesSize != 4096 {
+		t.Errorf("MaxDataFramesSize = %d, want 4096", l.config.MaxDataFramesSize)
+	}
+	if l.config.MaxDataFrameCount != 16 {
+		t.Errorf("MaxDataFrameCount = %d, want 16", l.config.MaxDataFrameCount)
+	}
+	if l.config.FrameReadTimeout != 60*time.Second {
+		t.Errorf("FrameReadTimeout = %v, want 60s", l.config.FrameReadTimeout)
 	}
 	if l.config.Ping == nil || l.config.Pong == nil || l.config.Close == nil || l.config.Unknown == nil {
 		t.Error("a protocol hook was left nil")

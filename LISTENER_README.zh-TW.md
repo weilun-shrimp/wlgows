@@ -87,7 +87,8 @@ func handleConn(conn *wlgows.Conn) {
 Listener 不寫出也不關閉任何東西，所以上面每一個 `Send*` 都是這個 function 自己呼叫
 的：要送什麼由你決定，hook 只負責告訴你「什麼時候該送」。
 `conn.NewStandardListener()` 會幫你設好同樣的 `Ping`、`Pong`、`Close` 與 `Unknown`
-hook。`PauseListen` 是 Listener 在這裡唯一替你做的事：結束這次執行，讓這個
+hook，以及 4 KB 的 `MaxDataFramesSize`、16 的 `MaxDataFrameCount` 與 60 秒的
+`FrameReadTimeout`。`PauseListen` 是 Listener 在這裡唯一替你做的事：結束這次執行，讓這個
 function 能夠返回，並把你給的原因一起帶回來。
 
 ## 它不會替你做的三件事

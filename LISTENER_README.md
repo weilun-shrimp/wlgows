@@ -89,7 +89,8 @@ func handleConn(conn *wlgows.Conn) {
 The Listener writes nothing and closes nothing, so every `Send*` above is this
 function's own call: what goes on the wire is yours, and the hooks only say
 when. `conn.NewStandardListener()` sets these same `Ping`, `Pong`, `Close` and
-`Unknown` hooks for you. `PauseListen` is the one thing it does for you there — it ends the run
+`Unknown` hooks for you, plus a 4 KB `MaxDataFramesSize`, a `MaxDataFrameCount` of
+16 and a 60 second `FrameReadTimeout`. `PauseListen` is the one thing it does for you there — it ends the run
 so this function can return, carrying whatever reason you hand it.
 
 ## Three things it will not do for you

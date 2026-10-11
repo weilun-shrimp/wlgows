@@ -115,6 +115,7 @@ func handle(netConn net.Conn) {
 	// SetConfig 會整份替換設定，所以請從標準 hook 設好的那份開始修改。
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = 10 * 1024 * 1024
+	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 	config.Text = func(frames wlgows.DataFrames) {
 		conn.SendText(frames.Bytes(), 0) // echo
 	}
@@ -168,6 +169,7 @@ func main() {
 
 	config := listener.GetConfig() // 標準 hook 設好的那份
 	config.MaxDataFramesSize = 10 * 1024 * 1024
+	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 	config.Text = func(frames wlgows.DataFrames) {
 		log.Println("received:", frames.String())
 	}
@@ -451,6 +453,7 @@ listener := conn.NewStandardListener() // 或 wlgows.NewListener(conn)，不含�
 
 config := listener.GetConfig()
 config.MaxDataFramesSize = 10 * 1024 * 1024
+config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 config.Text = func(frames wlgows.DataFrames) { log.Print(frames.String()) }
 listener.SetConfig(config)
 
@@ -458,8 +461,9 @@ err := listener.Listen()
 ```
 
 `NewStandardListener` 跟一般的 Listener 相同，只是已經處理好協定本身規定的部分
-（ping、pong、close 與保留 opcode），而且 `PeerIsClient` 會依連線端別自動設定。
-這些 hook 每一個都可以替換。
+（ping、pong、close 與保留 opcode），`PeerIsClient` 會依連線端別自動設定，
+上限預設為每個 message 4 KB、16 個 frame，以及 60 秒的 `FrameReadTimeout`。這個 timeout
+會切斷閒置的對方，所以請以 30 秒以內的間隔執行 `StartPingLoop`。這些設定每一個都可以替換。
 
 詳細內容請見 **[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)**，包括 hook、
 各項上限、暫停，以及每個 error 的意義。

@@ -96,6 +96,7 @@ func handler(c *gin.Context) {
 	// rather than from an empty ListenerConfig.
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxDataFrameCount = maxDataFramesSize / 256 // fragments of 256 bytes or more
 	config.FrameReadTimeout = frameReadTimeout
 
 	// A whole message, assembled across every fragment. The payload is already

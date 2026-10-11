@@ -114,6 +114,7 @@ func handleConn(netConn net.Conn) {
 
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxDataFrameCount = 0 // Data keeps no frame, so the count bounds nothing
 	config.FrameReadTimeout = frameReadTimeout
 
 	// Care: setting this replaces assembly outright. Text and Binary never run,
