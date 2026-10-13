@@ -12,9 +12,11 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -30,6 +32,11 @@ const (
 
 	// Armed before each frame read, and only fires when no bytes arrive at all.
 	frameReadTimeout = 60 * time.Second
+
+	// Bound the TCP connect and, for wss://, the TLS handshake: dialTimeout
+	// through the context, dialerTimeout through the net.Dialer.
+	dialTimeout   = 15 * time.Second
+	dialerTimeout = 15 * time.Second
 
 	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
 	// deciding a silent peer is gone would be a deadline of our own.
@@ -55,7 +62,11 @@ func main() {
 		tlsConfig = loadCA(caPath)
 	}
 
-	netConn, req, err := wlgows.Dial(url, tlsConfig)
+	// Either bounds the TCP connect and the TLS handshake; the earlier one wins.
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+	dialer := &net.Dialer{Timeout: dialerTimeout}
+	netConn, req, err := wlgows.DialContext(ctx, url, dialer, tlsConfig)
 	if err != nil {
 		fmt.Println("dial:", err)
 		return

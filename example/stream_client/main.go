@@ -19,9 +19,11 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"time"
 
@@ -38,6 +40,11 @@ const (
 	chunkByteLen = 4 * 1024
 
 	frameReadTimeout = 60 * time.Second
+
+	// Bound the TCP connect and, for wss://, the TLS handshake: dialTimeout
+	// through the context, dialerTimeout through the net.Dialer.
+	dialTimeout   = 15 * time.Second
+	dialerTimeout = 15 * time.Second
 
 	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
 	// deciding a silent peer is gone would be a deadline of our own.
@@ -72,7 +79,11 @@ func main() {
 	}
 	defer file.Close()
 
-	netConn, req, err := wlgows.Dial(url, nil)
+	// Either bounds the TCP connect and the TLS handshake; the earlier one wins.
+	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancel()
+	dialer := &net.Dialer{Timeout: dialerTimeout}
+	netConn, req, err := wlgows.DialContext(ctx, url, dialer, nil)
 	if err != nil {
 		fmt.Println("dial:", err)
 		return

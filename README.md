@@ -35,7 +35,7 @@ Your own code may go further, if you know what you are doing — see
 ## Contents
 
 - [Installation](#installation)
-- [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
+- [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [Dialing](#dialing) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
 - [Coming from v6](#coming-from-v6)
 - [Design](#design)
@@ -59,7 +59,7 @@ go get github.com/weilun-shrimp/wlgows/v7
 ```
 
 The import path carries the `/v7` suffix Go requires for major version 2 and
-above; the package name is still `wlgows`, so call sites read `wlgows.Dial(...)`.
+above; the package name is still `wlgows`, so call sites read `wlgows.DialContext(...)`.
 
 ## Quick Start
 
@@ -146,16 +146,22 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log"
+	"net"
 	"time"
 
 	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 func main() {
-	// Dial only connects and builds the request — running the handshake is
-	// yours, so you can still add headers to req before it goes out.
-	netConn, req, err := wlgows.Dial("ws://localhost:8001", nil)
+	// DialContext only connects and builds the request — running the handshake
+	// is yours, so you can still add headers to req before it goes out. ctx and
+	// dialer each bound the connect; the earlier one wins. See Dialing below.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	netConn, req, err := wlgows.DialContext(ctx, "ws://localhost:8001", dialer, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -205,8 +211,31 @@ caCert, _ := os.ReadFile("ca.crt")
 caCertPool := x509.NewCertPool()
 caCertPool.AppendCertsFromPEM(caCert)
 
-netConn, req, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: caCertPool})
+// ctx and dialer as in the client above
+netConn, req, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer, &tls.Config{RootCAs: caCertPool})
 ```
+
+### Dialing
+
+`DialContext` is the recommended way to dial. Its context bounds the TCP
+connect and, for `wss://`, the TLS handshake. Its `*net.Dialer` sets options
+such as `Timeout` and `KeepAlive`; nil means a default one.
+
+```go
+// Either bounds the TCP connect and the TLS handshake; the earlier one wins.
+ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+defer cancel()
+dialer := &net.Dialer{Timeout: 15 * time.Second}
+netConn, req, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer, &tls.Config{RootCAs: caCertPool})
+```
+
+`Dial(url, tlsConfig)` is the shorter form: `DialContext` with
+`context.Background()` and a default dialer. It has no timeout, so if a `wss://`
+server accepts the connection but never answers the TLS handshake, `Dial` waits
+forever.
+
+The context stops mattering once `DialContext` returns. To bound the WebSocket
+handshake and the frames, use `netConn.SetDeadline`.
 
 ### HTTP Hijacking
 
@@ -319,15 +348,16 @@ Behaviour that changes without a compile error:
 ```go
 import "github.com/weilun-shrimp/wlgows/v7"
 
-netConn, req, _ := wlgows.Dial(url, nil)
+netConn, req, _ := wlgows.DialContext(ctx, url, dialer, nil)
 s, _             := wlgows.Run(":8001")
 ```
 
 **`Conn` must be built by a constructor.** It carries unexported dependency
 fields, so a hand-written struct literal panics on first use. `ClientHandShake`
 and `ServerHandShake` already do the right thing — connect (or accept, or
-hijack) with `Dial`/`Server.Accept`/`http.Hijacker`, then run one of those two
-funcs to get a ready `Conn` back; only building one directly needs care:
+hijack) with `DialContext`/`Server.Accept`/`http.Hijacker`, then run one of
+those two funcs to get a ready `Conn` back; only building one directly needs
+care:
 
 ```go
 c, err := wlgows.NewConn(netConn, r, bufio.NewWriter(netConn), false) // false: a server does not mask (5.1)
@@ -724,7 +754,7 @@ are tested directly.
 
 ```go
 // package-level func: pass a di struct
-netConn, req, err := dial("ws://localhost:8001", nil, dialDI{...})
+netConn, req, err := dialContext(ctx, "ws://localhost:8001", nil, nil, dialContextDI{...})
 
 // method: overwrite the field the constructor set
 conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
@@ -741,13 +771,6 @@ prepareSendFrame(f, true, prepareSendFrameDI{
 })
 // f.appendSealedHeader(nil) == []byte{0x81, 0x82, 1, 2, 3, 4}
 ```
-
-One test deliberately asserts current behaviour rather than correct behaviour,
-and says so in its name and comments:
-
-- `TestDial/an_unknown_scheme_yields_a_nil_conn_and_no_error` — the scheme
-  switch in `dial` has no default branch. Unreachable in production because
-  `ValidateWebsocketUrl` gates it; only a permissive fake exposes it.
 
 The gaps left in coverage are the thin `Conn` wrappers that only bind fields
 into a `di` struct (`SendText`, `SendData`, `TransmitData`, `RenewWriter`, …),

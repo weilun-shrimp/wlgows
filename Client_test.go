@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -9,17 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
-
-// baseDialDI wires everything to a working default; each test overrides one field.
-func baseDialDI(conn net.Conn) dialDI {
-	return dialDI{
-		httpNewRequest:       http.NewRequest,
-		validateWebsocketUrl: ValidateWebsocketUrl,
-		netDial:              func(string, string) (net.Conn, error) { return conn, nil },
-		tlsDial:              func(string, string, *tls.Config) (*tls.Conn, error) { return nil, nil },
-	}
-}
 
 func TestDialRealWiringRejectsABadUrl(t *testing.T) {
 	if _, _, err := Dial("ftp://localhost:8001", nil); err == nil {
@@ -27,130 +19,189 @@ func TestDialRealWiringRejectsABadUrl(t *testing.T) {
 	}
 }
 
-func TestDial(t *testing.T) {
-	t.Run("ws and http schemes go through netDial", func(t *testing.T) {
+func TestDialContext(t *testing.T) {
+	// base_di builds requests and validates urls for real, and both dials
+	// succeed; each case overrides what it looks at.
+	base_di := func() dialContextDI {
+		return dialContextDI{
+			httpNewRequest:       http.NewRequest,
+			validateWebsocketUrl: ValidateWebsocketUrl,
+			defaultDialer:        &net.Dialer{},
+			dialContext: func(*net.Dialer, context.Context, string, string) (net.Conn, error) {
+				return newFakeConn(nil), nil
+			},
+			tlsDialContext: func(*tls.Dialer, context.Context, string, string) (net.Conn, error) {
+				return newFakeConn(nil), nil
+			},
+		}
+	}
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "caller")
+
+	t.Run("ws and http dial plain tcp with the caller's dialer and ctx", func(t *testing.T) {
 		for _, scheme := range []string{"ws", "http"} {
-			t.Run(scheme, func(t *testing.T) {
-				netConn := newFakeConn(nil)
-				di := baseDialDI(netConn)
-				var gotNetwork, gotAddress string
-				di.netDial = func(network, address string) (net.Conn, error) {
-					gotNetwork, gotAddress = network, address
-					return netConn, nil
-				}
-				di.tlsDial = func(string, string, *tls.Config) (*tls.Conn, error) {
-					t.Fatal("tlsDial must not run for a plaintext scheme")
-					return nil, nil
-				}
+			netConn := newFakeConn(nil)
+			dialer := &net.Dialer{Timeout: time.Second}
+			var gotDialer *net.Dialer
+			var gotCtx context.Context
+			var gotNetwork, gotAddress string
+			di := base_di()
+			di.dialContext = func(d *net.Dialer, c context.Context, network, address string) (net.Conn, error) {
+				gotDialer, gotCtx, gotNetwork, gotAddress = d, c, network, address
+				return netConn, nil
+			}
+			di.tlsDialContext = func(*tls.Dialer, context.Context, string, string) (net.Conn, error) {
+				t.Errorf("%s: tlsDialContext must not run for a plain scheme", scheme)
+				return nil, nil
+			}
 
-				conn, req, err := dial(scheme+"://localhost:8001/chat", nil, di)
-				if err != nil {
-					t.Fatalf("dial: %v", err)
-				}
-				if gotNetwork != "tcp" || gotAddress != "localhost:8001" {
-					t.Errorf("netDial(%q, %q), want (tcp, localhost:8001)", gotNetwork, gotAddress)
-				}
-				if conn != net.Conn(netConn) {
-					t.Error("dial should return the dialled conn")
-				}
-				if req == nil || req.URL.Scheme != scheme {
-					t.Error("dial should return the built request")
-				}
-			})
+			conn, req, err := dialContext(ctx, scheme+"://localhost:8001/chat", dialer, nil, di)
+			if err != nil {
+				t.Fatalf("%s: dialContext: %v", scheme, err)
+			}
+			if gotDialer != dialer || gotCtx != ctx || gotNetwork != "tcp" || gotAddress != "localhost:8001" {
+				t.Errorf("%s: dialContext(%p, %v, %q, %q), want (%p, caller ctx, tcp, localhost:8001)",
+					scheme, gotDialer, gotCtx, gotNetwork, gotAddress, dialer)
+			}
+			if conn != net.Conn(netConn) {
+				t.Errorf("%s: should return the dialled conn", scheme)
+			}
+			if req == nil || req.Method != "GET" || req.URL.String() != scheme+"://localhost:8001/chat" {
+				t.Errorf("%s: req %+v, want GET %s://localhost:8001/chat", scheme, req, scheme)
+			}
 		}
 	})
 
-	t.Run("wss and https schemes go through tlsDial", func(t *testing.T) {
+	t.Run("wss and https dial tls over the caller's dialer, config and ctx", func(t *testing.T) {
 		for _, scheme := range []string{"wss", "https"} {
-			t.Run(scheme, func(t *testing.T) {
-				di := baseDialDI(newFakeConn(nil))
-				called := false
-				var gotConfig *tls.Config
-				want := &tls.Config{ServerName: "example.com"}
-				di.tlsDial = func(_, _ string, cfg *tls.Config) (*tls.Conn, error) {
-					called = true
-					gotConfig = cfg
-					return nil, nil
-				}
-				di.netDial = func(string, string) (net.Conn, error) {
-					t.Fatal("netDial must not run for a tls scheme")
-					return nil, nil
-				}
+			netConn := newFakeConn(nil)
+			dialer := &net.Dialer{Timeout: time.Second}
+			config := &tls.Config{ServerName: "example.com"}
+			var gotDialer *tls.Dialer
+			var gotCtx context.Context
+			var gotNetwork, gotAddress string
+			di := base_di()
+			di.tlsDialContext = func(d *tls.Dialer, c context.Context, network, address string) (net.Conn, error) {
+				gotDialer, gotCtx, gotNetwork, gotAddress = d, c, network, address
+				return netConn, nil
+			}
+			di.dialContext = func(*net.Dialer, context.Context, string, string) (net.Conn, error) {
+				t.Errorf("%s: dialContext must not run for a tls scheme", scheme)
+				return nil, nil
+			}
 
-				if _, _, err := dial(scheme+"://localhost:8001/", want, di); err != nil {
-					t.Fatalf("dial: %v", err)
-				}
-				if !called {
-					t.Error("tlsDial was not used")
-				}
-				if gotConfig != want {
-					t.Error("the caller's tls.Config should be passed straight through")
-				}
-			})
+			conn, req, err := dialContext(ctx, scheme+"://localhost:8001/chat", dialer, config, di)
+			if err != nil {
+				t.Fatalf("%s: dialContext: %v", scheme, err)
+			}
+			if gotDialer == nil || gotDialer.NetDialer != dialer || gotDialer.Config != config ||
+				gotCtx != ctx || gotNetwork != "tcp" || gotAddress != "localhost:8001" {
+				t.Errorf("%s: tlsDialContext(%+v, %v, %q, %q), want ({NetDialer: %p, Config: %p}, caller ctx, tcp, localhost:8001)",
+					scheme, gotDialer, gotCtx, gotNetwork, gotAddress, dialer, config)
+			}
+			if conn != net.Conn(netConn) {
+				t.Errorf("%s: should return the dialled conn", scheme)
+			}
+			if req == nil || req.Method != "GET" || req.URL.String() != scheme+"://localhost:8001/chat" {
+				t.Errorf("%s: req %+v, want GET %s://localhost:8001/chat", scheme, req, scheme)
+			}
 		}
 	})
 
-	t.Run("propagates a request build error", func(t *testing.T) {
+	t.Run("a nil dialer is replaced by defaultDialer", func(t *testing.T) {
+		defaultDialer := &net.Dialer{}
+		var gotPlain, gotTls *net.Dialer
+		di := base_di()
+		di.defaultDialer = defaultDialer
+		di.dialContext = func(d *net.Dialer, _ context.Context, _, _ string) (net.Conn, error) {
+			gotPlain = d
+			return newFakeConn(nil), nil
+		}
+		di.tlsDialContext = func(d *tls.Dialer, _ context.Context, _, _ string) (net.Conn, error) {
+			gotTls = d.NetDialer
+			return newFakeConn(nil), nil
+		}
+
+		if _, _, err := dialContext(ctx, "ws://localhost:8001", nil, nil, di); err != nil {
+			t.Fatalf("dialContext ws: %v", err)
+		}
+		if _, _, err := dialContext(ctx, "wss://localhost:8001", nil, nil, di); err != nil {
+			t.Fatalf("dialContext wss: %v", err)
+		}
+		if gotPlain != defaultDialer || gotTls != defaultDialer {
+			t.Errorf("ws dialer %p, wss NetDialer %p, want defaultDialer %p", gotPlain, gotTls, defaultDialer)
+		}
+	})
+
+	t.Run("returns a request build error without dialing", func(t *testing.T) {
 		wantErr := errors.New("bad request")
-		di := baseDialDI(newFakeConn(nil))
-		di.httpNewRequest = func(string, string, io.Reader) (*http.Request, error) {
+		di := base_di()
+		di.httpNewRequest = func(string, string, io.Reader) (*http.Request, error) { return nil, wantErr }
+		di.dialContext = func(*net.Dialer, context.Context, string, string) (net.Conn, error) {
+			t.Error("dialled after the request failed to build")
+			return nil, nil
+		}
+
+		conn, req, err := dialContext(ctx, "ws://localhost:8001", nil, nil, di)
+		if conn != nil || req != nil || !errors.Is(err, wantErr) {
+			t.Errorf("got (%v, %v, %v), want (nil, nil, %v)", conn, req, err, wantErr)
+		}
+	})
+
+	t.Run("returns a url validation error without dialing", func(t *testing.T) {
+		wantErr := errors.New("bad url")
+		di := base_di()
+		di.validateWebsocketUrl = func(*url.URL) error { return wantErr }
+		di.dialContext = func(*net.Dialer, context.Context, string, string) (net.Conn, error) {
+			t.Error("dialled after validation failed")
+			return nil, nil
+		}
+
+		conn, req, err := dialContext(ctx, "ws://localhost:8001", nil, nil, di)
+		if conn != nil || req != nil || !errors.Is(err, wantErr) {
+			t.Errorf("got (%v, %v, %v), want (nil, nil, %v)", conn, req, err, wantErr)
+		}
+	})
+
+	t.Run("returns a plain dial error", func(t *testing.T) {
+		wantErr := errors.New("connection refused")
+		di := base_di()
+		di.dialContext = func(*net.Dialer, context.Context, string, string) (net.Conn, error) { return nil, wantErr }
+
+		conn, req, err := dialContext(ctx, "ws://localhost:8001", nil, nil, di)
+		if conn != nil || req != nil || !errors.Is(err, wantErr) {
+			t.Errorf("got (%v, %v, %v), want (nil, nil, %v)", conn, req, err, wantErr)
+		}
+	})
+
+	t.Run("returns a tls dial error", func(t *testing.T) {
+		wantErr := errors.New("handshake failure")
+		di := base_di()
+		di.tlsDialContext = func(*tls.Dialer, context.Context, string, string) (net.Conn, error) {
 			return nil, wantErr
 		}
-		if _, _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
-			t.Errorf("err = %v, want %v", err, wantErr)
+
+		conn, req, err := dialContext(ctx, "wss://localhost:8001", nil, nil, di)
+		if conn != nil || req != nil || !errors.Is(err, wantErr) {
+			t.Errorf("got (%v, %v, %v), want (nil, nil, %v)", conn, req, err, wantErr)
 		}
 	})
 
-	t.Run("propagates a url validation error", func(t *testing.T) {
-		wantErr := errors.New("bad url")
-		di := baseDialDI(newFakeConn(nil))
-		di.validateWebsocketUrl = func(*url.URL) error { return wantErr }
-		di.netDial = func(string, string) (net.Conn, error) {
-			t.Fatal("must not dial when validation failed")
-			return nil, nil
-		}
-		if _, _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
-			t.Errorf("err = %v, want %v", err, wantErr)
-		}
-	})
-
-	t.Run("propagates a netDial error", func(t *testing.T) {
-		wantErr := errors.New("connection refused")
-		di := baseDialDI(nil)
-		di.netDial = func(string, string) (net.Conn, error) { return nil, wantErr }
-		if _, _, err := dial("ws://localhost:8001", nil, di); !errors.Is(err, wantErr) {
-			t.Errorf("err = %v, want %v", err, wantErr)
-		}
-	})
-
-	t.Run("propagates a tlsDial error", func(t *testing.T) {
-		wantErr := errors.New("handshake failure")
-		di := baseDialDI(nil)
-		di.tlsDial = func(string, string, *tls.Config) (*tls.Conn, error) { return nil, wantErr }
-		if _, _, err := dial("wss://localhost:8001", nil, di); !errors.Is(err, wantErr) {
-			t.Errorf("err = %v, want %v", err, wantErr)
-		}
-	})
-
-	/*
-		The scheme switch has no default branch, so a scheme that slips past
-		validation leaves both conn and err nil. Unreachable in production
-		because the real ValidateWebsocketUrl gates it — only a permissive
-		fake exposes it.
-	*/
-	t.Run("an unknown scheme yields a nil conn and no error", func(t *testing.T) {
-		di := baseDialDI(nil)
+	t.Run("returns ErrUrlSchemeInvalid for a scheme validation let through", func(t *testing.T) {
+		di := base_di()
 		di.validateWebsocketUrl = func(*url.URL) error { return nil }
-		di.netDial = func(string, string) (net.Conn, error) {
-			t.Fatal("no dial should happen for an unknown scheme")
+		di.dialContext = func(*net.Dialer, context.Context, string, string) (net.Conn, error) {
+			t.Error("dialled for an unknown scheme")
 			return nil, nil
 		}
-		conn, _, err := dial("ftp://localhost:8001", nil, di)
-		if err != nil {
-			t.Fatalf("dial: %v", err)
+		di.tlsDialContext = func(*tls.Dialer, context.Context, string, string) (net.Conn, error) {
+			t.Error("dialled tls for an unknown scheme")
+			return nil, nil
 		}
-		if conn != nil {
-			t.Error("expected a nil conn; the switch has no default branch")
+
+		conn, req, err := dialContext(ctx, "ftp://localhost:8001", nil, nil, di)
+		if conn != nil || req != nil || !errors.Is(err, ErrUrlSchemeInvalid) {
+			t.Errorf("got (%v, %v, %v), want (nil, nil, %v)", conn, req, err, ErrUrlSchemeInvalid)
 		}
 	})
 }
@@ -173,12 +224,8 @@ func TestValidateWebsocketUrl(t *testing.T) {
 		if err != nil {
 			t.Fatalf("url.Parse: %v", err)
 		}
-		got := ValidateWebsocketUrl(u)
-		if got == nil {
-			t.Fatal("expected an error")
-		}
-		if !strings.Contains(got.Error(), "scheme is not valid") {
-			t.Errorf("err = %q", got.Error())
+		if got := ValidateWebsocketUrl(u); !errors.Is(got, ErrUrlSchemeInvalid) {
+			t.Errorf("err = %v, want %v", got, ErrUrlSchemeInvalid)
 		}
 	})
 
@@ -187,12 +234,8 @@ func TestValidateWebsocketUrl(t *testing.T) {
 		if err != nil {
 			t.Fatalf("url.Parse: %v", err)
 		}
-		got := ValidateWebsocketUrl(u)
-		if got == nil {
-			t.Fatal("expected an error")
-		}
-		if !strings.Contains(got.Error(), "host is empty") {
-			t.Errorf("err = %q", got.Error())
+		if got := ValidateWebsocketUrl(u); !errors.Is(got, ErrUrlHostEmpty) {
+			t.Errorf("err = %v, want %v", got, ErrUrlHostEmpty)
 		}
 	})
 

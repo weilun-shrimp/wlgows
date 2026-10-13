@@ -148,6 +148,15 @@ var (
 	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
 )
 
+// dial
+var (
+	// ErrUrlSchemeInvalid is a url whose scheme is not ws, wss, http or https.
+	ErrUrlSchemeInvalid = errors.New("url scheme is not ws, wss, http or https")
+
+	// ErrUrlHostEmpty is a url with no host to dial.
+	ErrUrlHostEmpty = errors.New("url host is empty")
+)
+
 // handshake
 var (
 	ErrHttpMsgFormationInvalid         = errors.New("invalid http message formation")

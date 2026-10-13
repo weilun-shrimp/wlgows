@@ -35,7 +35,7 @@ bounds check。如果你清楚自己在做什麼，你自己的程式可以更�
 ## Contents
 
 - [Installation](#installation)
-- [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [HTTP Hijacking](#http-hijacking)
+- [Quick Start](#quick-start) — [Server](#server) · [Client](#client) · [TLS](#tls-wss) · [建立連線](#建立連線) · [HTTP Hijacking](#http-hijacking)
 - [Examples](#examples) — 三個 echo server、一個 client，以及一組 streaming 範例
 - [從 v6 升級](#從-v6-升級)
 - [Design](#design)
@@ -59,7 +59,7 @@ go get github.com/weilun-shrimp/wlgows/v7
 ```
 
 依照 Go 對 major version 2 以上的規定，import path 需要加上 `/v7` 後綴；package
-名稱仍然是 `wlgows`，所以程式中的寫法依然是 `wlgows.Dial(...)`。
+名稱仍然是 `wlgows`，所以程式中的寫法依然是 `wlgows.DialContext(...)`。
 
 ## Quick Start
 
@@ -144,16 +144,22 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log"
+	"net"
 	"time"
 
 	"github.com/weilun-shrimp/wlgows/v7"
 )
 
 func main() {
-	// Dial 只負責建立連線並組好 request，handshake 由你執行，所以送出前仍可
-	// 替 req 加上 header。
-	netConn, req, err := wlgows.Dial("ws://localhost:8001", nil)
+	// DialContext 只負責建立連線並組好 request，handshake 由你執行，所以送出前
+	// 仍可替 req 加上 header。ctx 與 dialer 都會限制建立連線的時間，以先到的
+	// 為準。詳見下方「建立連線」。
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	netConn, req, err := wlgows.DialContext(ctx, "ws://localhost:8001", dialer, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -202,8 +208,30 @@ caCert, _ := os.ReadFile("ca.crt")
 caCertPool := x509.NewCertPool()
 caCertPool.AppendCertsFromPEM(caCert)
 
-netConn, req, err := wlgows.Dial("wss://localhost:8001", &tls.Config{RootCAs: caCertPool})
+// ctx 與 dialer 同上方的 client
+netConn, req, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer, &tls.Config{RootCAs: caCertPool})
 ```
+
+### 建立連線
+
+建議使用 `DialContext` 建立連線。它的 context 會限制 TCP 連線，以及 `wss://` 的 TLS
+handshake 的時間。它的 `*net.Dialer` 可設定 `Timeout`、`KeepAlive` 等選項；
+傳 nil 代表使用預設值。
+
+```go
+// 兩者都會限制 TCP 連線與 TLS handshake 的時間，以先到的為準。
+ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+defer cancel()
+dialer := &net.Dialer{Timeout: 15 * time.Second}
+netConn, req, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer, &tls.Config{RootCAs: caCertPool})
+```
+
+`Dial(url, tlsConfig)` 是較簡短的寫法：等同於使用 `context.Background()` 與預設
+dialer 的 `DialContext`。它沒有 timeout，所以如果 `wss://` server 接受了連線，
+卻始終不回應 TLS handshake，`Dial` 會永遠等下去。
+
+`DialContext` 回傳之後，context 就不再有作用。要限制 WebSocket handshake
+與 frame 的時間，請用 `netConn.SetDeadline`。
 
 ### HTTP Hijacking
 
@@ -309,13 +337,13 @@ v7 直接從你的 `bufio.Reader` 讀出 frame header，所以讀一個 frame �
 ```go
 import "github.com/weilun-shrimp/wlgows/v7"
 
-netConn, req, _ := wlgows.Dial(url, nil)
+netConn, req, _ := wlgows.DialContext(ctx, url, dialer, nil)
 s, _             := wlgows.Run(":8001")
 ```
 
 **`Conn` 必須透過 constructor 建立。** 它包含未匯出的相依欄位，若自行撰寫 struct
 literal，第一次使用時就會 panic。`ClientHandShake` 與 `ServerHandShake` 已經處理好
-這件事：先用 `Dial`、`Server.Accept` 或 `http.Hijacker` 建立連線（或接受連線、
+這件事：先用 `DialContext`、`Server.Accept` 或 `http.Hijacker` 建立連線（或接受連線、
 hijack），再呼叫其中一個函式取得設定完成的 `Conn`。只有直接建立 `Conn` 時需要
 特別注意：
 
@@ -691,7 +719,7 @@ Bytes()             5722 ns/op    73729 B/op   1 allocs/op
 
 ```go
 // package 層級的 func：傳入 di struct
-netConn, req, err := dial("ws://localhost:8001", nil, dialDI{...})
+netConn, req, err := dialContext(ctx, "ws://localhost:8001", nil, nil, dialContextDI{...})
 
 // method：覆寫 constructor 設定好的欄位
 conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
@@ -708,12 +736,6 @@ prepareSendFrame(f, true, prepareSendFrameDI{
 })
 // f.appendSealedHeader(nil) == []byte{0x81, 0x82, 1, 2, 3, 4}
 ```
-
-有一個測試刻意驗證的是「目前的行為」而非「正確的行為」，並在名稱與註解中清楚說明：
-
-- `TestDial/an_unknown_scheme_yields_a_nil_conn_and_no_error`：`dial` 中的 scheme
-  switch 沒有 default 分支。正式環境不會走到這裡，因為前面有
-  `ValidateWebsocketUrl` 把關；只有使用較寬鬆的 fake 時才會觸發。
 
 測試覆蓋率的缺口，是只把欄位綁進 `di` struct 的那些很薄的 `Conn` 包裝（`SendText`、
 `SendData`、`TransmitData`、`RenewWriter`…），它們的邏輯已透過各自包裝的純函式測到；
