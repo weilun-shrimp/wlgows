@@ -53,8 +53,8 @@ func TestRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
-		if gotNetwork != "tcp4" || gotService != "127.0.0.1:8001" {
-			t.Errorf("resolve(%q, %q), want (tcp4, 127.0.0.1:8001)", gotNetwork, gotService)
+		if gotNetwork != "tcp" || gotService != "127.0.0.1:8001" {
+			t.Errorf("resolve(%q, %q), want (tcp, 127.0.0.1:8001)", gotNetwork, gotService)
 		}
 		if server.TCPAddr != wantAddr || server.TCPListener != wantListener {
 			t.Error("the server should carry the resolved address and listener")
@@ -137,5 +137,23 @@ func TestServerAcceptAfterClose(t *testing.T) {
 
 	if _, err := server.Accept(); err == nil {
 		t.Error("Accept should fail once the listener is closed")
+	}
+}
+
+func TestRunBindsAnIPv6Address(t *testing.T) {
+	probe, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback here: %v", err)
+	}
+	probe.Close()
+
+	server, err := Run("[::1]:0")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer server.Close()
+
+	if addr := server.TCPListener.Addr().(*net.TCPAddr); addr.IP.To4() != nil {
+		t.Errorf("listener address = %v, want an IPv6 address", addr)
 	}
 }

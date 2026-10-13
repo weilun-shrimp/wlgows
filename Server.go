@@ -4,6 +4,7 @@ import (
 	"net"
 )
 
+// Run listens on service, an IPv4 or IPv6 address. ":8001" or "[::]:8001" listens on both.
 func Run(service string) (*Server, error) {
 	return run(service, runDI{
 		netResolveTCPAddr: net.ResolveTCPAddr,
@@ -19,7 +20,7 @@ type runDI struct {
 }
 
 func run(service string, di runDI) (*Server, error) {
-	tcpAddr, err := di.netResolveTCPAddr("tcp4", service)
+	tcpAddr, err := di.netResolveTCPAddr("tcp", service)
 	if err != nil {
 		return nil, err
 	}
