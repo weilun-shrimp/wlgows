@@ -7,7 +7,7 @@ handshake、從 `net/http` 或 Gin hijack、TLS，以及 subprotocol。
 
 ## Contents
 
-- [接受連線](#接受連線)
+- [接受連線](#接受連線) — 原始 TCP，逾時與大小上限由你處理
 - [Handshake](#handshake) — [回傳值](#回傳值) · [拒絕](#拒絕)
 - [HTTP Hijacking](#http-hijacking) — `net/http` 與 Gin
 - [TLS (wss://)](#tls-wss)
@@ -21,6 +21,12 @@ handshake、從 `net/http` 或 Gin hijack、TLS，以及 subprotocol。
 [CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)。
 
 ## 接受連線
+
+**我們建議改用 [net/http 或 Gin](#http-hijacking)。** 用它們的話，request 的逾時與
+大小上限各只要一個設定。`Run` 與 `Accept` 把這兩件事都交給你。少了它們，client
+可以永遠占住一條連線，或一直送 header 直到記憶體耗盡。你可以自己加上，用 read
+deadline 與有上限的 reader，但需要更小心，所以我們不建議。但 `Run` 很快。如果你
+清楚自己在做什麼，例如來自可信任來源的內部連線，可以使用它。
 
 `Run` 負責 listen。`Accept` 回傳下一條 TCP 連線，其他什麼都不做。讀取 request
 與執行 handshake 由你自己來：
@@ -149,6 +155,23 @@ func handler(w http.ResponseWriter, r *http.Request) {
   [最低記憶體的設定方式](./SENDING_README.zh-TW.md#最低記憶體的設定方式)。
 - **要拒絕就在 `Hijack` 之前**，這時 net/http 還能替你回應。`Hijack` 之後連線就是你的，
   寫出的每個 byte 也都由你負責。
+
+net/http 預設不設逾時，所以請設定 `ReadHeaderTimeout` 與 `IdleTimeout`。
+`ReadHeaderTimeout` 要等 request 的第一個 byte 到了才開始計時。少了 `IdleTimeout`，
+client 可以先送一個普通的 request，然後讓連線一直開著、不再送任何東西。這兩個設定
+都不會影響已經 hijack 的連線。`MaxHeaderBytes` 預設是 1 MB。Gin 的 `Run` 也是用預設的 server，所以請用你自己的 `http.Server` 來提供 Gin
+engine：
+
+```go
+server := &http.Server{
+	Addr:              ":8001",
+	Handler:           mux, // 或 Gin engine
+	ReadHeaderTimeout: 10 * time.Second, // request 開始後，等待它的 header
+	IdleTimeout:       60 * time.Second, // 保持連線時，等待下一個 request
+	MaxHeaderBytes:    16 * 1024,
+}
+log.Fatal(server.ListenAndServe())
+```
 
 Gin 之下做法相同，改用 `c.Writer.Hijack()` 與 `c.Request`。
 [`hijack_http`](./example/hijack_http/main.go) 與

@@ -16,7 +16,7 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 
 ## Features
 
-- **WebSocket Server**：直接在 raw TCP 上執行，搭配 HTTP handshake
+- **WebSocket Server**：掛在 `net/http` 或 Gin 之下，或在你清楚自己在做什麼時直接用原始 TCP
 - **WebSocket Client**：支援 `ws://` 與 `wss://`
 - **TLS/SSL**：兩端皆支援
 - **Subprotocols**：兩端都能提出、選擇或要求一個
@@ -56,9 +56,7 @@ go get github.com/weilun-shrimp/wlgows/v7
 package main
 
 import (
-	"bufio"
 	"log"
-	"net"
 	"net/http"
 	"time"
 
@@ -66,35 +64,31 @@ import (
 )
 
 func main() {
-	server, err := wlgows.Run(":8001")
-	if err != nil {
-		panic(err)
+	server := &http.Server{
+		Addr:              ":8001",
+		Handler:           http.HandlerFunc(handle),
+		ReadHeaderTimeout: 10 * time.Second, // net/http 預設不設逾時
+		IdleTimeout:       60 * time.Second, // 保持連線時，等待下一個 request
+		MaxHeaderBytes:    16 * 1024,        // 預設 1 MB；handshake 只有幾百 byte
 	}
-	defer server.Close()
-
-	for {
-		netConn, err := server.Accept()
-		if err != nil {
-			continue
-		}
-		go handle(netConn)
-	}
+	log.Fatal(server.ListenAndServe())
 }
 
-func handle(netConn net.Conn) {
-	defer netConn.Close()
-
-	// Accept 只負責取得 TCP 連線，讀取 request 與執行 handshake 都由你處理，
-	// 確保每個送上線的 byte 都在你的掌握之中。
-	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 LISTENER_README.zh-TW.md
-	request, err := http.ReadRequest(reader)
-	if err != nil {
-		respWriter := wlgows.NewResponseWriter()
-		respWriter.DeclineByError(wlgows.ErrHttpMsgFormationInvalid) // 400：格式錯誤的 request（RFC 6455 4.2.1）
-		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
+func handle(w http.ResponseWriter, r *http.Request) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ServerHandShakeConfig{}) // 每條連線 4096 byte；見 SENDING_README.zh-TW.md
+	netConn, bufRW, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
+		return
+	}
+	defer netConn.Close()
+
+	// 要傳 bufRW.Reader：net/http 可能已經把第一個 frame 的開頭讀進去了。
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, r, wlgows.ServerHandShakeConfig{})
 	if err != nil {
 		return
 	}
@@ -125,9 +119,13 @@ func handle(netConn net.Conn) {
 }
 ```
 
+Gin 之下做法相同，改用 `c.Writer.Hijack()` 與 `c.Request`。因為 Gin 的 `Run` 不設逾時，
+請用你自己的 `http.Server` 來提供 Gin engine。見
+[HTTP Hijacking](./SERVER_README.zh-TW.md#http-hijacking)。
+
 ### Client
 
-架構和 server 相同。你不需要設定 masking：`Conn` 知道自己是哪一端。
+你不需要設定 masking：`Conn` 知道自己是哪一端。
 
 ```go
 package main
@@ -205,9 +203,9 @@ func main() {
 
 | Example | |
 |---|---|
-| [`echo`](./example/echo/main.go) | 在 raw TCP 上執行的 echo server，使用 `wlgows.Run` 與 `Accept` |
-| [`hijack_http`](./example/hijack_http/main.go) | 同一支 server，改掛在 `net/http` 之下，使用 `http.Hijacker` |
+| [`hijack_http`](./example/hijack_http/main.go) | 掛在 `net/http` 之下的 echo server，使用 `http.Hijacker` |
 | [`hijack_gin`](./example/hijack_gin/main.go) | 同一支 server，改掛在 Gin 之下，使用 `c.Writer.Hijack()`。`GET /ping` 依然正常回傳 JSON，與 WebSocket 並存 |
+| [`echo`](./example/echo/main.go) | 同一支 server，直接用原始 TCP，使用 `wlgows.Run` 與 `Accept`。request 有加上逾時，但沒有大小上限 |
 | [`client`](./example/client/main.go) | 互動式 client。輸入一行文字即送出，輸入 `exit` 會正常關閉連線。啟動時會詢問 CA 路徑，因此也能連線 `wss://` |
 | [`stream_server`](./example/stream_server/main.go) | 逐一接收 streaming message 的 frame 並直接寫入磁碟。使用 `Data` hook，適合大到無法放進記憶體的 message |
 | [`stream_client`](./example/stream_client/main.go) | 將一個檔案當作單一 binary message 串流送出，一次一個 chunk |

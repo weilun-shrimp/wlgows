@@ -18,7 +18,7 @@ further if you know what you are doing. See
 
 ## Features
 
-- **WebSocket Server** — raw TCP with HTTP handshake
+- **WebSocket Server** — behind `net/http` or Gin, or on raw TCP when you know what you are doing
 - **WebSocket Client** — `ws://` and `wss://`
 - **TLS/SSL** — both sides
 - **Subprotocols** — offer, pick or require one, on either side
@@ -57,9 +57,7 @@ above; the package name is still `wlgows`, so call sites read `wlgows.DialContex
 package main
 
 import (
-	"bufio"
 	"log"
-	"net"
 	"net/http"
 	"time"
 
@@ -67,35 +65,31 @@ import (
 )
 
 func main() {
-	server, err := wlgows.Run(":8001")
-	if err != nil {
-		panic(err)
+	server := &http.Server{
+		Addr:              ":8001",
+		Handler:           http.HandlerFunc(handle),
+		ReadHeaderTimeout: 10 * time.Second, // net/http sets no timeout by default
+		IdleTimeout:       60 * time.Second, // a kept-alive connection waiting for its next request
+		MaxHeaderBytes:    16 * 1024,        // 1 MB by default; a handshake is a few hundred bytes
 	}
-	defer server.Close()
-
-	for {
-		netConn, err := server.Accept()
-		if err != nil {
-			continue
-		}
-		go handle(netConn)
-	}
+	log.Fatal(server.ListenAndServe())
 }
 
-func handle(netConn net.Conn) {
-	defer netConn.Close()
-
-	// Accept only takes the TCP connection — reading the request and running
-	// the handshake are yours, so nothing hides which bytes reach the wire.
-	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see LISTENER_README.md to shrink it
-	request, err := http.ReadRequest(reader)
-	if err != nil {
-		respWriter := wlgows.NewResponseWriter()
-		respWriter.DeclineByError(wlgows.ErrHttpMsgFormationInvalid) // 400: a malformed request (RFC 6455 4.2.1)
-		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
+func handle(w http.ResponseWriter, r *http.Request) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ServerHandShakeConfig{}) // 4096 bytes/conn; see SENDING_README.md
+	netConn, bufRW, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
+		return
+	}
+	defer netConn.Close()
+
+	// Pass bufRW.Reader: net/http may have read the start of the first frame into it.
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, r, wlgows.ServerHandShakeConfig{})
 	if err != nil {
 		return
 	}
@@ -127,10 +121,13 @@ func handle(netConn net.Conn) {
 }
 ```
 
+Under Gin it is the same, with `c.Writer.Hijack()` and `c.Request`. Serve the
+Gin engine with your own `http.Server`, since Gin's `Run` sets no timeout. See
+[HTTP hijacking](./SERVER_README.md#http-hijacking).
+
 ### Client
 
-Same shape as the server. You never set masking: the `Conn` knows which side it
-is.
+You never set masking: the `Conn` knows which side it is.
 
 ```go
 package main
@@ -209,9 +206,9 @@ with all of them. The streaming pair runs on its own.
 
 | Example | |
 |---|---|
-| [`echo`](./example/echo/main.go) | Echo server over raw TCP — `wlgows.Run` and `Accept` |
-| [`hijack_http`](./example/hijack_http/main.go) | The same server behind `net/http`, via `http.Hijacker` |
+| [`hijack_http`](./example/hijack_http/main.go) | Echo server behind `net/http`, via `http.Hijacker` |
 | [`hijack_gin`](./example/hijack_gin/main.go) | The same server behind Gin, via `c.Writer.Hijack()`. `GET /ping` keeps answering JSON alongside the WebSocket |
+| [`echo`](./example/echo/main.go) | The same server over raw TCP, with `wlgows.Run` and `Accept`. Adds a timeout on the request, but no size limit |
 | [`client`](./example/client/main.go) | Interactive client. Type a line to send it, `exit` to close cleanly. Prompts for a CA path, so it speaks `wss://` too |
 | [`stream_server`](./example/stream_server/main.go) | Receives a streamed message frame by frame, straight to disk — the `Data` hook, for a message too large to hold |
 | [`stream_client`](./example/stream_client/main.go) | Streams a file as one binary message, a chunk at a time |

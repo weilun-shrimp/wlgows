@@ -35,6 +35,19 @@ const (
 	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
 	// deciding a silent peer is gone would be a deadline of our own.
 	pingInterval = 30 * time.Second
+
+	// net/http sets no timeout by default, so a client that never finishes its
+	// request would hold a goroutine forever.
+	readHeaderTimeout = 10 * time.Second
+
+	// readHeaderTimeout only starts once a request's first bytes arrive. This
+	// bounds the wait for the next request on a kept-alive connection. It
+	// does not touch a hijacked connection.
+	idleTimeout = 60 * time.Second
+
+	// The request line and headers. net/http allows 1 MB by default, and a
+	// handshake is a few hundred bytes.
+	maxHeaderBytes = 16 * 1024
 )
 
 func main() {
@@ -50,13 +63,22 @@ func main() {
 	})
 	r.GET("/", handler)
 
+	// Not r.Run: it serves with a default http.Server, which has no timeout.
+	server := &http.Server{
+		Addr:              service,
+		Handler:           r,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
+
 	fmt.Println("hijack_gin server listening on 0.0.0.0" + service + " (on windows, localhost" + service + ")")
 	if serverCrtPath != "" && serverKeyPath != "" {
 		fmt.Println("tls mode — connect with wss://")
-		err = r.RunTLS(service, serverCrtPath, serverKeyPath)
+		err = server.ListenAndServeTLS(serverCrtPath, serverKeyPath)
 	} else {
 		fmt.Println("plain mode — connect with ws://")
-		err = r.Run(service)
+		err = server.ListenAndServe()
 	}
 	if err != nil {
 		fmt.Println("starting server:", err)

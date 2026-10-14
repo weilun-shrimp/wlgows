@@ -4,7 +4,16 @@ import (
 	"net"
 )
 
-// Run listens on service, an IPv4 or IPv6 address. ":8001" or "[::]:8001" listens on both.
+/*
+Run listens on service, an IPv4 or IPv6 address. ":8001" or "[::]:8001" listens on both.
+
+We recommend net/http or Gin over Run. With them, a timeout and a size limit
+on the request read are one setting each. Run and Accept leave both to you.
+You can add them yourself, with a read deadline and a capped reader, but it
+takes more care, so we do not recommend it. But Run (Raw TCP) is fast. If you know what
+you are doing, such as with internal connections from trusted sources, it is
+yours to use. See SERVER_README.md.
+*/
 func Run(service string) (*Server, error) {
 	return run(service, runDI{
 		netResolveTCPAddr: net.ResolveTCPAddr,
@@ -60,6 +69,8 @@ request or run the handshake, so you're free to do both yourself:
 r must be the same *bufio.Reader you pass to both http.ReadRequest and
 NewConn — see ClientHandShake's doc comment for why the same reasoning
 applies here.
+
+Nothing here limits how long the request takes or how big it is. See Run.
 */
 func (server *Server) Accept() (net.Conn, error) {
 	return server.TCPListener.Accept()

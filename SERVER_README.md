@@ -7,7 +7,7 @@ the handshake, hijacking from `net/http` or Gin, TLS, and subprotocols.
 
 ## Contents
 
-- [Accepting a connection](#accepting-a-connection)
+- [Accepting a connection](#accepting-a-connection) — raw TCP, with the timeout and size limit left to you
 - [The handshake](#the-handshake) — [what it returns](#what-it-returns) · [refusals](#refusals)
 - [HTTP hijacking](#http-hijacking) — `net/http` and Gin
 - [TLS (wss://)](#tls-wss)
@@ -21,6 +21,14 @@ Reading is in [LISTENER_README.md](./LISTENER_README.md), sending in
 [CLIENT_README.md](./CLIENT_README.md).
 
 ## Accepting a connection
+
+**We recommend [net/http or Gin](#http-hijacking) instead.** With them, a
+timeout and a size limit on the request are one setting each. `Run` and
+`Accept` leave both to you. Without them, a client can hold a connection
+forever, or send headers until memory runs out. You can add them yourself, with
+a read deadline and a capped reader, but it takes more care, so we do not
+recommend it. But `Run` is fast. If you know what you are doing, such as with
+internal connections from trusted sources, it is yours to use.
 
 `Run` listens. `Accept` returns the next TCP connection, and nothing more. You
 read the request and run the handshake yourself:
@@ -156,6 +164,24 @@ func handler(w http.ResponseWriter, r *http.Request) {
   [The lowest memory setup](./SENDING_README.md#the-lowest-memory-setup).
 - **Refuse before `Hijack`**, while net/http can still answer for you. After it,
   the connection is yours, and so is every byte you write to it.
+
+net/http sets no timeout by default, so set `ReadHeaderTimeout` and
+`IdleTimeout`. `ReadHeaderTimeout` only starts once a request's first bytes
+arrive. Without `IdleTimeout`, a client can send one ordinary request, then keep
+the connection open and silent forever. Neither one touches a hijacked
+connection. `MaxHeaderBytes` is 1 MB by default. Gin's `Run` uses a default server too, so
+serve a Gin engine with your own `http.Server`:
+
+```go
+server := &http.Server{
+	Addr:              ":8001",
+	Handler:           mux, // or a Gin engine
+	ReadHeaderTimeout: 10 * time.Second, // once a request starts, the wait for its headers
+	IdleTimeout:       60 * time.Second, // on a kept-alive connection, the wait for the next request
+	MaxHeaderBytes:    16 * 1024,
+}
+log.Fatal(server.ListenAndServe())
+```
 
 Under Gin it is the same, with `c.Writer.Hijack()` and `c.Request`. The
 [`hijack_http`](./example/hijack_http/main.go) and

@@ -6,6 +6,12 @@
 // The read loop is a wlgows.Listener: it validates each frame against RFC 6455,
 // assembles fragmented messages, and calls the hook for the opcode. It never
 // writes and never closes, so every Send below is this program's, in a hook.
+//
+// This serves raw TCP, which is fast. The timeout and size limit on the
+// request are left to the caller. This example adds the timeout but no size
+// limit, so a client can send headers at full speed until requestReadTimeout
+// runs out. Add one yourself if you know what you are doing, or use net/http
+// or Gin as hijack_http and hijack_gin do.
 package main
 
 import (
@@ -21,6 +27,10 @@ import (
 
 const (
 	service = ":8001"
+
+	// Run sets no timeout, so a client that never sends its request would
+	// hold a goroutine forever.
+	requestReadTimeout = 10 * time.Second
 
 	// One message's byte budget, headers included. A peer can claim a 10 GB
 	// payload in a 10 byte header, and without this that claim becomes a 10 GB
@@ -61,6 +71,10 @@ func handleConn(netConn net.Conn) {
 	defer netConn.Close()
 
 	r := bufio.NewReader(netConn)
+	if err := netConn.SetReadDeadline(time.Now().Add(requestReadTimeout)); err != nil {
+		fmt.Println("setting request deadline:", err)
+		return
+	}
 	req, err := http.ReadRequest(r)
 	if err != nil {
 		// RFC 6455 4.2.1: a malformed request is answered with 400.
@@ -68,6 +82,12 @@ func handleConn(netConn net.Conn) {
 		respWriter.DeclineByError(wlgows.ErrHttpMsgFormationInvalid)
 		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
 		fmt.Println("reading request:", err)
+		return
+	}
+	// Cleared, or it would cut off the frame reads too. The Listener sets its
+	// own deadline before each frame.
+	if err := netConn.SetReadDeadline(time.Time{}); err != nil {
+		fmt.Println("clearing request deadline:", err)
 		return
 	}
 	// Subprotocols (RFC 6455 4.2.2). To require one, uncomment the block below
