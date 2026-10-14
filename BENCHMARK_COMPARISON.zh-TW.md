@@ -13,7 +13,7 @@
 | client 送出，小 frame | 負（120 vs 90 ns）<br>安全性**勝**，masking key 較強 | 負（120 vs 56 ns）<br>安全性**勝**，masking key 較強 |
 | client 送出，大 frame | 平手（107 µs） | 負（107 vs 64 µs），安全性**勝**（從不寫入呼叫端的 buffer） |
 | 讀取，大 frame | **勝**（快 1.5 到 3 倍） | client 平手，server 慢 6% 到 15% |
-| 讀取，小 frame | **勝**（快 2 到 3.4 倍） | server **勝**（最多快 15%）<br>client 讀單一 frame 平手<br>client 連續讀很多個小 frame 慢 14% 到 19% |
+| 讀取，小 frame | **勝**（快 2 到 2.9 倍） | server **勝**（最多快 15%）<br>client 讀單一 frame 平手<br>client 連續讀很多個小 frame 慢 14% 到 19% |
 | 讀取的記憶體，1MB frame | **勝**（1.05 MB vs 2.23 MB） | 平手（1.05 MB） |
 
 除了 client 送出小 frame 之外，wlgows 在每一項都比 gorilla 快，而且是三者中唯一
@@ -52,14 +52,13 @@ client 送出這一側，gobwas 是拿安全性換速度。client 連續讀取�
 
 | | 送出 | 讀取 |
 |---|---|---|
-| wlgows | `SendFrame`；「many」把 frame 先放進 buffer，最後 flush 一次 | `GetFrameFromReader` |
+| wlgows | `SendFrame`；「many」把 frame 先放進 buffer，最後 flush 一次 | `GetFrameHeaderFromReader`，再 `frame.FillFramePayloadFromReader` |
 | gorilla | `WriteMessage`；「many」是呼叫 64 次，因為每個 message 都會 flush | `ReadMessage` |
 | gobwas | `ws.WriteFrame` 寫到 `bufio.Writer`，client 端用 `ws.MaskFrameInPlace`；「many」flush 一次 | `ws.ReadFrame`，server 端再用 `ws.Cipher` |
 
 gorilla 的 `Conn` 是用它自己的 `Upgrader` 或 `Dialer` 在那條連線上建立的，buffer
 同樣是 4096 byte。gobwas 和 wlgows 都用最底層的 API 讀取：`ws.ReadFrame` 與
-`GetFrameFromReader`；`Conn.GetNextFrame` 會在外面再加一把讀取鎖，每個 frame 大約
-多 6 ns。
+兩個 `FromReader` 步驟；透過 `Conn` 讀取時，每個 frame 會再加一把讀取鎖（`LockRead`）。
 
 送出的每個案例只跑一次，所以 10% 左右以內的差距算是雜訊；對 gobwas 的 server 小
 frame 送出差距跑了 5 次確認過，這裡的數字就是那 5 次的中位數。讀取的數字，三者都是
@@ -113,13 +112,13 @@ RFC 6455 第 5.3 節要求每一把 masking key 都來自「a strong source of e
 masking key 不是用來保密 payload 的：它以明文放在 frame header 裡。它保護的是
 路上的 proxy（第 10.3 節）。如果決定 payload 內容的程式，例如瀏覽器裡的 script，
 能預測 key，它就能挑出一段 payload，讓加過 mask 之後的 byte 在不懂 WebSocket 的
-proxy 看來像是 HTTP request 與 response。proxy 可能因此把這個偽造的 response
-當作某個真實網址的內容快取起來，再提供給其他使用者。key 無法預測，就沒有人能
+proxy 看來像是 HTTP request。攻擊者的 server 再回一個偽造的 response，proxy 可能
+把它當作某個真實網址的內容快取起來，再提供給其他使用者。key 無法預測，就沒有人能
 控制線路上的 byte。
 
 wlgows 每一把 key 都從 `crypto/rand` 讀取。gorilla 和 gobwas 都用 `math/rand`，而 Go
-文件明說它不適合用在安全相關的用途。Go 1.20 之前它從 seed 1 開始，而且任何程式
-都能呼叫 `rand.Seed`，讓每一把 key 都變得可預測。在這台機器上，光是 key 的成本：
+文件明說它不適合用在安全相關的用途。Go 1.20 之前它從 seed 1 開始，而且在 Go 1.24
+之前任何程式都能呼叫 `rand.Seed`，讓每一把 key 都變得可預測。在這台機器上，光是 key 的成本：
 
 | 4 byte key | ns/op |
 |---|---|
@@ -160,7 +159,7 @@ wlgows 這些都能接受，因為 README 承諾你的 payload 只會被讀取�
 ## 讀取，對 gobwas
 
 v7 用 `Peek` 直接在 `bufio.Reader` 的 buffer 裡解析每個 header，所以讀一個 frame
-只會配置 `Frame` 和它的 payload。在同一層級比較，也就是 `GetFrameFromReader` 對
+只會配置 `Frame` 和它的 payload。在同一層級比較，也就是兩個 `FromReader` 步驟對
 `ws.ReadFrame`，server 的小 frame 讀取比 gobwas 快，client 讀取單一 frame 持平。
 
 | 讀取 | wlgows | gobwas |

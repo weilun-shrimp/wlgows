@@ -133,6 +133,47 @@ func TestDialContext(t *testing.T) {
 		}
 	})
 
+	// RFC 6455 3: ws defaults to port 80 and wss to 443.
+	t.Run("a url without a port dials the scheme's default port", func(t *testing.T) {
+		cases := []struct {
+			url         string
+			wantAddress string
+			wantHost    string
+		}{
+			{url: "ws://example.com/chat", wantAddress: "example.com:80", wantHost: "example.com"},
+			{url: "http://example.com/chat", wantAddress: "example.com:80", wantHost: "example.com"},
+			{url: "wss://example.com/chat", wantAddress: "example.com:443", wantHost: "example.com"},
+			{url: "https://example.com/chat", wantAddress: "example.com:443", wantHost: "example.com"},
+			{url: "ws://[::1]/chat", wantAddress: "[::1]:80", wantHost: "[::1]"},
+			{url: "wss://[::1]/chat", wantAddress: "[::1]:443", wantHost: "[::1]"},
+			{url: "ws://example.com:/chat", wantAddress: "example.com:80", wantHost: "example.com"},
+		}
+		for _, testCase := range cases {
+			var gotAddress string
+			di := base_di()
+			di.dialContext = func(_ *net.Dialer, _ context.Context, _, address string) (net.Conn, error) {
+				gotAddress = address
+				return newFakeConn(nil), nil
+			}
+			di.tlsDialContext = func(_ *tls.Dialer, _ context.Context, _, address string) (net.Conn, error) {
+				gotAddress = address
+				return newFakeConn(nil), nil
+			}
+
+			_, request, err := dialContext(ctx, testCase.url, nil, nil, di)
+			if err != nil {
+				t.Fatalf("%s: dialContext: %v", testCase.url, err)
+			}
+			if gotAddress != testCase.wantAddress {
+				t.Errorf("%s: dialled %q, want %q", testCase.url, gotAddress, testCase.wantAddress)
+			}
+			// The request keeps the url's own host, so the Host header leaves the default port out.
+			if request.URL.Host != testCase.wantHost {
+				t.Errorf("%s: request url host %q, want %q", testCase.url, request.URL.Host, testCase.wantHost)
+			}
+		}
+	})
+
 	t.Run("returns a request build error without dialing", func(t *testing.T) {
 		wantErr := errors.New("bad request")
 		di := base_di()

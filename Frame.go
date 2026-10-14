@@ -19,7 +19,10 @@ type Frame struct {
 	PayloadData           []byte  // always unmasked: a read unmasks it, a send masks a copy
 }
 
-func (f *Frame) GetMaxPayloadLength() uint64 {
+// GetDeclaredPayloadSize is the payload length the header declares, whether or
+// not the payload has been read yet. The size actually held is
+// len(PayloadData).
+func (f *Frame) GetDeclaredPayloadSize() uint64 {
 	if f.PayloadLength == 127 || f.PayloadLength == 126 {
 		return f.ExtendedPayloadLength
 	} else {

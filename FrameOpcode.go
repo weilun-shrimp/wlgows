@@ -18,9 +18,9 @@ const (
 IsControlOpcode reports whether opcode is one of the three control frames the
 RFC defines: close, ping or pong.
 
-A reserved opcode answers false here and false to IsDataOpcode, because there is
-nothing useful to say about a frame whose meaning is undefined — no rule can be
-applied to it and no payload interpreted. Frame.Opcode is a byte, so a value
+A reserved opcode answers false here and false to IsDataOpcode, because its
+meaning is undefined and no payload can be interpreted. RFC 6455 5.2 fails the
+connection on one. Frame.Opcode is a byte, so a value
 above 0xF cannot be a real opcode at all and answers false to both as well.
 */
 func IsControlOpcode(opcode byte) bool {

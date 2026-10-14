@@ -7,19 +7,15 @@ frame。
 
 ## 掌控權在你手上
 
-大多數 WebSocket package 會在建立連線時就固定 frame 大小或 buffer 大小，之後每一次
-傳送都只能照著它走。
+大多數 WebSocket package 會替你固定 frame 大小與 buffer 大小。wlgows 讓你兩者都能選：
 
-wlgows 把這兩者都交給你，而且它們是兩個獨立的旋鈕：
+- **write buffer**，每條連線一個：你交給 `Conn` 的 `*bufio.Writer`。`RenewWriter`
+  隨時可以更換。它是傳送唯一用到的記憶體，而且不會變大。見
+  [記憶體與 write buffer](#記憶體與-write-buffer)。
+- **frame 大小**，每次傳送時決定：`chunkSize`。它決定 message 在哪裡切成 frame，
+  不影響記憶體。見 [選擇 chunk size](#選擇-chunk-size)。
 
-- **write buffer** 由你提供，每條連線各自一個：建立 `Conn` 時交給它的
-  `*bufio.Writer`，之後隨時可以用 `RenewWriter` 更換。它是 `Conn` 為傳送保留的
-  唯一一塊記憶體，而且永遠不會長得比你給的更大。見 [記憶體與 write buffer](#記憶體與-write-buffer)。
-- **frame 大小** 在每一次傳送時由你決定：`chunkSize`。它決定 message 在哪裡被切成
-  frame，從不影響傳送要花多少記憶體。見 [選擇 chunk size](#選擇-chunk-size)。
-
-完整的權力，也是完整的責任：記憶體與速度之間的取捨，就是你選的那個大小。同樣的
-掌控權，也讓 server 傳送用的記憶體能壓到每條連線只有 14 byte，代價是寫入次數。見
+buffer 越大，記憶體越多、寫入次數越少。server 可以低到每條連線 14 byte。見
 [最低記憶體的設定方式](#最低記憶體的設定方式)。
 
 ## Contents
@@ -28,14 +24,17 @@ wlgows 把這兩者都交給你，而且它們是兩個獨立的旋鈕：
 - [選擇要用哪個呼叫](#選擇要用哪個呼叫)
 - [完整的 message](#完整的-message) — `SendText`、`SendBinary`、`SendData`
 - [Streaming](#streaming) — `Start`、`TransmitData`、`End`、`Release`
-- [記憶體與 write buffer](#記憶體與-write-buffer) — [更換：`RenewWriter`](#更換renewwriter) · [最低記憶體的設定方式](#最低記憶體的設定方式)
+- [記憶體與 write buffer](#記憶體與-write-buffer) — [更換：`RenewWriter`](#更換renewwriter) · [最低記憶體的設定方式](#最低記憶體的設定方式) · [最小的連線](#最小的連線)
 - [選擇 chunk size](#選擇-chunk-size)
 - [更快、更省記憶體：用 `unsafe` 送出 string](#更快更省記憶體用-unsafe-送出-string) — 只限清楚自己在做什麼時
 - [傳送失敗時](#傳送失敗時)
 - [Concurrency](#concurrency)
 - [Control frame 與自訂 frame](#control-frame-與自訂-frame)
+- [定期送出 ping](#定期送出-ping) — `StartPingLoop` 與 `Loop`
 
-library 的其他部分在 [main README](./README.zh-TW.md)。
+取得 `Conn` 的方法見 [SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md) 與
+[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)，讀取見
+[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)。
 
 ## 選擇要用哪個呼叫
 
@@ -77,12 +76,12 @@ message，所以 chunk 的邊界剛好切在某個字元中間也沒關係。`Se
 同一則 message 的 frame 會一起進入 write buffer，最後只 flush 一次，所以很多個小
 frame 會共用一次 socket 寫入。最後一個 frame 寫出之後，呼叫才會回傳。
 
-**你的 byte 只會被讀取。** client 是在 write buffer 裡對一份複本加上 mask，從不動你
-的 slice。所以把同一個 slice 送兩次、送出你之後還要用的 byte，或送出由 string
-轉成的 `[]byte`，在任一端都是安全的。
+**你的 byte 只會被讀取。** client 在 write buffer 裡對複本加上 mask，從不動你的
+slice。所以同一個 slice 可以送兩次，也可以繼續使用。在送出的呼叫回傳之前不要修改它：
+RFC 6455 10.3 規定 client 的 frame 開始送出後，payload 就不能再被改變。
 
-也正是這個保證，讓你可以透過 `unsafe` 完全不複製地送出一個 string。只有在你清楚
-自己在做什麼時才這麼做：見 [更快、更省記憶體](#更快更省記憶體用-unsafe-送出-string)。
+這也是能透過 `unsafe` 不複製就送出 string 的原因。只有在你清楚自己在做什麼時才
+這麼做：見 [更快、更省記憶體](#更快更省記憶體用-unsafe-送出-string)。
 
 ## Streaming
 
@@ -144,8 +143,8 @@ for {
 它的 `*bufio.Writer`。它的大小就是 buffer 的大小：
 
 ```go
-serverConn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriterSize(netConn, 16*1024), req) // 16 KB
-clientConn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)        // bufio 的 4096
+serverConn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriterSize(netConn, 16*1024), request, wlgows.ServerHandShakeConfig{}) // 16 KB
+clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)        // bufio 的 4096
 ```
 
 - **它必須寫到同一條連線。** 請建立在 `netConn` 上。
@@ -214,7 +213,7 @@ conn.RenewWriter(bufio.NewWriterSize(conn, 14))      // 最小的大小
 因為大小由你決定，傳送幾乎可以不花 server 任何記憶體：
 
 ```go
-conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriterSize(netConn, 14), req) // 整個 Conn 的生命週期都是 14 byte
+conn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriterSize(netConn, 14), request, wlgows.ServerHandShakeConfig{}) // 整個 Conn 的生命週期都是 14 byte
 ```
 
 或者忙碌時用一般大小的 buffer，等連線安靜下來再降到 14：
@@ -236,6 +235,32 @@ WebSocket，並讓 handler 先返回；這樣改用 14 byte 的 writer 時，那
 `bufRW.Writer`。Go 1.25 之前，`bufRW.Writer` 是 net/http 不會保留的新 writer，所以
 不受這個限制。
 
+### 最小的連線
+
+以一條閒置連線實測：一個 `Conn`、它的 `NewStandardListener`，以及執行 `Listen` 的
+goroutine。不包含 `net.Conn` 本身與作業系統的 socket。
+
+| | 每條閒置連線 | 100,000 條連線 |
+|---|---|---|
+| Reader 4096、writer 4096 | 約 14 KB | 約 1.4 GB |
+| Reader 16、writer 14 | 約 5–6 KB | 約 550 MB |
+| Reader 16、writer 14，再加上 `StartPingLoop` | 約 9 KB | 約 900 MB |
+
+用到最小的大小時，buffer 只剩 30 byte。reader 那一邊見
+[記憶體與 read buffer](./LISTENER_README.zh-TW.md#記憶體與-read-buffer)。剩下的大多是
+goroutine 的 stack：`Listen` 約 4 KB，每個 `StartPingLoop` 再多約 3 KB。wlgows 沒辦法
+縮小這些。你可以做的是：
+
+- **連線安靜時換成小的 writer**，如上所述。
+- **用一個 goroutine 送 ping，而不是每條連線一個。** `SendPing` 可以從任何
+  goroutine 呼叫，所以你自己的一個 loop 就能對所有連線送 ping。對方卡住時寫入會讓
+  這個 loop 跟著卡住，所以請替每條連線設定 write deadline。
+- **省掉每則 message 的複製。** 使用 `unsafe` 時，一則 message 只會存在一份，而不是
+  兩份 —— 見 [傳送](#更快更省記憶體用-unsafe-送出-string)與
+  [讀取](./LISTENER_README.zh-TW.md#不複製地讀取-textunsafe)。
+- **用串流接收大的 message。** `Data` hook 一次只持有一個 frame，而不是整則 message
+  —— 見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md#hooks)。
+
 ## 選擇 chunk size
 
 `chunkSize` 決定 message 在哪裡被切成 frame。它不會改變記憶體用量：write buffer 是
@@ -247,7 +272,7 @@ WebSocket，並讓 handler 先返回；這樣改用 14 byte 的 writer 時，那
 - **對方的限制。** 太大，一個 frame 可能超過對方對單一 frame 或單一 message 的
   限制。太小，大型 message 會變成很多個 frame，而對方可能會限制一則 message 的
   frame 數量。wlgows 自己的 `Listener` 就可以用 `MaxDataFrameCount` 設定這個上限
-  （預設沒有限制），超過時會以 `ErrDataFrameCountExceeded` 拒絕這則 message。請讓
+  （`NewStandardListener` 設為 16，單純的 `ListenerConfig` 則沒有限制），超過時會以 `ErrDataFrameCountExceeded` 拒絕這則 message。請讓
   message 大小 ÷ `chunkSize` 保持在這個上限以下。例如 16 MB 以 4 KB 為一個 chunk
   是 4,096 個 frame，比 [Listener 說明文件](./LISTENER_README.zh-TW.md#configuration)
   範例中使用的 4,000 還多。
@@ -261,9 +286,8 @@ WebSocket，並讓 handler 先返回；這樣改用 14 byte 的 writer 時，那
 你的測試都抓不到。它會在之後才出現：程式 crash，或某個 string 突然變了內容，而且
 發生的地方離真正的原因很遠。如果不確定，請用 `[]byte(text)`：代價只是多複製一次。
 
-wlgows 本身不使用 `unsafe`。但它保證**從不寫入你送出的 payload**，不管是哪一端：
-client 是在 write buffer 裡對複本加上 mask。所以你可以直接把 string 本身的記憶體交給
-它，而不是複本，只要**你的**程式也從不寫入它。
+wlgows 不使用 `unsafe`，而且**從不寫入你送出的 payload**。所以你可以直接交給它
+string 本身的記憶體，只要**你的**程式也從不寫入它。
 
 ```go
 payload := unsafe.Slice(unsafe.StringData(text), len(text))
@@ -278,11 +302,9 @@ err := conn.SendText(payload, 0)
 | `conn.SendText(payload, 0)`，透過 `unsafe` | 約 23 µs | 0.3 KB |
 | `conn.SendBinary(payload, 0)`，透過 `unsafe` | 約 1.3 µs | 0.3 KB |
 
-省下的就是 `[]byte(text)` 的成本：Go 必須複製 string，才能給你一份可以寫入的 byte。
-剩下的 23 µs 裡，約 20 µs 是 `SendText` 的 UTF-8 檢查，真正的傳送只要約 1 µs。
+`[]byte(text)` 會複製 string。剩下的 23 µs 裡，約 20 µs 是 `SendText` 的 UTF-8 檢查。
 
-**這也是最省記憶體的做法。** 不用 `unsafe` 時，這個 1 MB 的 string 在送完之前會同時
-存在兩份：string 本身和它的複本。用了之後，只有一份。
+**它也最省記憶體。** 不用 `unsafe` 時，1 MB 的 string 在送完前會存兩份。用了只有一份。
 
 規則：
 
@@ -299,7 +321,7 @@ err := conn.SendText(payload, 0)
 
 | Error | 意思 |
 |---|---|
-| `ErrCloseAlreadySent` | close 已經送出，而 RFC 6455 不允許在 close 之後送出 data frame 或第二個 close（5.5.1）。這個 frame 的任何部分都沒有送出。ping 或 pong 從不因此被拒絕。 |
+| `ErrCloseAlreadySent` | close 已經送出，而 RFC 6455 不允許在 close 之後送出 data frame（5.5.1），closing handshake 每個方向也只有一個 close（1.4、7.1.5）。這個 frame 的任何部分都沒有送出。ping 或 pong 從不因此被拒絕。 |
 | `ErrControlFramePayloadTooLong` | close、ping 或 pong 的 payload 超過 125 byte（5.5）。什麼都沒有送出。 |
 | `ErrInvalidUTF8` | `SendText` 收到無效的 UTF-8。什麼都沒有送出。 |
 | `ErrNotDataFrameOpcode`、`ErrContinuationFrameWithoutMsg` | `Start` 或 `SendData` 收到一個無法開啟 message 的 opcode。沒有取得任何 lock。 |
@@ -328,12 +350,26 @@ message，對方會看到 protocol error。
 - **不要在自己的串流裡送出 data message。** 在你的 `Start` 與 `Release` 之間呼叫
   `SendText`，會永遠等著你自己持有的那個 lock。
 
+這是靠兩個 lock 做到的，預設都是 `*sync.Mutex`：
+
+| Lock | 保護對象 | 使用者 |
+|---|---|---|
+| `writeLocker` | write buffer，同一時間一個 frame | 每個 `Send*`，持有時間為傳送一個 frame；`RenewWriter` |
+| `dataFramesWriteLocker` | 同一時間只有一個 data message | `SendText`、`SendBinary`、`SendData`，以及 `Start`…`Release` |
+
+control frame 只取得 `writeLocker`，所以能插在長 message 的 fragment 之間送出。
+
+**`conn.Write` 會略過這兩個 lock。** 它是從內嵌的 `net.Conn` 直接繼承而來。傳送請
+使用 `Send*` 系列方法。
+
+`Close` 刻意不取得任何 lock：關閉連線正是解除卡在已斷線對方上的讀寫動作的方法。
+
 ## Control frame 與自訂 frame
 
 `SendClose`、`SendPing` 與 `SendPong` 各送出一個 control frame，回傳前就已 flush。
 RFC 6455 規定 control frame 的 payload 最多 125 byte（5.5）。close 只會送出一次；
 在它之後 ping 或 pong 仍然會送出（5.5.2）。若要定期發送 ping，見
-[Keepalive](./README.zh-TW.md#keepalive)。
+[定期送出 ping](#定期送出-ping)。
 
 `SendFrame` 會寫出你用 `NewFrame` 組出的 frame，回傳前就已 flush。`Conn` 知道的
 它會替你設定，其餘的交給你：
@@ -347,3 +383,43 @@ RFC 6455 規定 control frame 的 payload 最多 125 byte（5.5）。close 只�
   RSV bit，它們會照你設定的樣子送出。
 
 使用之前，請先讀過它的文件。
+
+## 定期送出 ping
+
+RFC 6455 5.5.2 以 ping 發出詢問、以 pong 作為回應。`StartPingLoop` 負責定期詢問。
+它會 block，所以要在哪個 goroutine 執行由你決定：
+
+```go
+go conn.StartPingLoop(30*time.Second, nil) // nil：不帶 payload 的 ping
+```
+
+ping 送不出去，或這一端已經送出 close（不論是哪一端先開始關閉）之後，它會自己停止。
+它不會重試。
+
+每次 ping 都會呼叫 `payload`。對方會原樣送回這些 byte（5.5.3），所以內容不同就能
+分辨 pong 回應的是哪個 ping：
+
+```go
+var sequence atomic.Uint64
+go conn.StartPingLoop(30*time.Second, func() []byte {
+	return []byte(fmt.Sprintf("ping-%d", sequence.Add(1)))
+})
+```
+
+回應 `ping-4` 的 pong 會把 `ping-4` 帶回你的 `Pong` hook。payload 可以是任何你認得的內容，例如
+序號或時間戳記。
+
+送 ping 只是一半。發現 pong 不再回來是讀取那一端的事：見
+[它沒有 ping pong 存活偵測](./LISTENER_README.zh-TW.md#它沒有-ping-pong-存活偵測)。
+
+`StartPingLoop` 建立在 `Loop` 之上，它會定期執行任何 func，直到 func 要求停止：
+
+```go
+wlgows.Loop(func(stop chan<- struct{}) {
+	if done() {
+		stop <- struct{}{} // 只送一次；func 回傳後就會檢查
+		return
+	}
+	work()
+}, time.Second)
+```

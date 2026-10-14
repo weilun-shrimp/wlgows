@@ -8,17 +8,28 @@ import (
 DataFrames is one WebSocket message: the frames it was split into, in wire order.
 
 A message is only complete once a frame with FIN set arrives, and reading them
-is the caller's job — GetNextFrame hands out one frame at a time, so a caller
-that does not want to hold a huge message in memory never has to:
+is the caller's job — a Conn hands out one frame at a time, so a caller that
+does not want to hold a huge message in memory never has to:
 
 	var frames wlgows.DataFrames
 	for {
-		f, err := conn.GetNextFrame(maxByteLength)
+		conn.LockRead()
+		frame, err := conn.GetNextFrameHeader()
+		if err == nil && frame.GetDeclaredPayloadSize() > maxPayloadLength {
+			err = errTooLarge // judged before the payload is allocated
+		}
+		if err == nil {
+			err = conn.ReadFramePayload(frame)
+		}
+		conn.UnlockRead()
 		if err != nil {
 			return err
 		}
-		frames = append(frames, f)
-		if f.FIN {
+		if !wlgows.IsDataOpcode(frame.Opcode) {
+			continue // a control frame: answer it; a reserved opcode fails the connection (5.2)
+		}
+		frames = append(frames, frame)
+		if frame.FIN {
 			break
 		}
 	}
@@ -68,7 +79,7 @@ func (f DataFrames) Bytes() []byte {
 // ByteLen is the byte length of what String and Bytes return, without
 // assembling them. Never a character count: "中文字" reports 9, not 3.
 //
-// Not a size guard — pass a max byte length to GetNextFrame for that; by the
+// Not a size guard — judge each frame's header before reading its payload; by the
 // time a DataFrames exists its frames have already been read and allocated.
 func (f DataFrames) ByteLen() int {
 	total := 0

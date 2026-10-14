@@ -63,10 +63,30 @@ func handleConn(netConn net.Conn) {
 	r := bufio.NewReader(netConn)
 	req, err := http.ReadRequest(r)
 	if err != nil {
+		// RFC 6455 4.2.1: a malformed request is answered with 400.
+		respWriter := wlgows.NewResponseWriter()
+		respWriter.DeclineByError(wlgows.ErrHttpMsgFormationInvalid)
+		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
 		fmt.Println("reading request:", err)
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)
+	// Subprotocols (RFC 6455 4.2.2). To require one, uncomment the block below
+	// and add "slices" to the imports. A server that only speaks chat.v2 has
+	// nothing to say to a client that did not offer it, so it refuses before
+	// the handshake. To prefer chat.v2 without requiring it, uncomment only the
+	// last line: a client that did not offer it still connects, with no
+	// subprotocol.
+	handShakeConfig := wlgows.ServerHandShakeConfig{}
+	// if !slices.Contains(wlgows.RequestSubprotocols(req), "chat.v2") {
+	// 	respWriter := wlgows.NewResponseWriter()
+	// 	respWriter.WriteHeader(http.StatusBadRequest)
+	// 	respWriter.Write([]byte("subprotocol chat.v2 required"))
+	// 	wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
+	// 	return
+	// }
+	// handShakeConfig.Subprotocol = "chat.v2"
+
+	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req, handShakeConfig)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
@@ -82,6 +102,7 @@ func handleConn(netConn net.Conn) {
 	// rather than from an empty ListenerConfig.
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxFrameSize = maxDataFramesSize            // one frame may carry the whole message
 	config.MaxDataFrameCount = maxDataFramesSize / 256 // fragments of 256 bytes or more
 	config.FrameReadTimeout = frameReadTimeout
 
@@ -129,8 +150,9 @@ func handleConn(netConn net.Conn) {
 	go conn.StartPingLoop(pingInterval, nil)
 
 	// Blocks until a read fails, a frame breaks a rule, or a hook pauses it.
-	// nil means PauseListen(nil) — here only the close and unknown hooks pause,
-	// and neither has anything to report, so it is the ordinary shutdown.
+	// nil means the close hook paused it: the peer closed, the ordinary
+	// shutdown. The unknown hook pauses with ErrReservedOpcode, already
+	// answered with 1002, so the SendClose below gets ErrCloseAlreadySent.
 	if err := listener.Listen(); err != nil {
 		// No payload when no close frame can answer err: a dead socket, or
 		// something this package cannot attribute to the peer.

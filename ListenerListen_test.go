@@ -175,7 +175,7 @@ func TestListenerClaimListen(t *testing.T) {
 	})
 
 	// Pausing and starting again must not reset the assembly state, or the next
-	// continuation frame finds no message open and validateFrame calls it a
+	// continuation frame finds no message open and validateFrameHeader calls it a
 	// protocol error.
 	t.Run("keeps currentDataFrames", func(t *testing.T) {
 		l := &Listener{
@@ -202,59 +202,49 @@ func TestListenerClaimListen(t *testing.T) {
 	})
 }
 
-// fakeListenerConn scripts the frames listenFrames reads, and records what it
-// was asked for.
+// fakeListenerConn runs whatever each test sets. A nil lockRead, unlockRead or
+// setReadDeadline does nothing; set the read steps the test reaches.
 type fakeListenerConn struct {
-	frames             []*Frame
-	next               int
-	limits             []uint64
-	deadlines          []time.Time
-	getNextFrameErr    error
-	setReadDeadlineErr error
+	lockRead           func()
+	unlockRead         func()
+	getNextFrameHeader func() (*Frame, error)
+	readFramePayload   func(frame *Frame) error
+	setReadDeadline    func(t time.Time) error
 }
 
-func (conn *fakeListenerConn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
-	conn.limits = append(conn.limits, maxByteLength)
-	if conn.next >= len(conn.frames) {
-		return nil, conn.getNextFrameErr
+func (conn *fakeListenerConn) LockRead() {
+	if conn.lockRead != nil {
+		conn.lockRead()
 	}
-	frame := conn.frames[conn.next]
-	conn.next++
-	return frame, nil
+}
+
+func (conn *fakeListenerConn) UnlockRead() {
+	if conn.unlockRead != nil {
+		conn.unlockRead()
+	}
+}
+
+func (conn *fakeListenerConn) GetNextFrameHeader() (*Frame, error) {
+	return conn.getNextFrameHeader()
+}
+
+func (conn *fakeListenerConn) ReadFramePayload(frame *Frame) error {
+	return conn.readFramePayload(frame)
 }
 
 func (conn *fakeListenerConn) SetReadDeadline(t time.Time) error {
-	conn.deadlines = append(conn.deadlines, t)
-	return conn.setReadDeadlineErr
-}
-
-/*
-fakeListenFramesConn is the read side for the tests below, and nothing else. A
-read hands back whatever the test sent, and pauseDuringRead runs inside the read
-— the one moment a pause can meet the read error it caused, since a pause
-already waiting is caught before a read even starts.
-*/
-type fakeListenFramesConn struct {
-	frame           *Frame
-	err             error
-	pauseDuringRead func()
-}
-
-func (conn *fakeListenFramesConn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
-	if conn.pauseDuringRead != nil {
-		conn.pauseDuringRead()
+	if conn.setReadDeadline != nil {
+		return conn.setReadDeadline(t)
 	}
-	return conn.frame, conn.err
+	return nil
 }
-
-func (conn *fakeListenFramesConn) SetReadDeadline(t time.Time) error { return nil }
 
 /*
 listenFrames is the read loop, so these drive it with every step stubbed: what
 it reads, what it validates, what it routes, and when it gives up.
 
-A conn whose script runs out returns getNextFrameErr, which is what ends a run
-that is not paused or failed some other way.
+A conn whose frames run out returns drained, which is what ends a run that is
+not paused or failed some other way.
 */
 func TestListenerListenFrames(t *testing.T) {
 	drained := errors.New("drained")
@@ -262,47 +252,48 @@ func TestListenerListenFrames(t *testing.T) {
 	// listenerFramesDI with every step succeeding, for a test to override one.
 	workingDI := func() listenFramesDI {
 		return listenFramesDI{
-			timeNow:            time.Now,
-			nextFrameByteLimit: func() uint64 { return 0 },
-			validateFrame:      func(*Frame) error { return nil },
-			routeFrame:         func(*Frame) error { return nil },
+			timeNow:             time.Now,
+			validateFrameHeader: func(*Frame) error { return nil },
+			routeFrame:          func(*Frame) error { return nil },
 		}
 	}
 
 	// The pause is checked before the read, so a Listener paused between frames
 	// never blocks on one more.
 	t.Run("pauseChan closed", func(t *testing.T) {
-		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		conn := &fakeListenerConn{
+			lockRead: func() { t.Error("read after being paused") },
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		pauseChan := make(chan error, 1)
 		close(pauseChan)
 
-		if err := l.listenFrames(pauseChan, workingDI()); err != nil {
+		if err := listener.listenFrames(pauseChan, workingDI()); err != nil {
 			t.Errorf("err = %v, want nil", err)
-		}
-		if len(conn.limits) != 0 {
-			t.Errorf("read %d times after being paused", len(conn.limits))
 		}
 	})
 
 	/*
 		A pause and a failed read are usually the same event — closing the
 		connection is what wakes the read — so both come back joined rather than
-		one hiding the other.
+		one hiding the other. The pause lands inside the read, the one moment it
+		can meet the read error it caused.
 	*/
 	t.Run("a pause joins the read error it caused", func(t *testing.T) {
 		readErr := errors.New("use of closed network connection")
 		pauseErr := errors.New("shutting down")
 		pauseChan := make(chan error, 1)
-		conn := &fakeListenFramesConn{err: readErr}
-		conn.pauseDuringRead = func() { // PauseListen, mirrored
-			pauseChan <- pauseErr
-			close(pauseChan)
+		conn := &fakeListenerConn{
+			getNextFrameHeader: func() (*Frame, error) {
+				pauseChan <- pauseErr // PauseListen, mirrored
+				close(pauseChan)
+				return nil, readErr
+			},
 		}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
-		err := l.listenFrames(pauseChan, workingDI())
+		err := listener.listenFrames(pauseChan, workingDI())
 
 		if !errors.Is(err, pauseErr) {
 			t.Errorf("err = %v, want the pause reason in it", err)
@@ -312,16 +303,46 @@ func TestListenerListenFrames(t *testing.T) {
 		}
 	})
 
+	// A frame validateFrameHeader refused is what Listen reports: a pause cannot
+	// make it conforming, so the two are never joined.
+	t.Run("a frame validateFrameHeader refused is not joined with a pause", func(t *testing.T) {
+		pauseErr := errors.New("shutting down")
+		pauseChan := make(chan error, 1)
+		conn := &fakeListenerConn{
+			getNextFrameHeader: func() (*Frame, error) {
+				pauseChan <- pauseErr // PauseListen, mirrored
+				close(pauseChan)
+				return &Frame{Opcode: OpcodeText}, nil
+			},
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		di := workingDI()
+		di.validateFrameHeader = func(*Frame) error { return ErrReservedBitsSet }
+
+		err := listener.listenFrames(pauseChan, di)
+
+		if !errors.Is(err, ErrReservedBitsSet) {
+			t.Errorf("err = %v, want %v", err, ErrReservedBitsSet)
+		}
+		if errors.Is(err, pauseErr) {
+			t.Errorf("err = %v, want the pause left out", err)
+		}
+	})
+
 	// Join drops nils, so a pause with nothing to report leaves the socket's own
 	// error rather than turning a dead connection into a clean stop.
 	t.Run("a nil pause leaves the read error alone", func(t *testing.T) {
 		readErr := errors.New("connection reset")
 		pauseChan := make(chan error, 1)
-		conn := &fakeListenFramesConn{err: readErr}
-		conn.pauseDuringRead = func() { close(pauseChan) } // PauseListen(nil)
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		conn := &fakeListenerConn{
+			getNextFrameHeader: func() (*Frame, error) {
+				close(pauseChan) // PauseListen(nil)
+				return nil, readErr
+			},
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
-		if err := l.listenFrames(pauseChan, workingDI()); !errors.Is(err, readErr) {
+		if err := listener.listenFrames(pauseChan, workingDI()); !errors.Is(err, readErr) {
 			t.Errorf("err = %v, want %v", err, readErr)
 		}
 	})
@@ -330,87 +351,192 @@ func TestListenerListenFrames(t *testing.T) {
 	// of nil — the whole point of the channel holding an error.
 	t.Run("pauseChan carrying an error", func(t *testing.T) {
 		want := errors.New("shutting down")
-		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		conn := &fakeListenerConn{
+			lockRead: func() { t.Error("read after being paused") },
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		pauseChan := make(chan error, 1)
 		pauseChan <- want
 		close(pauseChan)
 
-		if err := l.listenFrames(pauseChan, workingDI()); !errors.Is(err, want) {
+		if err := listener.listenFrames(pauseChan, workingDI()); !errors.Is(err, want) {
 			t.Errorf("err = %v, want %v", err, want)
-		}
-		if len(conn.limits) != 0 {
-			t.Errorf("read %d times after being paused", len(conn.limits))
 		}
 	})
 
 	t.Run("order", func(t *testing.T) {
+		frames := []*Frame{{Opcode: OpcodeText}, {Opcode: OpcodeBinary}}
 		conn := &fakeListenerConn{
-			frames:          []*Frame{{Opcode: OpcodeText}, {Opcode: OpcodeBinary}},
-			getNextFrameErr: drained,
+			getNextFrameHeader: func() (*Frame, error) {
+				if len(frames) == 0 {
+					return nil, drained
+				}
+				frame := frames[0]
+				frames = frames[1:]
+				return frame, nil
+			},
+			readFramePayload: func(*Frame) error { return nil },
 		}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		var steps []string
 		di := workingDI()
-		di.validateFrame = func(*Frame) error { steps = append(steps, "validateFrame"); return nil }
+		di.validateFrameHeader = func(*Frame) error { steps = append(steps, "validateFrameHeader"); return nil }
 		di.routeFrame = func(*Frame) error { steps = append(steps, "routeFrame"); return nil }
 
-		if err := l.listenFrames(make(chan error, 1), di); !errors.Is(err, drained) {
+		if err := listener.listenFrames(make(chan error, 1), di); !errors.Is(err, drained) {
 			t.Fatalf("err = %v, want drained", err)
 		}
-		want := "validateFrame,routeFrame,validateFrame,routeFrame"
+		want := "validateFrameHeader,routeFrame,validateFrameHeader,routeFrame"
 		if got := strings.Join(steps, ","); got != want {
 			t.Errorf("steps = %s, want %s", got, want)
 		}
 	})
 
-	// Whatever nextFrameByteLimit returns is what the frame is allowed to
-	// declare, so it has to reach GetNextFrame unchanged.
-	t.Run("nextFrameByteLimit", func(t *testing.T) {
-		conn := &fakeListenerConn{frames: []*Frame{{}}, getNextFrameErr: drained}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+	/*
+		One read lock covers the whole frame, header and payload, so no other
+		reader takes bytes between the two steps. The header is judged before
+		the payload is read, and the lock is released before routeFrame, so no
+		hook runs under it.
+	*/
+	t.Run("one frame read whole", func(t *testing.T) {
+		frame := &Frame{Opcode: OpcodeText}
+		var steps []string
+		headerReads := 0
+		conn := &fakeListenerConn{
+			lockRead:   func() { steps = append(steps, "lock") },
+			unlockRead: func() { steps = append(steps, "unlock") },
+			getNextFrameHeader: func() (*Frame, error) {
+				steps = append(steps, "header")
+				headerReads++
+				if headerReads > 1 { // one frame, then the stream ends
+					return nil, drained
+				}
+				return frame, nil
+			},
+			readFramePayload: func(payloadFrame *Frame) error {
+				if payloadFrame != frame {
+					t.Error("the payload was read into another frame")
+				}
+				steps = append(steps, "payload")
+				return nil
+			},
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		di := workingDI()
+		di.validateFrameHeader = func(*Frame) error { steps = append(steps, "validate"); return nil }
+		di.routeFrame = func(*Frame) error { steps = append(steps, "route"); return nil }
+
+		listener.listenFrames(make(chan error, 1), di)
+		want := "lock,header,validate,payload,unlock,route,lock,header,unlock"
+		if got := strings.Join(steps, ","); got != want {
+			t.Errorf("steps = %s, want %s", got, want)
+		}
+	})
+
+	// A frame refused by its header is never allocated, and the lock is still
+	// released.
+	t.Run("a frame validateFrameHeader refuses has no payload read", func(t *testing.T) {
+		var steps []string
+		conn := &fakeListenerConn{
+			lockRead:           func() { steps = append(steps, "lock") },
+			unlockRead:         func() { steps = append(steps, "unlock") },
+			getNextFrameHeader: func() (*Frame, error) { return &Frame{Opcode: OpcodeText}, nil },
+			readFramePayload: func(*Frame) error {
+				t.Error("the payload of a refused frame was read")
+				return nil
+			},
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
 
 		di := workingDI()
-		di.nextFrameByteLimit = func() uint64 { return 4242 }
+		di.validateFrameHeader = func(*Frame) error { return ErrReservedBitsSet }
 
-		l.listenFrames(make(chan error, 1), di)
-		for _, limit := range conn.limits {
-			if limit != 4242 {
-				t.Errorf("GetNextFrame got %d, want 4242", limit)
-			}
+		if err := listener.listenFrames(make(chan error, 1), di); !errors.Is(err, ErrReservedBitsSet) {
+			t.Errorf("err = %v, want %v", err, ErrReservedBitsSet)
+		}
+		if got := strings.Join(steps, ","); got != "lock,unlock" {
+			t.Errorf("steps = %s, want lock,unlock", got)
+		}
+	})
+
+	// A failed header read still releases the lock, and reads no payload.
+	t.Run("a failed header read releases the lock", func(t *testing.T) {
+		var steps []string
+		conn := &fakeListenerConn{
+			lockRead:           func() { steps = append(steps, "lock") },
+			unlockRead:         func() { steps = append(steps, "unlock") },
+			getNextFrameHeader: func() (*Frame, error) { return nil, drained },
+			readFramePayload: func(*Frame) error {
+				t.Error("a payload was read after the header read failed")
+				return nil
+			},
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+
+		if err := listener.listenFrames(make(chan error, 1), workingDI()); !errors.Is(err, drained) {
+			t.Errorf("err = %v, want drained", err)
+		}
+		if got := strings.Join(steps, ","); got != "lock,unlock" {
+			t.Errorf("steps = %s, want lock,unlock", got)
+		}
+	})
+
+	// A failed payload read still releases the lock.
+	t.Run("a failed payload read releases the lock", func(t *testing.T) {
+		var steps []string
+		conn := &fakeListenerConn{
+			lockRead:           func() { steps = append(steps, "lock") },
+			unlockRead:         func() { steps = append(steps, "unlock") },
+			getNextFrameHeader: func() (*Frame, error) { return &Frame{Opcode: OpcodeText}, nil },
+			readFramePayload:   func(*Frame) error { return drained },
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+
+		if err := listener.listenFrames(make(chan error, 1), workingDI()); !errors.Is(err, drained) {
+			t.Errorf("err = %v, want drained", err)
+		}
+		if got := strings.Join(steps, ","); got != "lock,unlock" {
+			t.Errorf("steps = %s, want lock,unlock", got)
 		}
 	})
 
 	t.Run("FrameReadTimeout", func(t *testing.T) {
 		fixed := time.Unix(1000, 0)
-		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
-		l.config = ListenerConfig{FrameReadTimeout: 30 * time.Second}
+		var deadlines []time.Time
+		conn := &fakeListenerConn{
+			setReadDeadline:    func(deadline time.Time) error { deadlines = append(deadlines, deadline); return nil },
+			getNextFrameHeader: func() (*Frame, error) { return nil, drained },
+		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+		listener.config = ListenerConfig{FrameReadTimeout: 30 * time.Second}
 
 		di := workingDI()
 		di.timeNow = func() time.Time { return fixed }
 
-		l.listenFrames(make(chan error, 1), di)
-		if len(conn.deadlines) != 1 {
-			t.Fatalf("SetReadDeadline called %d times, want 1", len(conn.deadlines))
+		listener.listenFrames(make(chan error, 1), di)
+		if len(deadlines) != 1 {
+			t.Fatalf("SetReadDeadline called %d times, want 1", len(deadlines))
 		}
-		if want := fixed.Add(30 * time.Second); !conn.deadlines[0].Equal(want) {
-			t.Errorf("deadline = %v, want %v", conn.deadlines[0], want)
+		if want := fixed.Add(30 * time.Second); !deadlines[0].Equal(want) {
+			t.Errorf("deadline = %v, want %v", deadlines[0], want)
 		}
 	})
 
 	// 0 means no timeout, and arming one anyway would clobber a deadline the
 	// caller set on the conn themselves.
 	t.Run("no FrameReadTimeout", func(t *testing.T) {
-		conn := &fakeListenerConn{getNextFrameErr: drained}
-		l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
-
-		l.listenFrames(make(chan error, 1), workingDI())
-		if len(conn.deadlines) != 0 {
-			t.Errorf("SetReadDeadline called %d times, want 0", len(conn.deadlines))
+		conn := &fakeListenerConn{
+			setReadDeadline: func(time.Time) error {
+				t.Error("SetReadDeadline called with no FrameReadTimeout")
+				return nil
+			},
+			getNextFrameHeader: func() (*Frame, error) { return nil, drained },
 		}
+		listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+
+		listener.listenFrames(make(chan error, 1), workingDI())
 	})
 
 	// Every step can end the run, and the error has to arrive unchanged.
@@ -421,13 +547,16 @@ func TestListenerListenFrames(t *testing.T) {
 			setup func(*fakeListenerConn, *listenFramesDI)
 		}{
 			{"SetReadDeadline", func(conn *fakeListenerConn, _ *listenFramesDI) {
-				conn.setReadDeadlineErr = want
+				conn.setReadDeadline = func(time.Time) error { return want }
 			}},
-			{"GetNextFrame", func(conn *fakeListenerConn, _ *listenFramesDI) {
-				conn.getNextFrameErr = want
+			{"GetNextFrameHeader", func(conn *fakeListenerConn, _ *listenFramesDI) {
+				conn.getNextFrameHeader = func() (*Frame, error) { return nil, want }
 			}},
-			{"validateFrame", func(_ *fakeListenerConn, di *listenFramesDI) {
-				di.validateFrame = func(*Frame) error { return want }
+			{"ReadFramePayload", func(conn *fakeListenerConn, _ *listenFramesDI) {
+				conn.readFramePayload = func(*Frame) error { return want }
+			}},
+			{"validateFrameHeader", func(_ *fakeListenerConn, di *listenFramesDI) {
+				di.validateFrameHeader = func(*Frame) error { return want }
 			}},
 			{"routeFrame", func(_ *fakeListenerConn, di *listenFramesDI) {
 				di.routeFrame = func(*Frame) error { return want }
@@ -435,14 +564,17 @@ func TestListenerListenFrames(t *testing.T) {
 		}
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
-				conn := &fakeListenerConn{frames: []*Frame{{}}, getNextFrameErr: drained}
+				conn := &fakeListenerConn{
+					getNextFrameHeader: func() (*Frame, error) { return &Frame{}, nil },
+					readFramePayload:   func(*Frame) error { return nil },
+				}
 				di := workingDI()
 				testCase.setup(conn, &di)
 
-				l := &Listener{configLocker: &sync.Mutex{}, conn: conn}
-				l.config = ListenerConfig{FrameReadTimeout: time.Second}
+				listener := &Listener{configLocker: &sync.Mutex{}, conn: conn}
+				listener.config = ListenerConfig{FrameReadTimeout: time.Second}
 
-				if err := l.listenFrames(make(chan error, 1), di); !errors.Is(err, want) {
+				if err := listener.listenFrames(make(chan error, 1), di); !errors.Is(err, want) {
 					t.Errorf("err = %v, want %v", err, want)
 				}
 			})

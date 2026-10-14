@@ -31,10 +31,9 @@ a message boundary rather than between two of its frames.
 */
 func (l *Listener) Listen() error {
 	framesDI := listenFramesDI{
-		timeNow:            time.Now,
-		nextFrameByteLimit: l.nextFrameByteLimit,
-		validateFrame:      l.validateFrame,
-		routeFrame:         l.routeFrame,
+		timeNow:             time.Now,
+		validateFrameHeader: l.validateFrameHeader,
+		routeFrame:          l.routeFrame,
 	}
 	return l.listen(listenDI{
 		claimListen: l.claimListen,
@@ -100,10 +99,9 @@ func (l *Listener) claimListen() (chan error, error) {
 // because the Listener already carries it — a scripted conn is what feeds the
 // loop its frames. timeNow is the only value that is not deterministic.
 type listenFramesDI struct {
-	timeNow            func() time.Time
-	nextFrameByteLimit func() uint64
-	validateFrame      func(f *Frame) error
-	routeFrame         func(f *Frame) error
+	timeNow             func() time.Time
+	validateFrameHeader func(f *Frame) error
+	routeFrame          func(f *Frame) error
 }
 
 /*
@@ -111,7 +109,7 @@ listenFrames reads and routes until a read fails, a frame breaks a rule, or a
 pause arrives.
 
 The pause is only noticed between frames, since the rest of the time this is
-parked inside GetNextFrame. A frame already read is validated and routed first —
+parked inside the read. A frame already read is routed first —
 the loop finishes what it started, and only then sees the pause.
 
 A read that failed is the one place the two compete, and there they are joined:
@@ -135,7 +133,19 @@ func (l *Listener) listenFrames(pauseChan <-chan error, di listenFramesDI) error
 			}
 		}
 
-		f, err := l.conn.GetNextFrame(di.nextFrameByteLimit())
+		// One read lock for the whole frame, released before routing so no hook
+		// runs under it.
+		l.conn.LockRead()
+		f, err := l.conn.GetNextFrameHeader()
+		if err == nil {
+			// Judged by its header, before the payload is allocated.
+			if ruleErr := di.validateFrameHeader(f); ruleErr != nil {
+				l.conn.UnlockRead()
+				return ruleErr // validateFrameHeader refused the frame: never joined with a pause
+			}
+			err = l.conn.ReadFramePayload(f)
+		}
+		l.conn.UnlockRead()
 		if err != nil {
 			select {
 			case pauseErr := <-pauseChan:
@@ -147,9 +157,6 @@ func (l *Listener) listenFrames(pauseChan <-chan error, di listenFramesDI) error
 				return errors.Join(pauseErr, err)
 			default:
 			}
-			return err
-		}
-		if err := di.validateFrame(f); err != nil {
 			return err
 		}
 		if err := di.routeFrame(f); err != nil {
@@ -169,11 +176,11 @@ reason the run actually ended.
 
 err may not come back alone. Closing the connection is what wakes a parked read,
 so a pause and the read error it caused are often one event, and Listen returns
-them joined — errors.Is finds either. A hook's error is not joined: a frame that
-broke a rule is what Listen reports, since a pause cannot make it conforming.
+them joined — errors.Is finds either. A frame validateFrameHeader refused is not
+joined: it is what Listen reports, since a pause cannot make it conforming.
 
 The pause is only noticed between frames, because the loop spends its time
-parked inside GetNextFrame. On a silent peer this returns at once while the read
+parked inside the read. On a silent peer this returns at once while the read
 stays blocked; closing the connection is the only thing that unblocks it, and
 that is yours to do.
 */

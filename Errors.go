@@ -7,7 +7,7 @@ Sentinel errors. Every error this package returns wraps one of these with
 fmt.Errorf and %w, so the caller gets a message with context and can still ask
 which failure it was:
 
-	_, err := sc.HandShake()
+	_, _, err := wlgows.ServerHandShake(netConn, reader, writer, request, config)
 	if errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
 		// ...
 	}
@@ -19,27 +19,28 @@ the sentinel itself.
 
 // frame
 var (
-	// ErrFrameByteLengthExceeded is returned by GetFrameFromReader before it
-	// allocates, when the frame header declares a payload larger than the max
-	// the caller allowed. Listen also returns it when a message's data frames,
-	// headers included, go over MaxDataFramesSize. RFC 6455 close code 1009 is
-	// the matching response.
+	// ErrFrameByteLengthExceeded is returned by Listen, judged from the frame
+	// header before the payload is allocated, when a data or reserved-opcode
+	// frame goes over MaxFrameSize or a message's data frames go over
+	// MaxDataFramesSize, headers included. RFC 6455 close code 1009 is the matching response.
 	ErrFrameByteLengthExceeded = errors.New("frame payload exceeds the max byte length")
 
-	// ErrPayloadLengthMSBSet is returned by GetFrameFromReader when a 64 bit
-	// payload length has its most significant bit set. RFC 6455 5.2 requires
-	// that bit to be 0, so this is a protocol error. Answer it with close code
-	// 1002.
+	// ErrPayloadLengthMSBSet is returned by GetFrameHeaderFromReader when a 64
+	// bit payload length has its most significant bit set. RFC 6455 5.2
+	// requires that bit to be 0, so this is a protocol error. Answer it with
+	// close code 1002.
 	ErrPayloadLengthMSBSet = errors.New("64 bit payload length has its most significant bit set")
 
-	// ErrPayloadLengthNotMinimal is returned by GetFrameFromReader when a payload
-	// length uses more bytes than it needs. RFC 6455 5.2 requires the shortest
-	// form. Answer it with close code 1002.
+	// ErrPayloadLengthNotMinimal is returned by GetFrameHeaderFromReader when a
+	// payload length uses more bytes than it needs. RFC 6455 5.2 requires the
+	// shortest form. Answer it with close code 1002.
 	ErrPayloadLengthNotMinimal = errors.New("payload length is not in its shortest encoding")
 
-	// ErrControlFramePayloadTooLong is returned before anything reaches the
-	// socket. RFC 6455 5.5 caps a control frame payload at 125 bytes so it
-	// always fits in the 7 bit inline length.
+	// ErrControlFramePayloadTooLong is a control frame payload over 125 bytes,
+	// which RFC 6455 5.5 forbids so it always fits in the 7 bit inline length.
+	// A send refuses it before anything reaches the socket, and
+	// GetFrameHeaderFromReader refuses one from the peer — answer with close
+	// code 1002.
 	ErrControlFramePayloadTooLong = errors.New("control frame payload exceeds 125 bytes")
 
 	// ErrNotControlFrameOpcode guards the control frame send path against a
@@ -96,11 +97,14 @@ var (
 	// close code 1007 is the response. From SendText it means you did, and the
 	// message was refused before it reached the socket.
 	//
-	// A close frame reason is UTF-8 too (5.5.1) and is not checked yet.
+	// Listen also returns it for a close frame whose reason is not UTF-8 (5.5.1,
+	// 8.1).
 	ErrInvalidUTF8 = errors.New("text message payload is not valid UTF-8")
 
-	// ErrInvalidCloseStatusCode is a close frame carrying a status code RFC
-	// 6455 7.4 does not allow on the wire — answer with close code 1002.
+	// ErrInvalidCloseStatusCode is a close frame whose status code is local only
+	// (1005, 1006, 1015: RFC 6455 7.4.1 forbids sending them), unused (0-999),
+	// reserved with no meaning (1004), not registered in 1000-2999 (7.4.2,
+	// IANA), or above 4999 — answer with close code 1002.
 	ErrInvalidCloseStatusCode = errors.New("close frame status code is not one the RFC allows on the wire")
 
 	// ErrDataFrameCountExceeded is a message arriving in more frames than
@@ -125,6 +129,11 @@ var (
 	// forbids a server masking, and requires a client to fail the connection on
 	// one that is — answer with close code 1002.
 	ErrFrameMasked = errors.New("frame from the peer is masked")
+
+	// ErrReservedOpcode is a frame whose opcode RFC 6455 5.2 reserves, and no
+	// negotiated extension defines. 5.2 has the receiver fail the connection —
+	// answer with close code 1002. RFC6455UnknownHook stops a Listener with it.
+	ErrReservedOpcode = errors.New("frame has a reserved opcode")
 )
 
 // connection state
@@ -136,8 +145,8 @@ var (
 	ErrLongDataTransmissionNotStarted = errors.New("no long data transmission is open")
 
 	// ErrCloseAlreadySent is a send on a connection that has already put a close
-	// frame on the wire. RFC 6455 5.5.1 ends the conversation there: the closing
-	// handshake is one close each way, and no data frame follows one.
+	// frame on the wire. The closing handshake is one close each way (RFC 6455
+	// 1.4, 7.1.5), and no data frame follows one (5.5.1).
 	//
 	// From SendClose it is a race resolved rather than a failure to handle — two
 	// goroutines both answering the peer's close both call it, and this tells the
@@ -153,7 +162,7 @@ var (
 	// ErrUrlSchemeInvalid is a url whose scheme is not ws, wss, http or https.
 	ErrUrlSchemeInvalid = errors.New("url scheme is not ws, wss, http or https")
 
-	// ErrUrlHostEmpty is a url with no host to dial.
+	// ErrUrlHostEmpty is a url with no host to dial, or to send as Host.
 	ErrUrlHostEmpty = errors.New("url host is empty")
 )
 
@@ -172,9 +181,10 @@ var (
 
 	// ErrHttpSecWebSocketVersionNotSupported is a handshake request whose
 	// Sec-WebSocket-Version is missing or is not 13. RFC 6455 4.2.1 requires the
-	// header and fixes the value at 13; 4.4 has the server answer 426 Upgrade
-	// Required, naming the versions it does support, so a client speaking an
-	// older draft learns what to retry with rather than guessing.
+	// header and fixes the value at 13; 4.2.2 has the server answer with an
+	// error such as 426 Upgrade Required, naming the versions it does support
+	// (4.4), so a client speaking an older draft learns what to retry with
+	// rather than guessing.
 	ErrHttpSecWebSocketVersionNotSupported = errors.New("Sec-WebSocket-Version is not 13")
 	ErrHttpRequestHasResponse              = errors.New("http request already has a response")
 )
@@ -193,6 +203,13 @@ var (
 	ErrHandshakeResponseUpgradeHeaderInvalid    = errors.New("handshake response Upgrade header does not contain the websocket token")
 	ErrHandshakeResponseAcceptHeaderMissing     = errors.New("handshake response Sec-WebSocket-Accept header is not set")
 	ErrHandshakeResponseAcceptHeaderMismatch    = errors.New("handshake response Sec-WebSocket-Accept header does not match the request's key")
+
+	// The following are ValidateHandShakeResponseSubprotocol rejecting the
+	// server's Sec-WebSocket-Protocol. RFC 6455 4.1 has the client fail the
+	// connection on either. More than one value is checked first, on one line
+	// or several, since the server may answer with one only (4.2.2).
+	ErrHandshakeResponseSubprotocolMultiple   = errors.New("handshake response Sec-WebSocket-Protocol has more than one value")
+	ErrHandshakeResponseSubprotocolNotOffered = errors.New("handshake response Sec-WebSocket-Protocol is not a value the client offered")
 )
 
 // server handshake
@@ -206,8 +223,8 @@ var (
 StandardClosePayloadFor returns the close frame payload that answers err, or
 nil when a close frame is not the answer.
 
-RFC 6455 7.1.7 fails the connection on a protocol violation and 7.4.1 fixes
-which status code names each one. This is that table:
+RFC 6455 7.1.7 fails the connection on a protocol violation and 7.4.1 defines
+the codes an endpoint may use to name each one. This is that table:
 
 	ErrInvalidUTF8                                -> 1007 CloseInvalidFramePayloadData
 	ErrFrameByteLengthExceeded,
@@ -221,7 +238,7 @@ Everything else gets nil. That is the absence of an attribution, not a claim
 that the connection is healthy, and it never means "close the connection":
 
   - The connection already failed. io.EOF, io.ErrUnexpectedEOF,
-    os.ErrDeadlineExceeded and net.ErrClosed arrive here through GetNextFrame,
+    os.ErrDeadlineExceeded and net.ErrClosed arrive here through a frame read,
     and the peer broke no rule. 7.4.1 calls this 1006 abnormal closure and
     forbids putting 1006 on the wire, because it is what an endpoint records
     about itself.
@@ -235,11 +252,12 @@ that the connection is healthy, and it never means "close the connection":
     calling if it deserves a close code.
 
   - An error this package has never seen, which a custom net.Conn or a wrapping
-    layer can return through GetNextFrame. Guessing 1002 would blame the peer
-    for something nothing here can attribute to them. 7.1.1 permits closing with
-    no close frame at all, so sending nothing is always legal, while a wrong
-    status code is not something the peer can recover from. Add your own arm
-    before this call if you know what such an error means.
+    layer can return through a frame read. Guessing 1002 would blame the peer
+    for something nothing here can attribute to them. 7.1.7 only says a close
+    frame SHOULD be sent, so sending none is not a violation, while a wrong
+    status code is not something the peer can recover from. If you want to send
+    one, 1011 says the fault is on this side. Add your own arm before this call
+    if you know what such an error means.
 
 Decide the connection's fate from its state, not from this result. The Errors
 section of LISTENER_README.md works through the whole shape.
@@ -256,6 +274,7 @@ func StandardClosePayloadFor(err error) *ClosePayload {
 	case errors.Is(err, ErrReservedBitsSet),
 		errors.Is(err, ErrFrameNotMasked),
 		errors.Is(err, ErrFrameMasked),
+		errors.Is(err, ErrReservedOpcode),
 		errors.Is(err, ErrControlFrameFragmented),
 		errors.Is(err, ErrControlFramePayloadTooLong),
 		errors.Is(err, ErrContinuationFrameWithoutMsg),

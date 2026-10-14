@@ -270,7 +270,7 @@ func TestEndLongDataTransmission(t *testing.T) {
 		}
 	})
 
-	// 5.6 allows an empty message, so End sends one even with nothing before.
+	// 5.2 allows a 0 payload length, so End sends one even with nothing before.
 	t.Run("sends an empty last frame", func(t *testing.T) {
 		var sent []*Frame
 		di := base_di()

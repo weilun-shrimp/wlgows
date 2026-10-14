@@ -176,8 +176,9 @@ func benchmarkSend(mask bool, total, count int) func(*testing.B) {
 }
 
 // benchmarkRead reads on a server when mask is true, so the frames come masked
-// from a client, else on a client. It calls GetFrameFromReader, the lowest
-// level read, as the other libraries are measured at theirs.
+// from a client, else on a client. It calls GetFrameHeaderFromReader and
+// Frame.FillFramePayloadFromReader, the lowest level read, as the other libraries
+// are measured at theirs.
 func benchmarkRead(mask bool, total, count int) func(*testing.B) {
 	return func(b *testing.B) {
 		// The other side sends the frames once, so the wire is real.
@@ -199,8 +200,11 @@ func benchmarkRead(mask bool, total, count int) func(*testing.B) {
 
 		// Check one round before timing it.
 		for j := 0; j < count; j++ {
-			f, err := GetFrameFromReader(reader, 0)
+			f, err := GetFrameHeaderFromReader(reader)
 			if err != nil {
+				b.Fatal(err)
+			}
+			if err := f.FillFramePayloadFromReader(reader); err != nil {
 				b.Fatal(err)
 			}
 			if !bytes.Equal(f.PayloadData, payload) {
@@ -216,8 +220,11 @@ func benchmarkRead(mask bool, total, count int) func(*testing.B) {
 			source.Reset(wire)
 			reader.Reset(source)
 			for j := 0; j < count; j++ {
-				benchmarkFrameSink, err = GetFrameFromReader(reader, 0)
+				benchmarkFrameSink, err = GetFrameHeaderFromReader(reader)
 				if err != nil {
+					b.Fatal(err)
+				}
+				if err := benchmarkFrameSink.FillFramePayloadFromReader(reader); err != nil {
 					b.Fatal(err)
 				}
 			}

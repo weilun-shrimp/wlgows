@@ -3,6 +3,7 @@ package wlgows
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
@@ -36,6 +37,9 @@ func TestConnNewStandardListener(t *testing.T) {
 	if l.config.MaxDataFramesSize != 4096 {
 		t.Errorf("MaxDataFramesSize = %d, want 4096", l.config.MaxDataFramesSize)
 	}
+	if l.config.MaxFrameSize != 4096 {
+		t.Errorf("MaxFrameSize = %d, want 4096", l.config.MaxFrameSize)
+	}
 	if l.config.MaxDataFrameCount != 16 {
 		t.Errorf("MaxDataFrameCount = %d, want 16", l.config.MaxDataFrameCount)
 	}
@@ -57,7 +61,7 @@ func TestConnNewStandardListener(t *testing.T) {
 	}
 }
 
-// 5.5.2: MUST answer with a pong whose payload is identical.
+// 5.5.2, 5.5.3: MUST answer with a pong whose payload is identical.
 func TestConnRFC6455PingHook(t *testing.T) {
 	conn, sent := hookConn()
 
@@ -74,7 +78,7 @@ func TestConnRFC6455PingHook(t *testing.T) {
 	}
 }
 
-// 5.5.3: a pong MUST NOT be answered.
+// 5.5.3: a pong expects no answer.
 func TestConnRFC6455PongHook(t *testing.T) {
 	conn, sent := hookConn()
 
@@ -85,7 +89,7 @@ func TestConnRFC6455PongHook(t *testing.T) {
 	}
 }
 
-// 5.5.1: answer with a close echoing the status code, then read nothing further.
+// 5.5.1: answer with a close echoing the status code.
 func TestConnRFC6455CloseHook(t *testing.T) {
 	conn, sent := hookConn()
 	l := NewListener(conn)
@@ -121,7 +125,8 @@ func TestConnRFC6455CloseHook(t *testing.T) {
 func TestConnRFC6455UnknownHook(t *testing.T) {
 	conn, sent := hookConn()
 	l := NewListener(conn)
-	l.pauseChan = make(chan error, 1)
+	pauseChan := make(chan error, 1)
+	l.pauseChan = pauseChan
 
 	conn.RFC6455UnknownHook(l)(&Frame{Opcode: 0xB, FIN: true})
 
@@ -134,5 +139,9 @@ func TestConnRFC6455UnknownHook(t *testing.T) {
 	}
 	if l.pauseChan != nil {
 		t.Error("the run was not paused")
+	}
+	// 5.2 fails the connection, so Listen returns an error, not nil.
+	if err := <-pauseChan; !errors.Is(err, ErrReservedOpcode) {
+		t.Errorf("paused with %v, want %v", err, ErrReservedOpcode)
 	}
 }

@@ -35,9 +35,9 @@ type Conn struct {
 	// OpcodeContinuation.
 	currentTransmitDataMsgOpened bool
 
-	// Whether a close has been written. RFC 6455 5.5.1 puts the closing
-	// handshake at one close each way, so this is what says the answer is
-	// already spent.
+	// Whether a close has been written. The closing handshake is one close each
+	// way (RFC 6455 1.4, 7.1.5), so this is what says the answer is already
+	// spent.
 	//
 	// 5.5.1 allows no data frame after a close, so after one every data frame
 	// and every second close is refused (bufferedWriteFrame); a ping or pong
@@ -56,13 +56,14 @@ type Conn struct {
 }
 
 type connDI struct {
-	getFrameFromReader    func(r *bufio.Reader, maxByteLength uint64) (*Frame, error)
+	getFrameHeader        func(r *bufio.Reader) (*Frame, error)
+	fillFramePayload      func(f *Frame, r *bufio.Reader) error
 	newControlFrame       func(config NewControlFrameConfig) (*Frame, error)
 	newDataFrame          func(config NewFrameConfig) (*Frame, error)
 	fillMaskingKey        func(key *[4]byte) error
 	loop                  func(trigger func(stop_signal chan<- struct{}), interval time.Duration)
 	writeLocker           sync.Locker // Guards writer and closeSent; held per frame.
-	readLocker            sync.Locker // Protect reading one frame to TCP conn.
+	readLocker            sync.Locker // Guards reading one frame, header and payload; see LockRead.
 	dataFramesWriteLocker sync.Locker // Protect writing data frames to TCP conn.
 }
 
@@ -92,7 +93,8 @@ func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (
 		maskSendFrame: maskSendFrame,
 		writer:        w,
 		di: connDI{
-			getFrameFromReader:    GetFrameFromReader,
+			getFrameHeader:        GetFrameHeaderFromReader,
+			fillFramePayload:      (*Frame).FillFramePayloadFromReader,
 			newControlFrame:       NewControlFrame,
 			newDataFrame:          NewDataFrame,
 			fillMaskingKey:        FillMaskingKey,
@@ -105,35 +107,44 @@ func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (
 }
 
 /*
-GetNextFrame reads one frame, refusing any whose header declares a payload
-larger than maxByteLength. Pass 0 for no limit.
+LockRead takes the read lock for one frame. Hold it across GetNextFrameHeader
+and ReadFramePayload, so no other reader takes bytes between the two steps,
+then release it with UnlockRead:
 
-One frame is the whole unit this returns: a message split across frames is
-assembled by the caller, appending into a DataFrames until a frame with FIN set
-arrives. That is what lets a caller stream a huge message somewhere else instead
-of holding it:
-
-	var frames wlgows.DataFrames
-	for {
-		f, err := conn.GetNextFrame(10 << 20)
-		if err != nil {
-			return err
-		}
-		if !IsDataOpcode(f.Opcode) { // control or reserved, never message payload
-			return nil
-		}
-		frames = append(frames, f)
-		if f.FIN {
-			break
-		}
+	conn.LockRead()
+	frame, err := conn.GetNextFrameHeader()
+	if err == nil {
+		err = conn.ReadFramePayload(frame) // judge frame's size first
 	}
+	conn.UnlockRead()
 
-Exceeding maxByteLength leaves the payload unread and the stream desynced, so
-the connection cannot be reused — see GetFrameFromReader.
+A Listener takes it the same way, once per frame.
 */
-func (c *Conn) GetNextFrame(maxByteLength uint64) (*Frame, error) {
+func (c *Conn) LockRead() {
 	c.di.readLocker.Lock()
-	defer c.di.readLocker.Unlock()
-	f, err := c.di.getFrameFromReader(c.reader, maxByteLength)
-	return f, err
+}
+
+// UnlockRead releases the read lock LockRead took.
+func (c *Conn) UnlockRead() {
+	c.di.readLocker.Unlock()
+}
+
+/*
+GetNextFrameHeader reads the next frame's header and returns the frame with
+every header field set and no payload, so it can be judged before its payload is
+allocated. Call it with the read lock held (LockRead), and ReadFramePayload on
+the frame next, before releasing it.
+
+A control frame over 125 bytes (RFC 6455 5.5) is refused here, with the stream
+desynced, so the connection cannot be read again — see GetFrameHeaderFromReader.
+*/
+func (c *Conn) GetNextFrameHeader() (*Frame, error) {
+	return c.di.getFrameHeader(c.reader)
+}
+
+// ReadFramePayload reads the payload of f, whose header GetNextFrameHeader just
+// returned, and unmasks it. It allocates the length the header declares, so
+// judge that length first. Call it with the read lock still held.
+func (c *Conn) ReadFramePayload(f *Frame) error {
+	return c.di.fillFramePayload(f, c.reader)
 }

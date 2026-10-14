@@ -12,86 +12,68 @@ import (
 )
 
 // Every header shape, read through a real bufio.Reader. The byte after the
-// frame must be the next one read: the frame was consumed exactly.
-func TestGetFrameFromReaderParses(t *testing.T) {
-	base_di := func() getFrameFromReaderDI {
-		return getFrameFromReaderDI{ioReadFull: io.ReadFull, maskPayload: MaskPayload}
-	}
+// header must be the next one read: the header was consumed exactly, and no
+// payload was read or allocated.
+func TestGetFrameHeaderFromReaderParses(t *testing.T) {
 	const next = 0xAA
 
 	for _, testCase := range []struct {
-		name    string
-		header  []byte
-		payload []byte
-		want    Frame // PayloadData is set from payload
+		name   string
+		header []byte
+		want   Frame
 	}{
 		{
-			name:    "7 bit length, unmasked",
-			header:  []byte{0x81, 0x02},
-			payload: []byte("hi"),
-			want:    Frame{FIN: true, Opcode: 1, PayloadLength: 2},
+			name:   "7 bit length, unmasked",
+			header: []byte{0x81, 0x02},
+			want:   Frame{FIN: true, Opcode: 1, PayloadLength: 2},
 		},
 		{
-			name:    "7 bit length, masked",
-			header:  []byte{0x81, 0x82, 1, 2, 3, 4},
-			payload: []byte("hi"),
-			want:    Frame{FIN: true, Opcode: 1, Mask: true, PayloadLength: 2, MaskingKey: [4]byte{1, 2, 3, 4}},
+			name:   "7 bit length, masked",
+			header: []byte{0x81, 0x82, 1, 2, 3, 4},
+			want:   Frame{FIN: true, Opcode: 1, Mask: true, PayloadLength: 2, MaskingKey: [4]byte{1, 2, 3, 4}},
 		},
 		{
-			name:    "16 bit length, masked",
-			header:  []byte{0x82, 0xFE, 0x01, 0x2C, 5, 6, 7, 8},
-			payload: bytes.Repeat([]byte{'a'}, 300),
+			name:   "16 bit length, masked",
+			header: []byte{0x82, 0xFE, 0x01, 0x2C, 5, 6, 7, 8},
 			want: Frame{FIN: true, Opcode: 2, Mask: true, PayloadLength: 126, ExtendedPayloadLength: 300,
 				MaskingKey: [4]byte{5, 6, 7, 8}},
 		},
 		{
-			name:    "64 bit length, unmasked",
-			header:  []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70},
-			payload: bytes.Repeat([]byte{'b'}, 70000),
-			want:    Frame{FIN: true, Opcode: 2, PayloadLength: 127, ExtendedPayloadLength: 70000},
+			name:   "64 bit length, unmasked",
+			header: []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70},
+			want:   Frame{FIN: true, Opcode: 2, PayloadLength: 127, ExtendedPayloadLength: 70000},
 		},
 		{
-			name:    "64 bit length, masked",
-			header:  []byte{0x82, 0xFF, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70, 9, 10, 11, 12},
-			payload: bytes.Repeat([]byte{'c'}, 70000),
+			name:   "64 bit length, masked",
+			header: []byte{0x82, 0xFF, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70, 9, 10, 11, 12},
 			want: Frame{FIN: true, Opcode: 2, Mask: true, PayloadLength: 127, ExtendedPayloadLength: 70000,
 				MaskingKey: [4]byte{9, 10, 11, 12}},
 		},
 		{
-			name:    "RSV bits, continuation, no FIN",
-			header:  []byte{0x70, 0x01},
-			payload: []byte{0xFF},
-			want:    Frame{RSV1: true, RSV2: true, RSV3: true, Opcode: 0, PayloadLength: 1},
+			name:   "RSV bits, continuation, no FIN",
+			header: []byte{0x70, 0x01},
+			want:   Frame{RSV1: true, RSV2: true, RSV3: true, Opcode: 0, PayloadLength: 1},
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			wire := slices.Clone(testCase.header)
-			for i, b := range testCase.payload {
-				if testCase.want.Mask {
-					b ^= testCase.want.MaskingKey[i&3]
-				}
-				wire = append(wire, b)
-			}
-			reader := bufio.NewReader(bytes.NewReader(append(wire, next)))
-			testCase.want.PayloadData = testCase.payload
+			reader := bufio.NewReader(bytes.NewReader(append(slices.Clone(testCase.header), next)))
 
-			got, err := getFrameFromReader(reader, 0, base_di())
+			got, err := getFrameHeaderFromReader(reader)
 			if err != nil {
-				t.Fatalf("getFrameFromReader: %v", err)
+				t.Fatalf("getFrameHeaderFromReader: %v", err)
 			}
 			if !reflect.DeepEqual(got, &testCase.want) {
 				t.Errorf("frame %+v, want %+v", *got, testCase.want)
 			}
 			if b, err := reader.ReadByte(); err != nil || b != next {
-				t.Errorf("next byte %#x, %v, want %#x: the frame was not read exactly", b, err, next)
+				t.Errorf("next byte %#x, %v, want %#x: the header was not read exactly", b, err, next)
 			}
 		})
 	}
 }
 
-// The header is peeked whole before it is discarded, and the payload is read
-// for the length the header declares.
-func TestGetFrameFromReaderSteps(t *testing.T) {
+// The header is peeked whole before it is discarded, and nothing else is read.
+func TestGetFrameHeaderFromReaderSteps(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string
 		header []byte
@@ -100,7 +82,7 @@ func TestGetFrameFromReaderSteps(t *testing.T) {
 		{
 			name:   "7 bit length, unmasked",
 			header: []byte{0x82, 0x05},
-			want:   []string{"peek 2", "discard 2", "read 5"},
+			want:   []string{"peek 2", "discard 2"},
 		},
 		{
 			name: "7 bit length, masked",
@@ -108,7 +90,7 @@ func TestGetFrameFromReaderSteps(t *testing.T) {
 				0x82, 0x85,
 				1, 2, 3, 4, // masking key
 			},
-			want: []string{"peek 2", "peek 6", "discard 6", "read 5", "mask 5 01 02 03 04"},
+			want: []string{"peek 2", "peek 6", "discard 6"},
 		},
 		{
 			name: "16 bit length, unmasked",
@@ -116,7 +98,7 @@ func TestGetFrameFromReaderSteps(t *testing.T) {
 				0x82, 0x7E,
 				0x01, 0x2C, // 300
 			},
-			want: []string{"peek 2", "peek 4", "discard 4", "read 300"},
+			want: []string{"peek 2", "peek 4", "discard 4"},
 		},
 		{
 			name: "64 bit length, masked",
@@ -125,12 +107,12 @@ func TestGetFrameFromReaderSteps(t *testing.T) {
 				0, 0, 0, 0, 0, 0x01, 0x11, 0x70, // 70000
 				1, 2, 3, 4, // masking key
 			},
-			want: []string{"peek 2", "peek 14", "discard 14", "read 70000", "mask 70000 01 02 03 04"},
+			want: []string{"peek 2", "peek 14", "discard 14"},
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			var steps []string
-			reader := fakeGetFrameFromReaderBufioReader{
+			reader := fakeGetFrameHeaderFromReaderBufioReader{
 				peek: func(n int) ([]byte, error) {
 					steps = append(steps, fmt.Sprintf("peek %d", n))
 					return testCase.header[:n], nil
@@ -140,7 +122,234 @@ func TestGetFrameFromReaderSteps(t *testing.T) {
 					return n, nil
 				},
 			}
-			di := getFrameFromReaderDI{
+
+			if _, err := getFrameHeaderFromReader(reader); err != nil {
+				t.Fatalf("getFrameHeaderFromReader: %v", err)
+			}
+			if !slices.Equal(steps, testCase.want) {
+				t.Errorf("steps %q, want %q", steps, testCase.want)
+			}
+		})
+	}
+}
+
+func TestGetFrameHeaderFromReaderErrors(t *testing.T) {
+	errRead := errors.New("read failed")
+
+	t.Run("stream ends before the frame: io.EOF", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(int) ([]byte, error) {
+				return nil, io.EOF
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, io.EOF) {
+			t.Errorf("err = %v, want io.EOF", err)
+		}
+	})
+
+	t.Run("stream ends after 1 header byte: io.ErrUnexpectedEOF", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(int) ([]byte, error) {
+				return []byte{0x82}, io.EOF
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("err = %v, want io.ErrUnexpectedEOF", err)
+		}
+	})
+
+	t.Run("first peek fails", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(int) ([]byte, error) {
+				return nil, errRead
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, errRead) {
+			t.Errorf("err = %v, want %v", err, errRead)
+		}
+	})
+
+	t.Run("stream ends inside the extended length: io.ErrUnexpectedEOF", func(t *testing.T) {
+		peekCalls := 0
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(int) ([]byte, error) {
+				peekCalls++
+				if peekCalls == 2 {
+					return []byte{0x82, 0x7E}, io.EOF
+				}
+				return []byte{0x82, 0x7E}, nil
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("err = %v, want io.ErrUnexpectedEOF", err)
+		}
+	})
+
+	t.Run("second peek fails", func(t *testing.T) {
+		peekCalls := 0
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(int) ([]byte, error) {
+				peekCalls++
+				if peekCalls == 2 {
+					return nil, errRead
+				}
+				return []byte{0x82, 0x85}, nil
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, errRead) {
+			t.Errorf("err = %v, want %v", err, errRead)
+		}
+	})
+
+	t.Run("64 bit length with its most significant bit set", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(n int) ([]byte, error) {
+				return []byte{0x82, 0x7F, 0x80, 0, 0, 0, 0, 0, 0, 0}[:n], nil
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, ErrPayloadLengthMSBSet) {
+			t.Errorf("err = %v, want ErrPayloadLengthMSBSet", err)
+		}
+	})
+
+	t.Run("16 bit length under 126", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(n int) ([]byte, error) {
+				return []byte{0x82, 0x7E, 0x00, 0x7D}[:n], nil
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, ErrPayloadLengthNotMinimal) {
+			t.Errorf("err = %v, want ErrPayloadLengthNotMinimal", err)
+		}
+	})
+
+	t.Run("64 bit length under 65536", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(n int) ([]byte, error) {
+				return []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF}[:n], nil
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, ErrPayloadLengthNotMinimal) {
+			t.Errorf("err = %v, want ErrPayloadLengthNotMinimal", err)
+		}
+	})
+
+	t.Run("discard fails", func(t *testing.T) {
+		reader := fakeGetFrameHeaderFromReaderBufioReader{
+			peek: func(int) ([]byte, error) {
+				return []byte{0x82, 0x05}, nil
+			},
+			discard: func(int) (int, error) {
+				return 0, errRead
+			},
+		}
+		if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, errRead) {
+			t.Errorf("err = %v, want %v", err, errRead)
+		}
+	})
+}
+
+// Reading a header allocates only the Frame, whatever the length encoding.
+func TestGetFrameHeaderFromReaderAllocations(t *testing.T) {
+	const runs = 100
+	for _, testCase := range []struct {
+		name   string
+		header []byte
+	}{
+		{
+			name:   "16 bit length, masked",
+			header: []byte{0x82, 0xFE, 0x01, 0x2C, 1, 2, 3, 4},
+		},
+		{
+			name:   "64 bit length, unmasked",
+			header: []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			// AllocsPerRun calls once more than runs, as a warm up.
+			reader := bufio.NewReader(bytes.NewReader(bytes.Repeat(testCase.header, runs+1)))
+
+			allocs := testing.AllocsPerRun(runs, func() {
+				if _, err := GetFrameHeaderFromReader(reader); err != nil {
+					t.Fatalf("GetFrameHeaderFromReader: %v", err)
+				}
+			})
+			if allocs > 1 {
+				t.Errorf("allocs per header = %v, want <= 1", allocs)
+			}
+		})
+	}
+}
+
+// 5.5: a control frame over 125 bytes is refused by its header, before its
+// payload is allocated.
+func TestGetFrameHeaderFromReaderControlFramePayload(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		header  []byte
+		wantErr error
+	}{
+		{
+			name:    "a 125 byte ping is allowed",
+			header:  []byte{0x89, 0x7D},
+			wantErr: nil,
+		},
+		{
+			name:    "a 126 byte ping is refused",
+			header:  []byte{0x89, 0x7E, 0x00, 0x7E},
+			wantErr: ErrControlFramePayloadTooLong,
+		},
+		{
+			name:    "a close claiming 2^62 bytes is refused",
+			header:  []byte{0x88, 0x7F, 0x40, 0, 0, 0, 0, 0, 0, 0},
+			wantErr: ErrControlFramePayloadTooLong,
+		},
+		{
+			name:    "a 126 byte binary frame is not a control frame",
+			header:  []byte{0x82, 0x7E, 0x00, 0x7E},
+			wantErr: nil,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			reader := fakeGetFrameHeaderFromReaderBufioReader{
+				peek:    func(n int) ([]byte, error) { return testCase.header[:n], nil },
+				discard: func(n int) (int, error) { return n, nil },
+			}
+
+			if _, err := getFrameHeaderFromReader(reader); !errors.Is(err, testCase.wantErr) {
+				t.Errorf("err = %v, want %v", err, testCase.wantErr)
+			}
+		})
+	}
+}
+
+// The payload step allocates the length the header declared, reads it, and
+// unmasks it when the frame is masked.
+func TestFrameFillFramePayloadFromReader(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		frame *Frame
+		want  []string
+	}{
+		{
+			name:  "unmasked",
+			frame: &Frame{Opcode: OpcodeBinary, PayloadLength: 5},
+			want:  []string{"read 5"},
+		},
+		{
+			name:  "masked",
+			frame: &Frame{Opcode: OpcodeBinary, Mask: true, MaskingKey: [4]byte{1, 2, 3, 4}, PayloadLength: 5},
+			want:  []string{"read 5", "mask 5 01 02 03 04"},
+		},
+		{
+			name:  "64 bit length, masked",
+			frame: &Frame{Opcode: OpcodeBinary, Mask: true, MaskingKey: [4]byte{1, 2, 3, 4}, PayloadLength: 127, ExtendedPayloadLength: 70000},
+			want:  []string{"read 70000", "mask 70000 01 02 03 04"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var steps []string
+			di := fillFramePayloadFromReaderDI{
 				ioReadFull: func(_ io.Reader, buf []byte) (int, error) {
 					steps = append(steps, fmt.Sprintf("read %d", len(buf)))
 					return len(buf), nil
@@ -150,138 +359,20 @@ func TestGetFrameFromReaderSteps(t *testing.T) {
 				},
 			}
 
-			if _, err := getFrameFromReader(reader, 0, di); err != nil {
-				t.Fatalf("getFrameFromReader: %v", err)
+			if err := testCase.frame.fillFramePayloadFromReader(nil, di); err != nil {
+				t.Fatalf("fillFramePayloadFromReader: %v", err)
 			}
 			if !slices.Equal(steps, testCase.want) {
 				t.Errorf("steps %q, want %q", steps, testCase.want)
 			}
+			if uint64(len(testCase.frame.PayloadData)) != testCase.frame.GetDeclaredPayloadSize() {
+				t.Errorf("payload is %d bytes, want %d", len(testCase.frame.PayloadData), testCase.frame.GetDeclaredPayloadSize())
+			}
 		})
 	}
-}
 
-func TestGetFrameFromReaderErrors(t *testing.T) {
-	base_di := func() getFrameFromReaderDI {
-		return getFrameFromReaderDI{
-			ioReadFull: func(_ io.Reader, buf []byte) (int, error) {
-				return len(buf), nil
-			},
-		}
-	}
+	// The header was read, so a stream ending now cut the frame short.
 	errRead := errors.New("read failed")
-
-	t.Run("stream ends before the frame: io.EOF", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(int) ([]byte, error) {
-				return nil, io.EOF
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, io.EOF) {
-			t.Errorf("err = %v, want io.EOF", err)
-		}
-	})
-
-	t.Run("stream ends after 1 header byte: io.ErrUnexpectedEOF", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(int) ([]byte, error) {
-				return []byte{0x82}, io.EOF
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Errorf("err = %v, want io.ErrUnexpectedEOF", err)
-		}
-	})
-
-	t.Run("first peek fails", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(int) ([]byte, error) {
-				return nil, errRead
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, errRead) {
-			t.Errorf("err = %v, want %v", err, errRead)
-		}
-	})
-
-	t.Run("stream ends inside the extended length: io.ErrUnexpectedEOF", func(t *testing.T) {
-		peekCalls := 0
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(int) ([]byte, error) {
-				peekCalls++
-				if peekCalls == 2 {
-					return []byte{0x82, 0x7E}, io.EOF
-				}
-				return []byte{0x82, 0x7E}, nil
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Errorf("err = %v, want io.ErrUnexpectedEOF", err)
-		}
-	})
-
-	t.Run("second peek fails", func(t *testing.T) {
-		peekCalls := 0
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(int) ([]byte, error) {
-				peekCalls++
-				if peekCalls == 2 {
-					return nil, errRead
-				}
-				return []byte{0x82, 0x85}, nil
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, errRead) {
-			t.Errorf("err = %v, want %v", err, errRead)
-		}
-	})
-
-	t.Run("64 bit length with its most significant bit set", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(n int) ([]byte, error) {
-				return []byte{0x82, 0x7F, 0x80, 0, 0, 0, 0, 0, 0, 0}[:n], nil
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, ErrPayloadLengthMSBSet) {
-			t.Errorf("err = %v, want ErrPayloadLengthMSBSet", err)
-		}
-	})
-
-	t.Run("16 bit length under 126", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(n int) ([]byte, error) {
-				return []byte{0x82, 0x7E, 0x00, 0x7D}[:n], nil
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, ErrPayloadLengthNotMinimal) {
-			t.Errorf("err = %v, want ErrPayloadLengthNotMinimal", err)
-		}
-	})
-
-	t.Run("64 bit length under 65536", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(n int) ([]byte, error) {
-				return []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF}[:n], nil
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, ErrPayloadLengthNotMinimal) {
-			t.Errorf("err = %v, want ErrPayloadLengthNotMinimal", err)
-		}
-	})
-
-	t.Run("discard fails", func(t *testing.T) {
-		reader := fakeGetFrameFromReaderBufioReader{
-			peek: func(int) ([]byte, error) {
-				return []byte{0x82, 0x05}, nil
-			},
-			discard: func(int) (int, error) {
-				return 0, errRead
-			},
-		}
-		if _, err := getFrameFromReader(reader, 0, base_di()); !errors.Is(err, errRead) {
-			t.Errorf("err = %v, want %v", err, errRead)
-		}
-	})
-
 	for _, testCase := range []struct {
 		name    string
 		readErr error
@@ -292,97 +383,45 @@ func TestGetFrameFromReaderErrors(t *testing.T) {
 		{"payload read fails", errRead, errRead},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			reader := fakeGetFrameFromReaderBufioReader{
-				peek: func(int) ([]byte, error) {
-					return []byte{0x82, 0x05}, nil
-				},
-				discard: func(n int) (int, error) {
-					return n, nil
-				},
+			di := fillFramePayloadFromReaderDI{
+				ioReadFull: func(io.Reader, []byte) (int, error) { return 0, testCase.readErr },
 			}
-			di := base_di()
-			di.ioReadFull = func(io.Reader, []byte) (int, error) { return 0, testCase.readErr }
-			if _, err := getFrameFromReader(reader, 0, di); !errors.Is(err, testCase.want) {
+			frame := &Frame{Opcode: OpcodeBinary, FIN: true, PayloadLength: 5}
+			if err := frame.fillFramePayloadFromReader(nil, di); !errors.Is(err, testCase.want) {
 				t.Errorf("err = %v, want %v", err, testCase.want)
 			}
 		})
 	}
 }
 
-// Reading a frame with an extended length allocates only the Frame and its
-// payload, masked or not.
-func TestGetFrameFromReaderAllocations(t *testing.T) {
+// Filling a payload allocates only the payload, masked or not.
+func TestFrameFillFramePayloadFromReaderAllocations(t *testing.T) {
 	const runs = 100
 	for _, testCase := range []struct {
-		name          string
-		payloadLength uint8
-		length        uint64
-		mask          bool
-		maskingKey    [4]byte
+		name  string
+		frame Frame
 	}{
-		{"16 bit length, masked", 126, 300, true, [4]byte{1, 2, 3, 4}},
-		{"16 bit length, unmasked", 126, 300, false, [4]byte{}},
-		{"64 bit length, masked", 127, 70000, true, [4]byte{1, 2, 3, 4}},
-		{"64 bit length, unmasked", 127, 70000, false, [4]byte{}},
+		{
+			name:  "masked",
+			frame: Frame{Opcode: OpcodeBinary, Mask: true, MaskingKey: [4]byte{1, 2, 3, 4}, PayloadLength: 127, ExtendedPayloadLength: 70000},
+		},
+		{
+			name:  "unmasked",
+			frame: Frame{Opcode: OpcodeBinary, PayloadLength: 127, ExtendedPayloadLength: 70000},
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			frame := append((&Frame{
-				FIN: true, Opcode: 2, Mask: testCase.mask,
-				PayloadLength: testCase.payloadLength, ExtendedPayloadLength: testCase.length,
-				MaskingKey: testCase.maskingKey,
-			}).appendSealedHeader(nil), make([]byte, testCase.length)...)
 			// AllocsPerRun calls once more than runs, as a warm up.
-			reader := bufio.NewReader(bytes.NewReader(bytes.Repeat(frame, runs+1)))
+			reader := bufio.NewReader(bytes.NewReader(make([]byte, 70000*(runs+1))))
+			frame := testCase.frame
 
 			allocs := testing.AllocsPerRun(runs, func() {
-				if _, err := GetFrameFromReader(reader, 0); err != nil {
-					t.Fatalf("GetFrameFromReader: %v", err)
+				if err := frame.FillFramePayloadFromReader(reader); err != nil {
+					t.Fatalf("FillFramePayloadFromReader: %v", err)
 				}
 			})
-			if allocs > 2 {
-				t.Errorf("allocs per frame = %v, want <= 2", allocs)
-			}
-		})
-	}
-}
-
-/*
-A peer can claim a 10 GB payload in a 10 byte header. The guard must refuse
-before the payload is allocated, so a refused frame never reaches ioReadFull.
-*/
-func TestGetFrameFromReaderMaxByteLength(t *testing.T) {
-	// Declares 70000 bytes through the 64 bit extended length.
-	header := []byte{0x82, 0x7F, 0, 0, 0, 0, 0, 0x01, 0x11, 0x70}
-
-	for _, testCase := range []struct {
-		name     string
-		max      uint64
-		wantErr  error
-		wantRead []int
-	}{
-		{"0 means no limit", 0, nil, []int{70000}},
-		{"exactly the max is allowed", 70000, nil, []int{70000}},
-		{"one byte over the max is refused", 69999, ErrFrameByteLengthExceeded, nil},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			var read []int
-			reader := fakeGetFrameFromReaderBufioReader{
-				peek:    func(n int) ([]byte, error) { return header[:n], nil },
-				discard: func(n int) (int, error) { return n, nil },
-			}
-			di := getFrameFromReaderDI{
-				ioReadFull: func(_ io.Reader, buf []byte) (int, error) {
-					read = append(read, len(buf))
-					return len(buf), nil
-				},
-			}
-
-			_, err := getFrameFromReader(reader, testCase.max, di)
-			if !errors.Is(err, testCase.wantErr) {
-				t.Errorf("err = %v, want %v", err, testCase.wantErr)
-			}
-			if !slices.Equal(read, testCase.wantRead) {
-				t.Errorf("payload reads %v, want %v", read, testCase.wantRead)
+			if allocs > 1 {
+				t.Errorf("allocs per payload = %v, want <= 1", allocs)
 			}
 		})
 	}

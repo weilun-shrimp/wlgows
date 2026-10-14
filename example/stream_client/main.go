@@ -13,8 +13,8 @@
 //
 // Sending is only half of it. A Listener runs the whole time, because the server
 // may ping mid stream (5.5.2 says answer) and its close has to be waited for
-// (7.1.1) — reading one frame and hoping it is the close is how a client misses
-// both.
+// (5.5.1, 7.1.2) — reading one frame and hoping it is the close is how a client
+// misses both.
 package main
 
 import (
@@ -90,12 +90,27 @@ func main() {
 	}
 	defer netConn.Close()
 
+	// Subprotocols (RFC 6455 4.1). To offer chat.v2 and require the server to
+	// pick it, uncomment this line and the check after the handshake. A list
+	// goes in one header: "chat.v2, chat.v1".
+	// req.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
+
 	r := bufio.NewReader(netConn)
 	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}
+
+	// The server answers with one value or none. A value never offered already
+	// failed the handshake above (4.1). Change the _ above to resp to use this.
+	// An empty answer means the server picked none. The connection is open, so
+	// start the closing handshake with a close frame before returning (7.1.2).
+	// if resp.Header.Get("Sec-WebSocket-Protocol") != "chat.v2" {
+	// 	fmt.Println("server did not pick chat.v2")
+	// 	conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.ClosePolicyViolation, Reason: "subprotocol chat.v2 required"})
+	// 	return
+	// }
 
 	// Ping, pong and close answered for us. The close hook also pauses the loop,
 	// which is what ends the wait at the bottom.
@@ -106,8 +121,13 @@ func main() {
 
 	standardClose := config.Close
 	config.Close = func(f *wlgows.Frame) {
-		payload, _ := f.GetClosePayload()
-		fmt.Printf("server closed: %+v\n", payload)
+		// 5.5.1: a client must not show the reason to its user, so only the
+		// code. No body means no code, which 7.1.5 records as 1005.
+		code := uint16(1005)
+		if payload, _ := f.GetClosePayload(); payload != nil { // already validated
+			code = payload.StatusCode
+		}
+		fmt.Printf("server closed: code %d\n", code)
 
 		standardClose(f)
 	}
@@ -133,7 +153,7 @@ func main() {
 	}
 	fmt.Printf("sent %s: %d chunks, %d bytes\nsha256 %x\n", path, chunks, bytes, sum)
 
-	// 7.1.1: send close, then wait for the server's reply — the close hook
+	// 5.5.1, 7.1.2: send close, then wait for the server's reply — the close hook
 	// pauses the loop, so this returns once it has arrived.
 	conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.CloseNormalClosure, Reason: "done"})
 	<-reading

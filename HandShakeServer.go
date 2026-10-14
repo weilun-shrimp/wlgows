@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -17,8 +18,18 @@ type ServerHandShakeRespWriter interface {
 	GenerateResponse() *http.Response
 }
 
+// ServerHandShakeConfig is what ServerHandShake reads besides the request. The
+// zero value runs a plain handshake.
+type ServerHandShakeConfig struct {
+	// Sent back in Sec-WebSocket-Protocol on an upgrade, if the client offered
+	// it (see RequestSubprotocols). Otherwise, or when "", no header is sent and
+	// the connection opens without a subprotocol. One value, not a list,
+	// because RFC 6455 4.2.2 lets the server answer with a single subprotocol.
+	Subprotocol string
+}
+
 /*
-ServerHandShake runs the RFC 6455 4.1 server opening handshake over c: it
+ServerHandShake runs the RFC 6455 4.2 server opening handshake over c: it
 validates req and writes back either a declining response or an upgrading
 one. req must already be parsed — read it yourself first (e.g.
 http.ReadRequest for a raw accept, or from whatever already parsed it for a
@@ -33,36 +44,30 @@ to read frames from) — the returned *Conn reuses it rather than wrapping c
 again. From net/http, that is the hijacked connection's own reader:
 
 	netConn, bufRW, err := responseWriter.(http.Hijacker).Hijack()
-	conn, res, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, req)
+	conn, res, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, req, wlgows.ServerHandShakeConfig{})
 
 w is the returned *Conn's writer — see NewConn. Pass net/http's, as above, or
 your own, such as bufio.NewWriterSize(c, 16*1024).
 */
-func ServerHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request) (*Conn, *http.Response, error) {
-	res, err := serverHandShake(c, req, serverHandShakeDI{
+func ServerHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ServerHandShakeConfig) (*Conn, *http.Response, error) {
+	return serverHandShake(c, r, w, req, config, serverHandShakeDI{
 		validateHandShakeRequest: ValidateHandShakeRequest,
 		newResponseWriter:        func() ServerHandShakeRespWriter { return NewResponseWriter() },
 		sendHandShakeResponse:    SendHandShakeResponse,
+		newConn:                  NewConn,
 	})
-	if err != nil {
-		return nil, res, err
-	}
-	conn, err := NewConn(c, r, w, false)
-	if err != nil {
-		return nil, res, err
-	}
-	return conn, res, nil
 }
 
 type serverHandShakeDI struct {
 	validateHandShakeRequest func(req *http.Request) error
 	newResponseWriter        func() ServerHandShakeRespWriter
 	sendHandShakeResponse    func(w io.Writer, res *http.Response) error
+	newConn                  func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
 }
 
-func serverHandShake(w io.Writer, req *http.Request, di serverHandShakeDI) (*http.Response, error) {
+func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ServerHandShakeConfig, di serverHandShakeDI) (*Conn, *http.Response, error) {
 	if req == nil {
-		return nil, fmt.Errorf("ServerHandShake: %w", ErrHandshakeRequestNil)
+		return nil, nil, fmt.Errorf("ServerHandShake: %w", ErrHandshakeRequestNil)
 	}
 
 	invalid := di.validateHandShakeRequest(req)
@@ -75,19 +80,50 @@ func serverHandShake(w io.Writer, req *http.Request, di serverHandShakeDI) (*htt
 	}
 
 	res := writer.GenerateResponse()
-	err := di.sendHandShakeResponse(w, res)
-	if err == nil && invalid != nil {
-		err = invalid
+	if invalid == nil && config.Subprotocol != "" && slices.Contains(RequestSubprotocols(req), config.Subprotocol) {
+		res.Header.Set("Sec-WebSocket-Protocol", config.Subprotocol)
 	}
+	err := di.sendHandShakeResponse(c, res)
 	req.Response = res
 	res.Request = req
-	return res, err
+	if err != nil {
+		return nil, res, err
+	}
+	if invalid != nil {
+		return nil, res, invalid
+	}
+	conn, err := di.newConn(c, r, w, false)
+	if err != nil {
+		return nil, res, err
+	}
+	return conn, res, nil
 }
 
 /*
-ValidateHandShakeRequest checks a client's opening request against RFC 6455 4.1,
-returning the first rule it breaks wrapped around the sentinel for it, which is
-what DeclineByError routes on to pick a status code.
+RequestSubprotocols returns the subprotocols the client offered, in its order.
+Pick one for ServerHandShakeConfig.Subprotocol.
+
+The offer is read as a token list across every line, like headerHasToken, so
+"a, b" on one line and "a" and "b" on two give the same result.
+*/
+func RequestSubprotocols(req *http.Request) []string {
+	var offered []string
+	for _, value := range req.Header.Values("Sec-WebSocket-Protocol") {
+		for _, token := range strings.Split(value, ",") {
+			if token = strings.TrimSpace(token); token != "" {
+				offered = append(offered, token)
+			}
+		}
+	}
+	return offered
+}
+
+/*
+ValidateHandShakeRequest checks a client's opening request against RFC 6455
+4.2.1 — the method, the HTTP version, Upgrade, Connection, Sec-WebSocket-Key and
+Sec-WebSocket-Version — returning the first rule it breaks wrapped around the
+sentinel for it, which is what DeclineByError routes on to pick a status code.
+Host and the other fields are not checked.
 
 Connection and Upgrade are read as token lists rather than compared whole — see
 headerHasToken. Sec-WebSocket-Key must be base64 of 16 bytes. The rest are

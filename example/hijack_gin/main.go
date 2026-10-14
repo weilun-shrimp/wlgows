@@ -64,6 +64,18 @@ func main() {
 }
 
 func handler(c *gin.Context) {
+	// Subprotocols (RFC 6455 4.2.2). To require one, uncomment the block below
+	// and add "slices" to the imports. Refuse before Hijack, while Gin can still
+	// answer for you. To prefer chat.v2 without requiring it, uncomment only the
+	// last line: a client that did not offer it still connects, with no
+	// subprotocol.
+	handShakeConfig := wlgows.ServerHandShakeConfig{}
+	// if !slices.Contains(wlgows.RequestSubprotocols(c.Request), "chat.v2") {
+	// 	c.String(http.StatusBadRequest, "subprotocol chat.v2 required")
+	// 	return
+	// }
+	// handShakeConfig.Subprotocol = "chat.v2"
+
 	// gin.ResponseWriter is an http.Hijacker.
 	netConn, bufRW, err := c.Writer.Hijack()
 	if err != nil {
@@ -80,7 +92,7 @@ func handler(c *gin.Context) {
 	// Pass bufRW.Reader, not a new reader: net/http may have buffered the start
 	// of the first frame in it.
 	// bufRW.Writer reuses net/http's writer; bufio.NewWriterSize(netConn, size) works too.
-	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, c.Request)
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, c.Request, handShakeConfig)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
@@ -96,6 +108,7 @@ func handler(c *gin.Context) {
 	// rather than from an empty ListenerConfig.
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxFrameSize = maxDataFramesSize            // one frame may carry the whole message
 	config.MaxDataFrameCount = maxDataFramesSize / 256 // fragments of 256 bytes or more
 	config.FrameReadTimeout = frameReadTimeout
 
@@ -143,8 +156,9 @@ func handler(c *gin.Context) {
 	go conn.StartPingLoop(pingInterval, nil)
 
 	// Blocks until a read fails, a frame breaks a rule, or a hook pauses it.
-	// nil means PauseListen(nil) — here only the close and unknown hooks pause,
-	// and neither has anything to report, so it is the ordinary shutdown.
+	// nil means the close hook paused it: the peer closed, the ordinary
+	// shutdown. The unknown hook pauses with ErrReservedOpcode, already
+	// answered with 1002, so the SendClose below gets ErrCloseAlreadySent.
 	if err := listener.Listen(); err != nil {
 		// No payload when no close frame can answer err: a dead socket, or
 		// something this package cannot attribute to the peer.

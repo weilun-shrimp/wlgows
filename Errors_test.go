@@ -25,6 +25,7 @@ func TestStandardClosePayloadFor(t *testing.T) {
 			ErrReservedBitsSet,
 			ErrFrameNotMasked,
 			ErrFrameMasked,
+			ErrReservedOpcode,
 			ErrControlFrameFragmented,
 			ErrControlFramePayloadTooLong,
 			ErrContinuationFrameWithoutMsg,
@@ -61,7 +62,7 @@ func TestStandardClosePayloadFor(t *testing.T) {
 		}, nil},
 
 		// A custom net.Conn or a wrapping layer can return anything at all
-		// through GetNextFrame. Guessing a status code would blame the peer for
+		// through a frame read. Guessing a status code would blame the peer for
 		// something nothing here can attribute to them.
 		{"an error this package has never seen", []error{
 			errors.New("XXXXX"),

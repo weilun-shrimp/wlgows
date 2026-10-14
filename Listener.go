@@ -13,11 +13,13 @@ It knows the protocol's shape, not its policy. A ping arrives and your Ping hook
 runs; sending the pong is yours. Every obligation RFC 6455 puts on a receiver
 lands on a hook, never here:
 
-	ping    5.5.2    MUST answer with a pong echoing the payload
-	pong    5.5.3    MUST NOT answer
-	close   5.5.1    MUST answer with a close, then close the connection
+	ping    5.5.2, 5.5.3    MUST answer with a pong echoing the payload
+	pong    5.5.3           no answer expected
+	close   5.5.1           MUST answer with a close unless one was sent, then close
+	unknown 5.2             MUST fail the connection: answer 1002, then close
 
-So a Listener with no hooks reads conformingly and answers nothing.
+A frame that breaks a rule ends Listen with an error. A reserved opcode goes to
+the Unknown hook instead, and a nil one drops it like any other.
 
 It never closes the connection either — not on a close frame, a read error, or a
 protocol error. It reports and returns. That is yours because RFC 6455 7.1.1 asks
@@ -76,7 +78,14 @@ type Listener struct {
 // hand over the next frame — a wrapper of your own, or a scripted one in a
 // test.
 type ListenerConn interface {
-	GetNextFrame(maxByteLength uint64) (*Frame, error)
+	// GetNextFrameHeader and ReadFramePayload read one frame in two steps, so
+	// the Listener can refuse it by its header before the payload is
+	// allocated. LockRead and UnlockRead are held around both. See
+	// Conn.LockRead.
+	LockRead()
+	UnlockRead()
+	GetNextFrameHeader() (*Frame, error)
+	ReadFramePayload(f *Frame) error
 
 	// SetReadDeadline sets the deadline for future Read calls and any
 	// currently-blocked Read call. A zero value for t means Read will not time
@@ -124,51 +133,19 @@ func (l *Listener) GetCurrentMsgOpcode() byte {
 }
 
 /*
-nextFrameByteLimit is what the next frame is allowed to declare.
+validateFrameHeader refuses a frame by its header, before its payload is
+allocated: the reserved bits, the masking direction, the rules every control
+frame shares, the fragment order and the limits. What a particular opcode
+requires of its own payload is routeFrame's question, since that is where each
+one is handled.
 
-The opcode is not known until the frame has been read, so one number has to
-serve both classes. Data frames get whatever is left of MaxDataFramesSize;
-control frames get their RFC 6455 5.5 allowance of 125, which a ping arriving
-late in a large message still needs. The larger of the two is passed, and the
-class that overshoots is caught once the opcode is known.
-
-The limit applies to the payload only, since the header is already read when it
-is checked. routeFrame adds the header to the budget and refuses a frame it
-pushes over.
-
-0 means no limit, which is the caller's decision to make.
+f has every header field set and no payload yet. The rules are MUSTs in RFC
+6455, answered with close code 1002; the limits are this Listener's, answered
+with 1009.
 */
-func (l *Listener) nextFrameByteLimit() uint64 {
-	maxDataFramesSize := l.GetConfig().MaxDataFramesSize
-
-	if maxDataFramesSize == 0 {
-		return 0
-	}
-	// Guarded, not just subtracted. Pausing mid message and lowering
-	// MaxDataFramesSize before starting again leaves currentDataFramesSize
-	// above the new budget with nothing having gone wrong, and an unguarded
-	// uint64 subtraction would wrap to ~1.8e19 there — handing back a limit
-	// larger than the one just tightened.
-	if l.currentDataFramesSize > maxDataFramesSize {
-		return ControlFramePayloadMaxByteLength
-	}
-	return max(
-		maxDataFramesSize-l.currentDataFramesSize, // Remain
-		ControlFramePayloadMaxByteLength,
-	)
-}
-
-/*
-validateFrame refuses a frame that is malformed whatever its opcode: the
-reserved bits, the masking direction, and the rules every control frame shares.
-What a particular opcode requires of its own payload is routeFrame's question,
-since that is where each one is handled.
-
-Every rule here is a MUST in RFC 6455, and breaking any of them is a protocol
-error the caller should answer with close code 1002.
-*/
-func (l *Listener) validateFrame(f *Frame) error {
-	peerIsClient := l.GetConfig().PeerIsClient
+func (l *Listener) validateFrameHeader(f *Frame) error {
+	config := l.GetConfig()
+	peerIsClient := config.PeerIsClient
 
 	// 5.2: the reserved bits belong to negotiated extensions, and none is.
 	if f.RSV1 || f.RSV2 || f.RSV3 {
@@ -185,20 +162,25 @@ func (l *Listener) validateFrame(f *Frame) error {
 
 	if IsControlOpcode(f.Opcode) {
 		// 5.5: control frames are never fragmented and never exceed 125 bytes.
-		// The read limit could not enforce the second one, since it had to grant
-		// the larger of the control allowance and what the message had left.
 		if !f.FIN {
 			return ErrControlFrameFragmented
 		}
-		if len(f.PayloadData) > ControlFramePayloadMaxByteLength {
+		if f.GetDeclaredPayloadSize() > ControlFramePayloadMaxByteLength {
 			return ErrControlFramePayloadTooLong
 		}
 		return nil
 	}
 
-	// A reserved opcode carries no rule to check against — it goes to Unknown
-	// untouched, and closing is the caller's answer.
+	// 10.4: frameSize counts the header too, so an empty frame still spends
+	// some.
+	frameSize := uint64(f.getHeaderSize()) + f.GetDeclaredPayloadSize()
+
+	// 5.2: a reserved opcode goes to the Unknown hook, which answers it. Only
+	// MaxFrameSize applies, since it never joins a message.
 	if !IsDataOpcode(f.Opcode) {
+		if config.MaxFrameSize > 0 && frameSize > config.MaxFrameSize {
+			return ErrFrameByteLengthExceeded
+		}
 		return nil
 	}
 
@@ -212,10 +194,31 @@ func (l *Listener) validateFrame(f *Frame) error {
 		if f.Opcode != OpcodeContinuation {
 			return ErrDataFrameDuringMsg
 		}
-		return nil
-	}
-	if f.Opcode == OpcodeContinuation {
+	} else if f.Opcode == OpcodeContinuation {
 		return ErrContinuationFrameWithoutMsg
+	}
+
+	// 10.4: the limits, judged from the header so a frame over one is refused
+	// before its payload is allocated. A message over a limit can never
+	// complete, so its frames are dropped.
+	if config.MaxFrameSize > 0 && frameSize > config.MaxFrameSize {
+		l.resetCurrentDataFrames()
+		return ErrFrameByteLengthExceeded
+	}
+	// Guarded, not just subtracted. Pausing mid message and lowering
+	// MaxDataFramesSize before starting again leaves currentDataFramesSize above
+	// the new budget, and an unguarded uint64 subtraction would wrap there.
+	if config.MaxDataFramesSize > 0 &&
+		(l.currentDataFramesSize > config.MaxDataFramesSize ||
+			frameSize > config.MaxDataFramesSize-l.currentDataFramesSize) {
+		l.resetCurrentDataFrames()
+		return ErrFrameByteLengthExceeded
+	}
+	// Counted with this frame, so a message of exactly MaxDataFrameCount frames
+	// is allowed and the next one is not.
+	if config.MaxDataFrameCount > 0 && l.currentDataFrameCount >= config.MaxDataFrameCount {
+		l.resetCurrentDataFrames()
+		return ErrDataFrameCountExceeded
 	}
 	return nil
 }

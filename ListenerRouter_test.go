@@ -128,49 +128,23 @@ func TestListenerRouteFrame(t *testing.T) {
 
 	// The read limit grants the larger of the control allowance and what the
 	// message had left, so a data frame can still arrive over budget.
-	t.Run("MaxDataFramesSize", func(t *testing.T) {
-		called := 0
-		l := &Listener{configLocker: &sync.Mutex{}}
-		l.config.MaxDataFramesSize = 10
-		l.config.Text = func(DataFrames) { called++ }
-
-		if err := l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: make([]byte, 6)}); err != nil {
-			t.Fatalf("8 bytes of a 10 byte budget: %v", err)
-		}
-		err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: make([]byte, 5)})
-		if !errors.Is(err, ErrFrameByteLengthExceeded) {
-			t.Errorf("err = %v, want ErrFrameByteLengthExceeded", err)
-		}
-		if called != 0 {
-			t.Error("a message over budget must not reach its hook")
-		}
-		// The message can never complete, so holding its frames serves nothing.
-		if len(l.currentDataFrames) != 0 || l.currentDataFramesSize != 0 {
-			t.Errorf("currentDataFrames=%d currentDataFramesSize=%d, want 0 and 0",
-				len(l.currentDataFrames), l.currentDataFramesSize)
-		}
-	})
-
+	// validateFrameHeader judges the limits against these totals, so each data
+	// frame has to spend them, header included.
 	t.Run("headers spend the budget", func(t *testing.T) {
 		l := &Listener{configLocker: &sync.Mutex{}}
-		l.config.MaxDataFramesSize = 20
 
 		// Masked with a 16 bit length: an 8 byte header and 10 bytes of payload.
 		frame := &Frame{Opcode: OpcodeText, Mask: true, PayloadLength: 126, PayloadData: make([]byte, 10)}
 		if err := l.routeFrame(frame); err != nil {
-			t.Fatalf("18 bytes of a 20 byte budget: %v", err)
+			t.Fatalf("routeFrame: %v", err)
 		}
-		if l.currentDataFramesSize != 18 {
-			t.Errorf("currentDataFramesSize = %d, want 18", l.currentDataFramesSize)
-		}
-		// Nothing but a 2 byte header, which is exactly what is left.
+		// An empty frame still pays for its 2 byte header.
 		if err := l.routeFrame(&Frame{Opcode: OpcodeContinuation}); err != nil {
-			t.Fatalf("an empty continuation into the last 2 bytes: %v", err)
+			t.Fatalf("routeFrame: %v", err)
 		}
-		// An empty frame still pays for its header.
-		err := l.routeFrame(&Frame{Opcode: OpcodeContinuation})
-		if !errors.Is(err, ErrFrameByteLengthExceeded) {
-			t.Errorf("err = %v, want ErrFrameByteLengthExceeded", err)
+		if l.currentDataFramesSize != 20 || l.currentDataFrameCount != 2 {
+			t.Errorf("currentDataFramesSize=%d currentDataFrameCount=%d, want 20 and 2",
+				l.currentDataFramesSize, l.currentDataFrameCount)
 		}
 	})
 
@@ -257,7 +231,7 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 				l.currentDataFrameCount, l.currentDataFramesSize)
 		}
 		// Left behind, the next message would open as a continuation of this one
-		// and validateFrame would refuse its opening frame.
+		// and validateFrameHeader would refuse its opening frame.
 		if l.currentDataFrameOpcode != OpcodeContinuation {
 			t.Errorf("currentDataFrameOpcode = %#x after FIN, want 0", l.currentDataFrameOpcode)
 		}
@@ -322,44 +296,6 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 			t.Errorf("Ping called %d times and Data %d, want 1 and 0", pingCalled, dataCalled)
 		}
 	})
-
-	// Both messages below are 12 bytes in 3 frames, headers included, against a
-	// budget of 8 bytes or 2 frames, so the third frame busts it and is refused with the same error
-	// Text would have got — the hook sees the first two and never the third.
-	t.Run("MaxDataFramesSize and MaxDataFrameCount still refuse the message", func(t *testing.T) {
-		tests := []struct {
-			name   string
-			config func(*ListenerConfig)
-			want   error
-		}{
-			{"MaxDataFramesSize", func(c *ListenerConfig) { c.MaxDataFramesSize = 8 }, ErrFrameByteLengthExceeded},
-			{"MaxDataFrameCount", func(c *ListenerConfig) { c.MaxDataFrameCount = 2 }, ErrDataFrameCountExceeded},
-		}
-		for _, testCase := range tests {
-			t.Run(testCase.name, func(t *testing.T) {
-				called := 0
-				l := &Listener{configLocker: &sync.Mutex{}}
-				l.config.Data = func(*Frame) { called++ }
-				testCase.config(&l.config)
-
-				l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("ab")})
-				l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("cd")})
-				err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("ef")})
-
-				if !errors.Is(err, testCase.want) {
-					t.Errorf("err = %v, want %v", err, testCase.want)
-				}
-				if called != 2 {
-					t.Errorf("Data called %d times, want 2 — the frame over budget must not reach it", called)
-				}
-				// It can never complete, so the state reopens for the next one.
-				if l.currentDataFrameCount != 0 || l.currentDataFramesSize != 0 {
-					t.Error("the assembly state should have been reset")
-				}
-			})
-		}
-	})
-
 }
 
 /*
@@ -594,101 +530,20 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 	})
 }
 
-/*
-MaxDataFramesSize bounds the bytes a message carries, MaxDataFrameCount the
-frames it arrives in.
-*/
-func TestListenerRouteFrameMaxDataFrameCount(t *testing.T) {
-	t.Run("exactly the limit is allowed", func(t *testing.T) {
-		var got DataFrames
-		l := &Listener{configLocker: &sync.Mutex{}}
-		l.config.MaxDataFrameCount = 3
-		l.config.Text = func(frames DataFrames) { got = frames }
+// The count is kept beside the frames instead of read off them, so nothing
+// stops the two from drifting apart except this.
+func TestListenerRouteFrameCountsWhatIsHeld(t *testing.T) {
+	l := &Listener{configLocker: &sync.Mutex{}}
 
-		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("a")})
-		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("b")})
-		err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("c")})
+	l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("a")})
+	l.routeFrame(&Frame{Opcode: OpcodeContinuation})    // held too
+	l.routeFrame(&Frame{Opcode: OpcodePing, FIN: true}) // never joins
+	l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("b")})
 
-		if err != nil {
-			t.Fatalf("3 frames against a limit of 3: %v", err)
-		}
-		if got.String() != "abc" {
-			t.Errorf("Text got %q, want abc", got.String())
-		}
-	})
-
-	t.Run("one over is refused", func(t *testing.T) {
-		called := 0
-		l := &Listener{configLocker: &sync.Mutex{}}
-		l.config.MaxDataFrameCount = 2
-		l.config.Text = func(DataFrames) { called++ }
-
-		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("a")})
-		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("b")})
-		err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("c")})
-
-		if !errors.Is(err, ErrDataFrameCountExceeded) {
-			t.Errorf("err = %v, want ErrDataFrameCountExceeded", err)
-		}
-		if called != 0 {
-			t.Error("a message over the frame limit must not reach its hook")
-		}
-		// It can never complete, so holding its frames serves nothing.
-		if len(l.currentDataFrames) != 0 || l.currentDataFrameCount != 0 || l.currentDataFramesSize != 0 {
-			t.Error("the assembly state should have been reset")
-		}
-	})
-
-	// An empty continuation is held like any other frame, so it spends the
-	// frame budget too.
-	t.Run("empty continuations count", func(t *testing.T) {
-		called := 0
-		l := &Listener{configLocker: &sync.Mutex{}}
-		l.config.MaxDataFrameCount = 2
-		l.config.Text = func(DataFrames) { called++ }
-
-		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("he")})
-		if err := l.routeFrame(&Frame{Opcode: OpcodeContinuation}); err != nil {
-			t.Fatalf("the empty continuation is frame 2 of 2: %v", err)
-		}
-		err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("llo")})
-
-		if !errors.Is(err, ErrDataFrameCountExceeded) {
-			t.Errorf("err = %v, want ErrDataFrameCountExceeded", err)
-		}
-		if called != 0 {
-			t.Error("a message over the frame limit must not reach its hook")
-		}
-	})
-
-	// The count is kept beside the frames instead of read off them, so nothing
-	// stops the two from drifting apart except this.
-	t.Run("counts what is held", func(t *testing.T) {
-		l := &Listener{configLocker: &sync.Mutex{}}
-
-		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("a")})
-		l.routeFrame(&Frame{Opcode: OpcodeContinuation})    // held too
-		l.routeFrame(&Frame{Opcode: OpcodePing, FIN: true}) // never joins
-		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("b")})
-
-		if l.currentDataFrameCount != uint64(len(l.currentDataFrames)) {
-			t.Errorf("currentDataFrameCount = %d, but %d frames are held",
-				l.currentDataFrameCount, len(l.currentDataFrames))
-		}
-	})
-
-	t.Run("0 means no limit", func(t *testing.T) {
-		l := &Listener{configLocker: &sync.Mutex{}}
-		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("x")})
-		for i := 0; i < 5000; i++ {
-			if err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("x")}); err != nil {
-				t.Fatalf("refused at frame %d with no limit set: %v", i, err)
-			}
-		}
-		if len(l.currentDataFrames) != 5001 {
-			t.Errorf("held %d frames, want 5001", len(l.currentDataFrames))
-		}
-	})
+	if l.currentDataFrameCount != uint64(len(l.currentDataFrames)) {
+		t.Errorf("currentDataFrameCount = %d, but %d frames are held",
+			l.currentDataFrameCount, len(l.currentDataFrames))
+	}
 }
 
 // Control frames go straight to their hook and never join the message, so one
@@ -705,6 +560,9 @@ func TestListenerRouteFrameControlFramesDoNotCount(t *testing.T) {
 		if err := l.routeFrame(&Frame{Opcode: OpcodePing, FIN: true}); err != nil {
 			t.Fatalf("ping %d: %v", i, err)
 		}
+	}
+	if l.currentDataFrameCount != 1 {
+		t.Errorf("currentDataFrameCount = %d after 100 pings, want 1", l.currentDataFrameCount)
 	}
 	err := l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("llo")})
 
@@ -787,7 +645,7 @@ func TestValidCloseStatusCode(t *testing.T) {
 	}{
 		{"defined by RFC 6455", []uint16{1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011}, true},
 		// Absent from RFC 6455, registered with IANA afterwards through the
-		// process 7.4.2 describes.
+		// process 11.7 describes.
 		{"registered later", []uint16{1012, 1013, 1014}, true},
 		{"library and framework use", []uint16{3000, 3999}, true},
 		{"private use", []uint16{4000, 4999}, true},

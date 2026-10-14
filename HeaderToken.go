@@ -8,11 +8,15 @@ import (
 /*
 headerHasToken reports whether a header field carries token among its values.
 
-RFC 7230 3.2.2 makes a field like Connection or Upgrade a comma separated list
-that may also repeat across several lines, and RFC 6455 4.1 asks only that the
-token be present. "keep-alive, Upgrade" is a conforming client and a proxy is
-entitled to add to the list on the way through, so comparing the whole field
+RFC 7230 6.1 and 6.7 make Connection and Upgrade comma separated lists, and
+3.2.2 lets one repeat across several lines. RFC 6455 4.2.1 asks only that the
+request's Connection and Upgrade carry the token, and 4.1 the same of the
+response's Connection. "keep-alive, Upgrade" is a conforming client and a proxy
+is entitled to add to the list on the way through, so comparing the whole field
 value refuses a request the RFC allows.
+
+The response's Upgrade is stricter: 4.1 fails any value other than "websocket".
+The client still reads it as a token list.
 
 Values rather than Get, because Get returns the first line only and a field
 split across two would have its second half ignored.

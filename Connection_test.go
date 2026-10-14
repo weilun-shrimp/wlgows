@@ -32,7 +32,7 @@ func TestNewConn(t *testing.T) {
 			t.Error("maskSendFrame was not set")
 		}
 		// Constructors are mandatory precisely because they populate di.
-		if wsConn.di.getFrameFromReader == nil || wsConn.di.newControlFrame == nil {
+		if wsConn.di.getFrameHeader == nil || wsConn.di.fillFramePayload == nil || wsConn.di.newControlFrame == nil {
 			t.Error("NewConn must populate every di field")
 		}
 		if wsConn.di.writeLocker == nil || wsConn.di.readLocker == nil {
@@ -54,100 +54,86 @@ func TestNewConn(t *testing.T) {
 	})
 }
 
-// The lockers guard the socket against concurrent use. This asserts the read
-// seam is taken, and that the frame is read while the lock is actually held.
+// The read lock guards one frame against a second reader. The caller takes it
+// with LockRead around both read steps, so the steps themselves leave it alone.
 func TestConnLocking(t *testing.T) {
-	t.Run("GetNextFrame locks", func(t *testing.T) {
+	t.Run("LockRead and UnlockRead take and release the read lock", func(t *testing.T) {
 		var steps []string
 		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
 		wsConn.di.readLocker = fakeFuncLocker{
 			lock:   func() { steps = append(steps, "read lock") },
 			unlock: func() { steps = append(steps, "read unlock") },
 		}
-		wsConn.di.getFrameFromReader = func(*bufio.Reader, uint64) (*Frame, error) {
-			steps = append(steps, "read")
-			return &Frame{}, nil
-		}
 
-		if _, err := wsConn.GetNextFrame(0); err != nil {
-			t.Fatalf("GetNextFrame: %v", err)
-		}
-		if want := []string{"read lock", "read", "read unlock"}; !slices.Equal(steps, want) {
+		wsConn.LockRead()
+		wsConn.UnlockRead()
+		if want := []string{"read lock", "read unlock"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
-	t.Run("GetNextFrame unlocks after a read error", func(t *testing.T) {
+	// The caller holds the lock across both steps, so neither takes it: a
+	// sync.Mutex would deadlock on the second Lock.
+	t.Run("the two read steps leave the lock to the caller", func(t *testing.T) {
 		var steps []string
 		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
 		wsConn.di.readLocker = fakeFuncLocker{
 			lock:   func() { steps = append(steps, "read lock") },
 			unlock: func() { steps = append(steps, "read unlock") },
 		}
-		wsConn.di.getFrameFromReader = func(*bufio.Reader, uint64) (*Frame, error) {
-			steps = append(steps, "read")
-			return nil, errors.New("boom")
+		wsConn.di.getFrameHeader = func(*bufio.Reader) (*Frame, error) {
+			steps = append(steps, "read header")
+			return &Frame{}, nil
+		}
+		wsConn.di.fillFramePayload = func(*Frame, *bufio.Reader) error {
+			steps = append(steps, "read payload")
+			return nil
 		}
 
-		if _, err := wsConn.GetNextFrame(0); err == nil {
-			t.Fatal("GetNextFrame should have failed")
-		}
-		if want := []string{"read lock", "read", "read unlock"}; !slices.Equal(steps, want) {
-			t.Errorf("steps %q, want %q — the lock must be released on the error path", steps, want)
+		frame, _ := wsConn.GetNextFrameHeader()
+		wsConn.ReadFramePayload(frame)
+		if want := []string{"read header", "read payload"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 }
 
-func TestConnGetNextFrame(t *testing.T) {
-	t.Run("delegates to di", func(t *testing.T) {
-		want := &Frame{FIN: true, Opcode: 1, PayloadData: []byte("x")}
-		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
-		var gotConn *bufio.Reader
-		wsConn.di.getFrameFromReader = func(r *bufio.Reader, _ uint64) (*Frame, error) {
-			gotConn = r
-			return want, nil
-		}
+func TestConnGetNextFrameHeader(t *testing.T) {
+	want := &Frame{FIN: true, Opcode: OpcodeText, PayloadLength: 5}
+	wantErr := errors.New("read failed")
+	wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+	var gotReader *bufio.Reader
+	wsConn.di.getFrameHeader = func(reader *bufio.Reader) (*Frame, error) {
+		gotReader = reader
+		return want, wantErr
+	}
 
-		got, err := wsConn.GetNextFrame(0)
-		if err != nil {
-			t.Fatalf("GetNextFrame: %v", err)
-		}
-		if got != want {
-			t.Error("GetNextFrame did not return the di result")
-		}
-		if gotConn != wsConn.reader {
-			t.Error("GetNextFrame must pass Conn's reader through")
-		}
-	})
+	got, err := wsConn.GetNextFrameHeader()
+	if got != want || !errors.Is(err, wantErr) {
+		t.Errorf("got (%v, %v), want the di result (%v, %v)", got, err, want, wantErr)
+	}
+	if gotReader != wsConn.reader {
+		t.Error("GetNextFrameHeader must pass Conn's reader through")
+	}
+}
 
-	// The limit is the caller's, per call — nothing on Conn remembers it, so it
-	// has to arrive at the frame reader untouched.
-	t.Run("passes the max byte length straight through", func(t *testing.T) {
-		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
-		var got uint64
-		wsConn.di.getFrameFromReader = func(_ *bufio.Reader, maxByteLength uint64) (*Frame, error) {
-			got = maxByteLength
-			return &Frame{}, nil
-		}
+func TestConnReadFramePayload(t *testing.T) {
+	frame := &Frame{Opcode: OpcodeText, PayloadLength: 5}
+	wantErr := errors.New("read failed")
+	wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+	var gotReader *bufio.Reader
+	var gotFrame *Frame
+	wsConn.di.fillFramePayload = func(payloadFrame *Frame, reader *bufio.Reader) error {
+		gotReader, gotFrame = reader, payloadFrame
+		return wantErr
+	}
 
-		for _, want := range []uint64{0, 1, 10 << 20, 1<<64 - 1} {
-			if _, err := wsConn.GetNextFrame(want); err != nil {
-				t.Fatalf("GetNextFrame(%d): %v", want, err)
-			}
-			if got != want {
-				t.Errorf("frame reader received maxByteLength %d, want %d", got, want)
-			}
-		}
-	})
-
-	t.Run("propagates the error", func(t *testing.T) {
-		want := errors.New("read failed")
-		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
-		wsConn.di.getFrameFromReader = func(*bufio.Reader, uint64) (*Frame, error) { return nil, want }
-		if _, err := wsConn.GetNextFrame(0); !errors.Is(err, want) {
-			t.Errorf("err = %v, want %v", err, want)
-		}
-	})
+	if err := wsConn.ReadFramePayload(frame); !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want %v", err, wantErr)
+	}
+	if gotReader != wsConn.reader || gotFrame != frame {
+		t.Error("ReadFramePayload must pass Conn's reader and the frame through")
+	}
 }
 
 func TestConnClose(t *testing.T) {

@@ -40,7 +40,7 @@ func TestStartPingLoop(t *testing.T) {
 	}
 
 	/*
-		5.5.2 has the peer echo the payload, so payload is called per ping rather
+		5.5.3 has the peer echo the payload, so payload is called per ping rather
 		than once and reused — that is what lets a Pong hook tell them apart. A
 		ping that fails is the last one: nothing retries.
 	*/

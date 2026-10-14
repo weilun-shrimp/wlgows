@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestFrameGetMaxPayloadLength(t *testing.T) {
+func TestFrameGetDeclaredPayloadSize(t *testing.T) {
 	tests := []struct {
 		name          string
 		payloadLength byte
@@ -22,8 +22,8 @@ func TestFrameGetMaxPayloadLength(t *testing.T) {
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			frame := &Frame{PayloadLength: testCase.payloadLength, ExtendedPayloadLength: testCase.extended}
-			if got := frame.GetMaxPayloadLength(); got != testCase.want {
-				t.Errorf("GetMaxPayloadLength() = %d, want %d", got, testCase.want)
+			if got := frame.GetDeclaredPayloadSize(); got != testCase.want {
+				t.Errorf("GetDeclaredPayloadSize() = %d, want %d", got, testCase.want)
 			}
 		})
 	}

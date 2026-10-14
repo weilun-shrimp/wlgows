@@ -13,7 +13,7 @@
 | Client send, small frame | Lose (120 vs 90 ns)<br>**Win** on safety, stronger masking key | Lose (120 vs 56 ns)<br>**Win** on safety, stronger masking key |
 | Client send, large frame | Tie (107 µs) | Lose (107 vs 64 µs), and **Win** caller's buffer is never written |
 | Read, large frame | **Win** (1.5x to 3x faster) | Tie on a client, 6% to 15% slower on a server |
-| Read, small frame | **Win** (2x to 3.4x faster) | **Win** on a server (up to 15% faster)<br>Tie on a client, one frame<br>14% to 19% slower on a client, many small frames back to back |
+| Read, small frame | **Win** (2x to 2.9x faster) | **Win** on a server (up to 15% faster)<br>Tie on a client, one frame<br>14% to 19% slower on a client, many small frames back to back |
 | Read memory, 1MB frame | **Win** (1.05 MB vs 2.23 MB) | Tie (1.05 MB) |
 
 wlgows is faster than gorilla in every case but small client sends, and it is
@@ -55,14 +55,14 @@ How each library is driven:
 
 | | Send | Read |
 |---|---|---|
-| wlgows | `SendFrame`; "many" buffers the frames and flushes once | `GetFrameFromReader` |
+| wlgows | `SendFrame`; "many" buffers the frames and flushes once | `GetFrameHeaderFromReader`, then `frame.FillFramePayloadFromReader` |
 | gorilla | `WriteMessage`; "many" is 64 calls, since every message is flushed | `ReadMessage` |
 | gobwas | `ws.WriteFrame` to a `bufio.Writer`, `ws.MaskFrameInPlace` on a client; "many" flushes once | `ws.ReadFrame`, then `ws.Cipher` on a server |
 
 gorilla's `Conn` comes from its own `Upgrader` or `Dialer` over that
 connection, with 4096 byte buffers. gobwas and wlgows read at their lowest
-level, `ws.ReadFrame` and `GetFrameFromReader`; `Conn.GetNextFrame` adds a read
-lock on top, about 6 ns per frame.
+level, `ws.ReadFrame` and the two `FromReader` steps; reading through a `Conn`
+adds one read lock per frame (`LockRead`).
 
 Sends are one run each, so gaps under about 10% are noise; the small server send
 gap against gobwas was checked over 5 runs, and those numbers are the medians.
@@ -116,15 +116,15 @@ entropy", so that it cannot be predicted.
 The key does not keep the payload secret: it travels in clear in the frame
 header. It protects proxies on the way (section 10.3). If code that chooses the
 payload, such as a script in a browser, can predict the key, it can pick a
-payload whose masked bytes look like an HTTP request and response to a proxy
-that does not understand WebSocket. The proxy may then cache that forged
-response for a real URL and serve it to other users. An unpredictable key means
+payload whose masked bytes look like an HTTP request to a proxy that does not
+understand WebSocket. The attacker's server answers with a forged response, and
+the proxy may cache it for a real URL and serve it to other users. An unpredictable key means
 no one controls the bytes on the wire.
 
 wlgows reads every key from `crypto/rand`. gorilla and gobwas both use
 `math/rand`, which Go documents as not for security-sensitive work. Before Go
-1.20 it starts from seed 1, and any program can call `rand.Seed` to make every
-key predictable. On this machine the key alone costs:
+1.20 it starts from seed 1, and before Go 1.24 any program can call `rand.Seed`
+to make every key predictable. On this machine the key alone costs:
 
 | 4 byte key | ns/op |
 |---|---|
@@ -168,7 +168,7 @@ only read. The copy is the price of that promise.
 
 v7 parses each header in place from the `bufio.Reader` with `Peek`, so a read
 allocates only the `Frame` and its payload. Read at the same level,
-`GetFrameFromReader` against `ws.ReadFrame`, small server reads are faster than
+the two `FromReader` steps against `ws.ReadFrame`, small server reads are faster than
 gobwas and single client reads are level.
 
 | read | wlgows | gobwas |

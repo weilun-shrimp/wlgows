@@ -8,37 +8,30 @@ import (
 )
 
 /*
-GetFrameFromReader reads one frame, refusing any whose header declares a
-payload larger than maxByteLength. Pass 0 for no limit.
+GetFrameHeaderFromReader reads one frame's header and returns the frame with
+every header field set and no payload. Nothing is allocated for the payload, so
+the frame can be judged by its header first. Read the payload with
+Frame.FillFramePayloadFromReader next, before anything else reads from r. Reading a
+frame always takes these two steps.
 
-The check happens after the header is parsed and before the payload is
-allocated, which is the only place it helps: a peer can claim a 10 GB payload in
-a 10 byte header, and without the guard that claim becomes a 10 GB make() before
-a single payload byte has arrived.
+Judge the declared size before reading the payload: a peer can claim a 10 GB
+payload in a 10 byte header, and the payload step allocates what the header
+claims. A frame refused here, or by you, leaves its payload unread, so the
+stream is desynced and the connection cannot be read again.
 
-Exceeding the limit returns an error wrapping ErrFrameByteLengthExceeded and
-leaves the payload unread, so the stream is desynced and the connection cannot
-be reused — send RFC 6455 close code 1009 and close it.
+A control frame over 125 bytes (RFC 6455 5.5) is refused here with
+ErrControlFramePayloadTooLong: send close code 1002.
 */
-func GetFrameFromReader(r *bufio.Reader, maxByteLength uint64) (*Frame, error) {
-	return getFrameFromReader(r, maxByteLength, getFrameFromReaderDI{
-		ioReadFull:  io.ReadFull,
-		maskPayload: MaskPayload,
-	})
+func GetFrameHeaderFromReader(r *bufio.Reader) (*Frame, error) {
+	return getFrameHeaderFromReader(r)
 }
 
-type getFrameFromReaderBufioReader interface {
-	io.Reader
+type getFrameHeaderFromReaderBufioReader interface {
 	Peek(n int) ([]byte, error)
 	Discard(n int) (discarded int, err error)
 }
 
-type getFrameFromReaderDI struct {
-	ioReadFull  func(r io.Reader, buf []byte) (n int, err error)
-	maskPayload func(payload []byte, maskingKey [4]byte)
-}
-
-func getFrameFromReader(r getFrameFromReaderBufioReader, maxByteLength uint64, di getFrameFromReaderDI) (*Frame, error) {
+func getFrameHeaderFromReader(r getFrameHeaderFromReaderBufioReader) (*Frame, error) {
 	f := new(Frame)
 	// The header is parsed in place from the reader's buffer: Peek copies
 	// nothing, so no header byte is allocated. The longest header is 14 bytes,
@@ -73,7 +66,7 @@ func getFrameFromReader(r getFrameFromReaderBufioReader, maxByteLength uint64, d
 			f.ExtendedPayloadLength = binary.BigEndian.Uint64(header[2:])
 			// RFC 6455 5.2 says the 64 bit length's most significant bit must be
 			// 0. A peer that sets it breaks the protocol, and such a length is so
-			// large that the make below would panic on it.
+			// large that allocating the payload would panic on it.
 			if f.ExtendedPayloadLength>>63 == 1 {
 				return f, fmt.Errorf("64 bit payload length %d has its most significant bit set: %w",
 					f.ExtendedPayloadLength, ErrPayloadLengthMSBSet)
@@ -93,25 +86,47 @@ func getFrameFromReader(r getFrameFromReaderBufioReader, maxByteLength uint64, d
 		return f, err
 	}
 
-	// Guard before the allocation, never after: the make below is sized by the
-	// header's claim, so by the time it returns the damage is done.
-	if maxByteLength > 0 && f.GetMaxPayloadLength() > maxByteLength {
+	// RFC 6455 5.5 caps a control frame at 125 bytes. Refusing a larger one
+	// here, whatever the caller checks next, keeps a ping from claiming a size
+	// that crashes the payload allocation.
+	if IsControlOpcode(f.Opcode) && f.GetDeclaredPayloadSize() > ControlFramePayloadMaxByteLength {
 		return f, fmt.Errorf(
-			"frame header declares %d bytes against a %d byte max, payload left unread: %w",
-			f.GetMaxPayloadLength(), maxByteLength, ErrFrameByteLengthExceeded,
+			"control frame header declares %d bytes, payload left unread: %w",
+			f.GetDeclaredPayloadSize(), ErrControlFramePayloadTooLong,
 		)
 	}
 
-	f.PayloadData = make([]byte, f.GetMaxPayloadLength())
-	if _, err = di.ioReadFull(r, f.PayloadData); err != nil {
-		return f, frameReadErr(headerSize, err)
+	return f, nil
+}
+
+/*
+FillFramePayloadFromReader reads the payload of f, whose header
+GetFrameHeaderFromReader just read from r, into f.PayloadData and unmasks it.
+It allocates the length the header declares, so judge that length first.
+*/
+func (f *Frame) FillFramePayloadFromReader(r *bufio.Reader) error {
+	return f.fillFramePayloadFromReader(r, fillFramePayloadFromReaderDI{
+		ioReadFull:  io.ReadFull,
+		maskPayload: MaskPayload,
+	})
+}
+
+type fillFramePayloadFromReaderDI struct {
+	ioReadFull  func(r io.Reader, buf []byte) (n int, err error)
+	maskPayload func(payload []byte, maskingKey [4]byte)
+}
+
+func (f *Frame) fillFramePayloadFromReader(r io.Reader, di fillFramePayloadFromReaderDI) error {
+	f.PayloadData = make([]byte, f.GetDeclaredPayloadSize())
+	if _, err := di.ioReadFull(r, f.PayloadData); err != nil {
+		return frameReadErr(f.getHeaderSize(), err)
 	}
 
 	if f.Mask {
 		di.maskPayload(f.PayloadData, f.MaskingKey) // do unmask by mask again.
 	}
 
-	return f, nil
+	return nil
 }
 
 // frameReadErr returns io.EOF only when the stream ended before the frame's

@@ -134,7 +134,9 @@ returns. Prefer SendText, SendClose, SendPing or SendPong.
 
 Yours to keep: a fragmented message's sequence (5.4) — first frame carries the
 opcode, continuations 0, only the last sets FIN, nothing in between; serialise
-concurrent senders yourself. The opcode and RSV bits are sent as they are.
+concurrent senders yourself. The opcode and RSV bits are sent as they are: RSV
+must be 0, as no extension is negotiated (5.2), and only the opcode's low 4 bits
+reach the wire. A text payload must be valid UTF-8 (5.6).
 
 Settled in place, so your frame is modified: Mask and a fresh MaskingKey per
 send from the Conn's side (5.1, 5.3), the length fields from len(PayloadData),

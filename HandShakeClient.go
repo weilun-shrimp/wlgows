@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -27,22 +29,23 @@ reader here would strand them. That's also why the returned *Conn reuses r
 rather than wrapping c again.
 
 w is the returned *Conn's writer, such as bufio.NewWriter(c) — see NewConn.
+
+A response that breaks a rule RFC 6455 4.1 answers with "Fail the WebSocket
+Connection" closes c before the error returns (7.1.7): a wrong Upgrade,
+Connection, Sec-WebSocket-Accept or Sec-WebSocket-Protocol. Every other error
+leaves c open, and closing it is yours. A status other than 101 is one of them,
+since 4.1 has it handled as plain HTTP, such as a redirect or a 401.
+ClientMustFailConnection(err) tells the two apart.
 */
 func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request) (*Conn, *http.Response, error) {
-	res, err := clientHandShake(c, r, req, clientHandShakeDI{
+	return clientHandShake(c, r, w, req, clientHandShakeDI{
 		upgradeRequest:            UpgradeRequest,
 		sendHandShakeRequest:      SendHandShakeRequest,
 		readHandShakeResponse:     ReadHandShakeResponse,
 		validateHandShakeResponse: ValidateHandShakeResponse,
+		validateSubprotocol:       ValidateHandShakeResponseSubprotocol,
+		newConn:                   NewConn,
 	})
-	if err != nil {
-		return nil, res, err
-	}
-	conn, err := NewConn(c, r, w, true)
-	if err != nil {
-		return nil, res, err
-	}
-	return conn, res, nil
 }
 
 type clientHandShakeDI struct {
@@ -50,26 +53,46 @@ type clientHandShakeDI struct {
 	sendHandShakeRequest      func(w io.Writer, req *http.Request) error
 	readHandShakeResponse     func(r *bufio.Reader, req *http.Request) (*http.Response, error)
 	validateHandShakeResponse func(res *http.Response, sec_websocket_key string) error
+	validateSubprotocol       func(res *http.Response, req *http.Request) error
+	newConn                   func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
 }
 
-func clientHandShake(w io.Writer, r *bufio.Reader, req *http.Request, di clientHandShakeDI) (*http.Response, error) {
+func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, di clientHandShakeDI) (*Conn, *http.Response, error) {
 	if err := di.upgradeRequest(req); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := di.sendHandShakeRequest(w, req); err != nil {
-		return nil, err
+	if err := di.sendHandShakeRequest(c, req); err != nil {
+		return nil, nil, err
 	}
 	res, err := di.readHandShakeResponse(r, req)
 	if err != nil {
-		return res, err
+		return nil, res, err
 	}
 	if err := di.validateHandShakeResponse(res, req.Header.Get("Sec-WebSocket-Key")); err != nil {
-		return res, err
+		if ClientMustFailConnection(err) {
+			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
+		}
+		return nil, res, err
 	}
-	return res, nil
+	if err := di.validateSubprotocol(res, req); err != nil {
+		if ClientMustFailConnection(err) {
+			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
+		}
+		return nil, res, err
+	}
+	conn, err := di.newConn(c, r, w, true)
+	if err != nil {
+		return nil, res, err
+	}
+	return conn, res, nil
 }
 
-// upgrade request for websocket
+/*
+UpgradeRequest makes req a valid opening handshake (RFC 6455 4.1): GET, HTTP/1.1,
+no body and the four upgrade headers, whatever req had before. Anything else you set is
+sent as it is. A url with no host has no Host to send, so it returns
+ErrUrlHostEmpty.
+*/
 func UpgradeRequest(req *http.Request) error {
 	return upgradeRequest(req, upgradeRequestDI{
 		generateWebSocketKey: GenerateWebSocketKey,
@@ -84,6 +107,12 @@ func upgradeRequest(req *http.Request, di upgradeRequestDI) error {
 	if req == nil {
 		return fmt.Errorf("UpgradeRequest: %w", ErrHandshakeRequestNil)
 	}
+	if req.URL == nil || req.URL.Host == "" {
+		return fmt.Errorf("UpgradeRequest: %w", ErrUrlHostEmpty)
+	}
+	req.Method = "GET"
+	req.Proto, req.ProtoMajor, req.ProtoMinor = "HTTP/1.1", 1, 1
+	req.Body = nil // bytes after the headers would be read as the first frame
 	for k, v := range map[string]string{
 		"Upgrade":               "websocket",
 		"Connection":            "Upgrade",
@@ -146,7 +175,7 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 		return fmt.Errorf("invalid handshake response proto %s: %w", res.Proto, ErrHandshakeResponseProtoInvalid)
 	}
 	// Read as a token list, not compared whole — a server answering
-	// "Connection: keep-alive, Upgrade" is conforming (RFC 7230 3.2.2). See
+	// "Connection: keep-alive, Upgrade" is conforming (RFC 7230 6.1). See
 	// headerHasToken.
 	if !headerHasToken(res.Header, "Connection", "upgrade") {
 		return fmt.Errorf(
@@ -171,10 +200,63 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 			res.Header.Get("Sec-WebSocket-Accept"), sec_ws_accept, ErrHandshakeResponseAcceptHeaderMismatch)
 	}
 
-	// optional
+	// optional - RFC 6455 doesn't put Sec-WebSocket-Version in a successful 101 response at all
 	// if res.Header.Get("Sec-WebSocket-Version") != "13" {
 	// 	return errors.New("invalid handshake response header Sec-WebSocket-Version. The Sec-WebSocket-Version header is must be 13")
 	// }
+	return nil
+}
+
+/*
+ClientMustFailConnection reports whether err is a response check RFC 6455
+4.1 answers with "Fail the WebSocket Connection", which means closing it
+(7.1.7). The list follows 4.1's order.
+
+ClientHandShake has already closed the connection for these. If you run the
+checks yourself, close it. Only for errors from the client handshake: for
+errors from Listen, see StandardClosePayloadFor.
+*/
+func ClientMustFailConnection(err error) bool {
+	return errors.Is(err, ErrHandshakeResponseUpgradeHeaderInvalid) ||
+		errors.Is(err, ErrHandshakeResponseConnectionHeaderInvalid) ||
+		errors.Is(err, ErrHandshakeResponseAcceptHeaderMissing) ||
+		errors.Is(err, ErrHandshakeResponseAcceptHeaderMismatch) ||
+		errors.Is(err, ErrHandshakeResponseSubprotocolMultiple) ||
+		errors.Is(err, ErrHandshakeResponseSubprotocolNotOffered)
+}
+
+/*
+ValidateHandShakeResponseSubprotocol checks the server's Sec-WebSocket-Protocol
+against what req offered (RFC 6455 4.1). No header passes: the server picked
+none. One value the client offered passes. More than one value, on one line or
+several, returns ErrHandshakeResponseSubprotocolMultiple. One value never
+offered, including any value when nothing was offered, returns
+ErrHandshakeResponseSubprotocolNotOffered.
+
+Whether no subprotocol is acceptable is the caller's choice, so it is not
+checked here.
+*/
+func ValidateHandShakeResponseSubprotocol(res *http.Response, req *http.Request) error {
+	lines := res.Header.Values("Sec-WebSocket-Protocol")
+	// No header means the server picked none (RFC 6455 4.2.2). An empty header
+	// is still one line: the server sent something, just something invalid.
+	if len(lines) == 0 {
+		return nil
+	}
+	var chosen []string
+	for _, line := range lines {
+		for _, value := range strings.Split(line, ",") {
+			chosen = append(chosen, strings.TrimSpace(value))
+		}
+	}
+	if len(chosen) > 1 {
+		return fmt.Errorf("invalid handshake response header Sec-WebSocket-Protocol %q: %w",
+			strings.Join(lines, ", "), ErrHandshakeResponseSubprotocolMultiple)
+	}
+	if offered := RequestSubprotocols(req); !slices.Contains(offered, chosen[0]) {
+		return fmt.Errorf("invalid handshake response header Sec-WebSocket-Protocol %q, offered %q: %w",
+			chosen[0], offered, ErrHandshakeResponseSubprotocolNotOffered)
+	}
 	return nil
 }
 

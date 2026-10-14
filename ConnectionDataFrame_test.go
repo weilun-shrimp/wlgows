@@ -232,7 +232,7 @@ func TestSendData(t *testing.T) {
 	/*
 		dataFramesWriteLocker is held throughout. writeLocker is taken for each
 		frame and for the flush, and released in between, so a control frame can
-		get out mid message (5.5.2).
+		get out mid message (5.4).
 	*/
 	t.Run("locks", func(t *testing.T) {
 		var steps []string

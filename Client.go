@@ -71,13 +71,23 @@ func dialContext(ctx context.Context, raw_url string, dialer *net.Dialer, tls_co
 	if dialer == nil {
 		dialer = di.defaultDialer
 	}
+	// RFC 6455 3: the port is optional, 80 for ws and 443 for wss. Only the
+	// dialled address gets it; the Host header leaves a default port out (4.1).
+	address := req.URL.Host
+	if req.URL.Port() == "" {
+		port := "80"
+		if req.URL.Scheme == "https" || req.URL.Scheme == "wss" {
+			port = "443"
+		}
+		address = net.JoinHostPort(req.URL.Hostname(), port)
+	}
 	var conn net.Conn
 	switch req.URL.Scheme {
 	case "http", "ws":
-		conn, err = di.dialContext(dialer, ctx, "tcp", req.URL.Host)
+		conn, err = di.dialContext(dialer, ctx, "tcp", address)
 	case "https", "wss":
 		tlsDialer := &tls.Dialer{NetDialer: dialer, Config: tls_config}
-		conn, err = di.tlsDialContext(tlsDialer, ctx, "tcp", req.URL.Host)
+		conn, err = di.tlsDialContext(tlsDialer, ctx, "tcp", address)
 	default:
 		return nil, nil, fmt.Errorf("scheme %q: %w", req.URL.Scheme, ErrUrlSchemeInvalid)
 	}

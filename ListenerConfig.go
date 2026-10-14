@@ -5,7 +5,7 @@ import "time"
 /*
 ListenerConfig is everything a Listener reads from, handed over whole by
 SetConfig. Every item has a working zero value, so a Listener is usable before
-SetConfig is called — one that reads conformingly and answers nothing.
+SetConfig is called — one that refuses malformed frames and answers nothing.
 */
 type ListenerConfig struct {
 	// FrameReadTimeout is the time limit for reading one whole frame. 0 means
@@ -18,6 +18,16 @@ type ListenerConfig struct {
 	// is allocated. 0 means no limit, which lets a peer claim a size that
 	// crashes the process. When a message goes over it, answer 1009 and close.
 	MaxDataFramesSize uint64
+
+	// MaxFrameSize caps the bytes of one data or reserved-opcode frame, header
+	// included, like MaxDataFramesSize. It is checked at the header, before the
+	// payload is allocated, and bounds what one read holds — which matters with
+	// the Data hook, where a message may be far larger than any one frame should
+	// be. A control frame is capped at 125 bytes by RFC 6455 5.5 instead. 0
+	// means no limit: a reserved-opcode frame is then unbounded even with
+	// MaxDataFramesSize set, and can claim a size that crashes the process.
+	// When a frame goes over it, answer 1009 and close.
+	MaxFrameSize uint64
 
 	// MaxDataFrameCount caps how many data frames one message may arrive in.
 	// It bounds the memory of held frames, which tiny fragments make far larger
@@ -32,9 +42,9 @@ type ListenerConfig struct {
 
 	// The hooks run one at a time in the read loop. A slow hook stops reading,
 	// so hand slow work to a goroutine. A nil hook drops its frames.
-	Ping  func(ping_frame *Frame)  // RFC 6455 5.5.2: MUST answer with a pong echoing the payload.
-	Pong  func(pong_frame *Frame)  // RFC 6455 5.5.3: MUST NOT answer.
-	Close func(close_frame *Frame) // RFC 6455 5.5.1: MUST answer with a close, then close. GetClosePayload decodes it.
+	Ping  func(ping_frame *Frame)  // RFC 6455 5.5.2, 5.5.3: MUST answer with a pong echoing the payload.
+	Pong  func(pong_frame *Frame)  // RFC 6455 5.5.3: no answer expected.
+	Close func(close_frame *Frame) // RFC 6455 5.5.1: MUST answer with a close unless one was sent, then close. GetClosePayload decodes it.
 
 	// Data gets each data frame as it arrives, for messages too large to hold.
 	// When it is set, Text and Binary never run, and watching FIN and checking

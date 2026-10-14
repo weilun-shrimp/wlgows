@@ -57,7 +57,7 @@ const (
 	ClosePolicyViolation         uint16 = 1008
 	CloseMessageTooBig           uint16 = 1009
 	CloseMandatoryExtension      uint16 = 1010
-	CloseInternalServerErr       uint16 = 1011
+	CloseInternalServerErr       uint16 = 1011 // RFC 6455 says a server; erratum 3227 and IANA extend it to clients
 )
 
 /*
@@ -108,9 +108,10 @@ A one byte payload is the fourth shape the RFC forbids and returns
 ErrClosePayloadTooShort. That check is what keeps this from panicking on the
 slice, so it protects the process before it protects the spec.
 
-Reason is returned as sent. RFC 6455 5.5.1 requires it to be valid UTF-8 and a
-peer sending otherwise should be failed with close code 1007, but that is not
-checked here — use utf8.ValidString if it matters to you.
+Reason is returned as sent. RFC 6455 5.5.1 defines it as UTF-8, 8.1 has the
+receiver fail the connection when it is not, and 7.4.1 names the code, 1007. A
+Listener checks it before the Close hook runs; this does not, so use
+utf8.ValidString on a frame read some other way.
 */
 func (f *Frame) GetClosePayload() (*ClosePayload, error) {
 	if f.Opcode != OpcodeClose {

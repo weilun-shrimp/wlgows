@@ -45,11 +45,13 @@ const (
 	// whole stream rather than one fragment of it. Size it for the largest
 	// transmission you are willing to receive.
 	//
-	// It bounds a single frame too, at the header before anything is allocated —
-	// but only by what the message has left, so early on a frame may claim most
-	// of this. Bounding every frame tightly while letting the message run long is
-	// what reading with conn.GetNextFrame(max) yourself still does better.
+	// It bounds a single frame only by what the message has left, so early on
+	// one frame may claim most of it. maxFrameSize bounds each frame.
 	maxDataFramesSize = 2 * 1024 * 1024 * 1024 // 2 GB
+
+	// One frame, header included, checked at the header before anything is
+	// allocated, so one read never holds more than this.
+	maxFrameSize = 64 * 1024 // 64 KB
 
 	frameReadTimeout = 60 * time.Second
 
@@ -83,10 +85,30 @@ func handleConn(netConn net.Conn) {
 	r := bufio.NewReader(netConn)
 	req, err := http.ReadRequest(r)
 	if err != nil {
+		// RFC 6455 4.2.1: a malformed request is answered with 400.
+		respWriter := wlgows.NewResponseWriter()
+		respWriter.DeclineByError(wlgows.ErrHttpMsgFormationInvalid)
+		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
 		fmt.Println("reading request:", err)
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)
+	// Subprotocols (RFC 6455 4.2.2). To require one, uncomment the block below
+	// and add "slices" to the imports. A server that only speaks chat.v2 has
+	// nothing to say to a client that did not offer it, so it refuses before
+	// the handshake. To prefer chat.v2 without requiring it, uncomment only the
+	// last line: a client that did not offer it still connects, with no
+	// subprotocol.
+	handShakeConfig := wlgows.ServerHandShakeConfig{}
+	// if !slices.Contains(wlgows.RequestSubprotocols(req), "chat.v2") {
+	// 	respWriter := wlgows.NewResponseWriter()
+	// 	respWriter.WriteHeader(http.StatusBadRequest)
+	// 	respWriter.Write([]byte("subprotocol chat.v2 required"))
+	// 	wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
+	// 	return
+	// }
+	// handShakeConfig.Subprotocol = "chat.v2"
+
+	conn, _, err := wlgows.ServerHandShake(netConn, r, bufio.NewWriter(netConn), req, handShakeConfig)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
@@ -114,6 +136,7 @@ func handleConn(netConn net.Conn) {
 
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxFrameSize = maxFrameSize
 	config.MaxDataFrameCount = 0 // Data keeps no frame, so the count bounds nothing
 	config.FrameReadTimeout = frameReadTimeout
 

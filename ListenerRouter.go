@@ -8,8 +8,9 @@ import (
 /*
 routeFrame hands one frame to the hook it belongs to.
 
-validateFrame has already agreed the frame is legal, so the only rule left is
-the message budget, which cannot be judged until the payload is in hand.
+validateFrameHeader has already passed the frame's header, limits included, so
+what is left here are the rules that need the payload: a close payload and
+UTF-8. A reserved opcode goes to Unknown, and a nil Unknown drops it.
 
 Control frames go straight out and never join the message being assembled — RFC
 6455 5.4 lets one arrive between two continuation frames, so touching the
@@ -53,26 +54,13 @@ func (l *Listener) routeFrame(f *Frame) error {
 		return nil
 	}
 
-	// The header counts too, so every frame spends budget, an empty one
-	// included. The read limit only saw the payload, and granted the larger of
-	// the control allowance and what the message had left, so a data frame can
-	// still arrive over budget.
+	// validateFrameHeader judged the limits against these totals, so the frame
+	// spends them here, header included.
 	l.currentDataFramesSize += uint64(f.getHeaderSize() + len(f.PayloadData))
-	if config.MaxDataFramesSize > 0 && l.currentDataFramesSize > config.MaxDataFramesSize {
-		l.resetCurrentDataFrames() // it can never complete now
-		return ErrFrameByteLengthExceeded
-	}
-
-	// Counted before the append, the way the byte budget above is, so a message
-	// of exactly MaxDataFrameCount frames is allowed and the next one is not.
 	l.currentDataFrameCount++
-	if config.MaxDataFrameCount > 0 && l.currentDataFrameCount > config.MaxDataFrameCount {
-		l.resetCurrentDataFrames() // it can never complete now
-		return ErrDataFrameCountExceeded
-	}
 
-	// Only text or binary can be first: validateFrame refuses a continuation
-	// with no message open, and a reserved opcode never got this far.
+	// Only text or binary can be first: validateFrameHeader refuses a
+	// continuation with no message open.
 	if f.Opcode != OpcodeContinuation {
 		l.currentDataFrameOpcode = f.Opcode
 	}
@@ -173,7 +161,7 @@ by libraries and frameworks, and 4000 to 4999 are private.
 Three of the registered codes are local only and 7.4.1 forbids sending them —
 1005 no status received, 1006 abnormal closure, 1015 TLS handshake failure. 1004
 is reserved with no meaning. 1012 to 1014 are absent from RFC 6455 but were
-registered with IANA afterwards through the process 7.4.2 describes, so they are
+registered with IANA afterwards through the process 11.7 describes, so they are
 allowed.
 */
 func validCloseStatusCode(statusCode uint16) bool {

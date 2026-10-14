@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -50,7 +51,7 @@ func (w *fakeResponseWriter) GenerateResponse() *http.Response {
 
 func TestServerHandShake(t *testing.T) {
 	t.Run("rejects a nil request", func(t *testing.T) {
-		_, err := serverHandShake(&fakeIOWriter{}, nil, serverHandShakeDI{
+		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, nil, ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error {
 				t.Fatal("must not run for a nil request")
 				return nil
@@ -63,6 +64,10 @@ func TestServerHandShake(t *testing.T) {
 				t.Fatal("must not run for a nil request")
 				return nil
 			},
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+				t.Fatal("must not run for a nil request")
+				return nil, nil
+			},
 		})
 		if !errors.Is(err, ErrHandshakeRequestNil) {
 			t.Errorf("err = %v, want %v", err, ErrHandshakeRequestNil)
@@ -74,10 +79,11 @@ func TestServerHandShake(t *testing.T) {
 	// already happened, but validate's error would otherwise mask it.
 	t.Run("propagates the send error over the validation error", func(t *testing.T) {
 		wantSendErr := errors.New("broken pipe")
-		_, err := serverHandShake(&fakeIOWriter{}, validClientHandShakeRequest(t), serverHandShakeDI{
+		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return errors.New("invalid") },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return wantSendErr },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
 		})
 		if !errors.Is(err, wantSendErr) {
 			t.Errorf("err = %v, want %v", err, wantSendErr)
@@ -86,10 +92,11 @@ func TestServerHandShake(t *testing.T) {
 
 	t.Run("links the request and response both ways", func(t *testing.T) {
 		req := validClientHandShakeRequest(t)
-		res, err := serverHandShake(&fakeIOWriter{}, req, serverHandShakeDI{
+		_, res, err := serverHandShake(newFakeConn(nil), nil, nil, req, ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -104,13 +111,14 @@ func TestServerHandShake(t *testing.T) {
 
 	t.Run("calls newResponseWriter exactly once", func(t *testing.T) {
 		calls := 0
-		_, err := serverHandShake(&fakeIOWriter{}, validClientHandShakeRequest(t), serverHandShakeDI{
+		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter: func() ServerHandShakeRespWriter {
 				calls++
 				return &fakeResponseWriter{}
 			},
 			sendHandShakeResponse: func(io.Writer, *http.Response) error { return nil },
+			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -123,10 +131,11 @@ func TestServerHandShake(t *testing.T) {
 	t.Run("calls UpgradeForWebsocket with the request's key when valid", func(t *testing.T) {
 		req := validClientHandShakeRequest(t)
 		fw := &fakeResponseWriter{}
-		_, err := serverHandShake(&fakeIOWriter{}, req, serverHandShakeDI{
+		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, req, ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return fw },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -145,10 +154,11 @@ func TestServerHandShake(t *testing.T) {
 	t.Run("calls DeclineByError with the validation error when invalid", func(t *testing.T) {
 		wantErr := errors.New("nope")
 		fw := &fakeResponseWriter{}
-		_, err := serverHandShake(&fakeIOWriter{}, validClientHandShakeRequest(t), serverHandShakeDI{
+		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return wantErr },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return fw },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
 		})
 		if !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
@@ -168,13 +178,14 @@ func TestServerHandShake(t *testing.T) {
 		want := &http.Response{StatusCode: 999}
 		fw := &fakeResponseWriter{response: want}
 		var gotRes *http.Response
-		res, err := serverHandShake(&fakeIOWriter{}, validClientHandShakeRequest(t), serverHandShakeDI{
+		_, res, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return fw },
 			sendHandShakeResponse: func(_ io.Writer, r *http.Response) error {
 				gotRes = r
 				return nil
 			},
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -187,75 +198,209 @@ func TestServerHandShake(t *testing.T) {
 		}
 	})
 
-	t.Run("real wiring upgrades a valid request and returns a Conn", func(t *testing.T) {
-		netConn := newFakeConn(nil)
-		r := bufio.NewReader(netConn)
-		w := bufio.NewWriter(netConn)
-		req := validClientHandShakeRequest(t)
-		conn, res, err := ServerHandShake(netConn, r, w, req)
+	t.Run("sets Subprotocol on an upgrade", func(t *testing.T) {
+		request := validClientHandShakeRequest(t)
+		request.Header.Set("Sec-WebSocket-Protocol", "v1, v2")
+		respWriter := &fakeResponseWriter{response: &http.Response{Header: http.Header{}}}
+		var sentSubprotocol []string // what the header held when the resp went out
+		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, request, ServerHandShakeConfig{Subprotocol: "v2"}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
+			sendHandShakeResponse: func(_ io.Writer, givenResp *http.Response) error {
+				sentSubprotocol = slices.Clone(givenResp.Header.Values("Sec-WebSocket-Protocol"))
+				return nil
+			},
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+		})
 		if err != nil {
-			t.Fatalf("ServerHandShake: %v", err)
+			t.Fatalf("serverHandShake: %v", err)
 		}
-		if res.StatusCode != http.StatusSwitchingProtocols {
-			t.Errorf("StatusCode = %d, want %d", res.StatusCode, http.StatusSwitchingProtocols)
-		}
-		want := GenerateSecWebsocketAccept(req.Header.Get("Sec-WebSocket-Key"))
-		if !strings.Contains(string(netConn.written()), "Sec-Websocket-Accept: "+want) {
-			t.Errorf("written response missing the accept header: %q", netConn.written())
-		}
-		if conn == nil {
-			t.Fatal("expected a Conn on success")
-		}
-		if conn.Conn != net.Conn(netConn) {
-			t.Error("the returned Conn should wrap the given net.Conn")
-		}
-		if conn.reader != r {
-			t.Error("the returned Conn should reuse the given *bufio.Reader")
-		}
-		if conn.maskSendFrame {
-			t.Error("a server Conn must not mask the frames it sends")
-		}
-		if conn.writer != w {
-			t.Error("the returned Conn should use the given *bufio.Writer")
+		if len(sentSubprotocol) != 1 || sentSubprotocol[0] != "v2" {
+			t.Errorf("Sec-WebSocket-Protocol sent = %q, want [\"v2\"]", sentSubprotocol)
 		}
 	})
 
-	t.Run("real wiring declines an invalid request and returns no Conn", func(t *testing.T) {
+	t.Run("sends no subprotocol when Subprotocol is empty", func(t *testing.T) {
+		request := validClientHandShakeRequest(t)
+		request.Header.Set("Sec-WebSocket-Protocol", "v1") // offered, but not picked
+		respWriter := &fakeResponseWriter{response: &http.Response{Header: http.Header{}}}
+		_, resp, err := serverHandShake(newFakeConn(nil), nil, nil, request, ServerHandShakeConfig{}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+		})
+		if err != nil {
+			t.Fatalf("serverHandShake: %v", err)
+		}
+		if _, ok := resp.Header["Sec-Websocket-Protocol"]; ok {
+			t.Errorf("Sec-WebSocket-Protocol = %q, want no header", resp.Header.Values("Sec-WebSocket-Protocol"))
+		}
+	})
+
+	t.Run("sends no Subprotocol the client did not offer and still upgrades", func(t *testing.T) {
+		request := validClientHandShakeRequest(t)
+		request.Header.Set("Sec-WebSocket-Protocol", "v1")
+		respWriter := &fakeResponseWriter{response: &http.Response{Header: http.Header{}}}
+		conn, resp, err := serverHandShake(newFakeConn(nil), nil, nil, request, ServerHandShakeConfig{Subprotocol: "v2"}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+		})
+		if err != nil {
+			t.Fatalf("serverHandShake: %v", err)
+		}
+		if _, ok := resp.Header["Sec-Websocket-Protocol"]; ok {
+			t.Errorf("Sec-WebSocket-Protocol = %q, want no header", resp.Header.Values("Sec-WebSocket-Protocol"))
+		}
+		if !respWriter.upgradeCalled || conn == nil {
+			t.Error("expected the upgrade to go ahead without a subprotocol")
+		}
+	})
+
+	t.Run("sends no subprotocol on a decline", func(t *testing.T) {
+		request := validClientHandShakeRequest(t)
+		request.Header.Set("Sec-WebSocket-Protocol", "v2")
+		respWriter := &fakeResponseWriter{response: &http.Response{Header: http.Header{}}}
+		_, resp, _ := serverHandShake(newFakeConn(nil), nil, nil, request, ServerHandShakeConfig{Subprotocol: "v2"}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return errors.New("invalid") },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+		})
+		if _, ok := resp.Header["Sec-Websocket-Protocol"]; ok {
+			t.Errorf("Sec-WebSocket-Protocol = %q, want no header", resp.Header.Values("Sec-WebSocket-Protocol"))
+		}
+	})
+
+	t.Run("sends the response on the net.Conn, not the bufio.Writer", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		r := bufio.NewReader(netConn)
-		req := validClientHandShakeRequest(t)
-		req.Method = "POST"
-		conn, res, err := ServerHandShake(netConn, r, bufio.NewWriter(netConn), req)
-		if !errors.Is(err, ErrHttpMethodNotAllowed) {
-			t.Errorf("err = %v, want ErrHttpMethodNotAllowed", err)
+		var gotWriter io.Writer
+		_, _, err := serverHandShake(netConn, nil, bufio.NewWriter(netConn), validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
+			sendHandShakeResponse: func(givenWriter io.Writer, _ *http.Response) error {
+				gotWriter = givenWriter
+				return nil
+			},
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+		})
+		if err != nil {
+			t.Fatalf("serverHandShake: %v", err)
 		}
-		if res.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("StatusCode = %d, want %d", res.StatusCode, http.StatusMethodNotAllowed)
+		if gotWriter != io.Writer(netConn) {
+			t.Errorf("sendHandShakeResponse wrote to %v, want the net.Conn", gotWriter)
 		}
+	})
+
+	t.Run("calls newConn after an upgrade and returns its Conn", func(t *testing.T) {
+		netConn := newFakeConn(nil)
+		reader := bufio.NewReader(netConn)
+		writer := bufio.NewWriter(netConn)
+		want := &Conn{}
+		var gotNetConn net.Conn
+		var gotReader *bufio.Reader
+		var gotWriter *bufio.Writer
+		gotMaskSendFrame := true
+		conn, _, err := serverHandShake(netConn, reader, writer, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn: func(givenNetConn net.Conn, givenReader *bufio.Reader, givenWriter *bufio.Writer, maskSendFrame bool) (*Conn, error) {
+				gotNetConn, gotReader, gotWriter, gotMaskSendFrame = givenNetConn, givenReader, givenWriter, maskSendFrame
+				return want, nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("serverHandShake: %v", err)
+		}
+		if conn != want {
+			t.Error("serverHandShake did not return newConn's Conn")
+		}
+		if gotNetConn != net.Conn(netConn) || gotReader != reader || gotWriter != writer || gotMaskSendFrame {
+			t.Errorf("newConn(%v, %v, %v, %v), want (the net.Conn, the bufio.Reader, the bufio.Writer, false): a server must not mask what it sends", gotNetConn, gotReader, gotWriter, gotMaskSendFrame)
+		}
+	})
+
+	t.Run("does not call newConn on a decline", func(t *testing.T) {
+		conn, _, _ := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return errors.New("invalid") },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+				t.Fatal("must not run on a decline")
+				return nil, nil
+			},
+		})
 		if conn != nil {
-			t.Error("expected no Conn when the handshake fails")
+			t.Error("expected no Conn on a decline")
 		}
 	})
 
-	t.Run("real wiring returns NewConn's error with the response and no Conn", func(t *testing.T) {
-		wantErr := errors.New("socket gone")
-		netConn := newFakeConn(nil)
-		writerConn := newFakeConn(nil)
-		writerConn.writeErr = wantErr
-		w := bufio.NewWriterSize(writerConn, 5) // small, so NewConn flushes it
-		w.WriteString("abc")
-
-		conn, res, err := ServerHandShake(netConn, bufio.NewReader(netConn), w, validClientHandShakeRequest(t))
+	t.Run("does not call newConn when the send fails", func(t *testing.T) {
+		wantErr := errors.New("broken pipe")
+		conn, _, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return wantErr },
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+				t.Fatal("must not run when the send fails")
+				return nil, nil
+			},
+		})
 		if !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
 		}
-		if res == nil || res.StatusCode != http.StatusSwitchingProtocols {
+		if conn != nil {
+			t.Error("expected no Conn when the send fails")
+		}
+	})
+
+	t.Run("returns newConn's error with the response and no Conn", func(t *testing.T) {
+		wantErr := errors.New("socket gone")
+		wantResp := &http.Response{StatusCode: http.StatusSwitchingProtocols}
+		conn, resp, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
+			validateHandShakeRequest: func(*http.Request) error { return nil },
+			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{response: wantResp} },
+			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return nil, wantErr },
+		})
+		if !errors.Is(err, wantErr) {
+			t.Errorf("err = %v, want %v", err, wantErr)
+		}
+		if resp != wantResp {
 			t.Error("expected the upgrade response that went out")
 		}
 		if conn != nil {
-			t.Error("expected no Conn when NewConn fails")
+			t.Error("expected no Conn when newConn fails")
 		}
 	})
+}
+
+func TestRequestSubprotocols(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string // one Sec-WebSocket-Protocol line each
+		want  []string
+	}{
+		{name: "a list on one line, in the client's order", lines: []string{"v2, v1"}, want: []string{"v2", "v1"}},
+		{name: "a list split across two lines", lines: []string{"v2", "v1"}, want: []string{"v2", "v1"}},
+		{name: "spaces around a token are trimmed", lines: []string{" v2 ,  v1 "}, want: []string{"v2", "v1"}},
+		{name: "empty tokens are skipped", lines: []string{"v2,, v1,", " "}, want: []string{"v2", "v1"}},
+		{name: "no header", lines: nil, want: nil},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := validClientHandShakeRequest(t)
+			for _, line := range testCase.lines {
+				request.Header.Add("Sec-WebSocket-Protocol", line)
+			}
+			if got := RequestSubprotocols(request); !slices.Equal(got, testCase.want) {
+				t.Errorf("RequestSubprotocols = %q, want %q", got, testCase.want)
+			}
+		})
+	}
 }
 
 func TestValidateHandShakeRequest(t *testing.T) {
@@ -274,7 +419,7 @@ func TestValidateHandShakeRequest(t *testing.T) {
 		}
 	})
 
-	// 4.1 asks for the token, not the whole field: a client behind a proxy
+	// 4.2.1 asks for the token, not the whole field: a client behind a proxy
 	// sends "keep-alive, Upgrade" and is conforming.
 	t.Run("Connection and Upgrade are read as token lists", func(t *testing.T) {
 		lists := []string{"keep-alive, Upgrade", "Upgrade, keep-alive", "Keep-Alive,upgrade"}

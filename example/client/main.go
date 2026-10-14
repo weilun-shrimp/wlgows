@@ -73,12 +73,27 @@ func main() {
 	}
 	defer netConn.Close()
 
+	// Subprotocols (RFC 6455 4.1). To offer chat.v2 and require the server to
+	// pick it, uncomment this line and the check after the handshake. A list
+	// goes in one header: "chat.v2, chat.v1".
+	// req.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
+
 	r := bufio.NewReader(netConn)
 	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
 	}
+
+	// The server answers with one value or none. A value never offered already
+	// failed the handshake above (4.1). Change the _ above to resp to use this.
+	// An empty answer means the server picked none. The connection is open, so
+	// start the closing handshake with a close frame before returning (7.1.2).
+	// if resp.Header.Get("Sec-WebSocket-Protocol") != "chat.v2" {
+	// 	fmt.Println("server did not pick chat.v2")
+	// 	conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.ClosePolicyViolation, Reason: "subprotocol chat.v2 required"})
+	// 	return
+	// }
 	fmt.Println("Client with server handshaked. Type a line to send it, or \"exit\" to quit.")
 
 	// Closed once, by whichever side finishes first: the reader when the server
@@ -95,6 +110,7 @@ func main() {
 	// SetConfig replaces all of it, so start from what the standard hooks left.
 	config := listener.GetConfig()
 	config.MaxDataFramesSize = maxDataFramesSize
+	config.MaxFrameSize = maxDataFramesSize            // one frame may carry the whole message
 	config.MaxDataFrameCount = maxDataFramesSize / 256 // fragments of 256 bytes or more
 	config.FrameReadTimeout = frameReadTimeout
 
@@ -108,8 +124,13 @@ func main() {
 	// The standard close hook answers and pauses; this only reports first.
 	standardClose := config.Close
 	config.Close = func(f *wlgows.Frame) {
-		payload, _ := f.GetClosePayload() // already validated by the Listener
-		fmt.Printf("closed by server: %+v\n", payload)
+		// 5.5.1: a client must not show the reason to its user, so only the
+		// code. No body means no code, which 7.1.5 records as 1005.
+		code := uint16(1005)
+		if payload, _ := f.GetClosePayload(); payload != nil { // already validated
+			code = payload.StatusCode
+		}
+		fmt.Printf("closed by server: code %d\n", code)
 
 		standardClose(f)
 	}
@@ -123,7 +144,8 @@ func main() {
 	go func() { // read from the server
 		defer stop()
 
-		// nil means PauseListen(nil) — the close or unknown hook above.
+		// nil means PauseListen(nil) — the close hook above. The unknown hook
+		// pauses with ErrReservedOpcode.
 		if err := listener.Listen(); err != nil {
 			if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 				conn.SendClose(payload)
@@ -141,8 +163,8 @@ func main() {
 				return
 			}
 			if input == "exit" {
-				// 7.1.1: a client sends close and waits for the server to close
-				// the socket. So this goroutine steps back without stopping
+				// 5.5.1, 7.1.2: a client sends close and waits for the server's
+				// close frame. So this goroutine steps back without stopping
 				// anything — the server's reply reaches the Close hook, which
 				// pauses the reader, and that is what ends the program.
 				conn.SendClose(&wlgows.ClosePayload{

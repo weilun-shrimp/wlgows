@@ -120,15 +120,16 @@ func fixedRandRead(pattern ...byte) func(data []byte) (int, error) {
 	}
 }
 
-// fakeGetFrameFromReaderBufioReader runs peek and discard, so a test can
-// script the header and record each call. Set the ones the test reaches. Read
-// is never called, since getFrameFromReader reads the payload through
-// di.ioReadFull.
-type fakeGetFrameFromReaderBufioReader struct {
+// fakeGetFrameHeaderFromReaderBufioReader runs peek and discard, so a test can
+// script the header and record each call. Set the ones the test reaches.
+type fakeGetFrameHeaderFromReaderBufioReader struct {
 	peek    func(n int) ([]byte, error)
 	discard func(n int) (int, error)
 }
 
-func (reader fakeGetFrameFromReaderBufioReader) Peek(n int) ([]byte, error)    { return reader.peek(n) }
-func (reader fakeGetFrameFromReaderBufioReader) Discard(n int) (int, error)    { return reader.discard(n) }
-func (reader fakeGetFrameFromReaderBufioReader) Read(data []byte) (int, error) { return 0, io.EOF }
+func (reader fakeGetFrameHeaderFromReaderBufioReader) Peek(n int) ([]byte, error) {
+	return reader.peek(n)
+}
+func (reader fakeGetFrameHeaderFromReaderBufioReader) Discard(n int) (int, error) {
+	return reader.discard(n)
+}

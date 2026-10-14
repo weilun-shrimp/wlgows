@@ -46,7 +46,8 @@ func (w *ResponseWriter) WriteHeader(statusCode int) {
 }
 
 /*
-Sets Content-Length when it is not set, except on 1xx, 204 and 304 (RFC 7230 3.3.2).
+Sets Content-Length when it is not set, except on 1xx and 204, which RFC 7230
+3.3.2 forbids, and 304.
 
 Sets Content-Type to text/plain when the body is not empty and Content-Type is not set.
 
@@ -72,11 +73,6 @@ func (w *ResponseWriter) GenerateResponse() *http.Response {
 	return response
 }
 
-/*
-Set the ResponseWriter appropriate status code and body by error_type
-
-empty error type means valid request, will put 101 for websocket
-*/
 // DeclineByError picks the status a failed handshake should answer with.
 // errors.Is unwraps, so an error carrying context still routes on the sentinel
 // it wraps; anything unrecognised is a 500.
@@ -113,16 +109,12 @@ func (w *ResponseWriter) DeclineByError(err error) {
 func (w *ResponseWriter) UpgradeForWebsocket(sec_websocket_key string) {
 	w.WriteHeader(http.StatusSwitchingProtocols)
 	for k, v := range map[string]string{
-		"Upgrade":               "websocket",
-		"Connection":            "Upgrade",
-		"Sec-WebSocket-Version": "13",
-		"Sec-WebSocket-Accept":  w.di.generateSecWebsocketAccept(sec_websocket_key),
+		"Upgrade":              "websocket",
+		"Connection":           "Upgrade",
+		"Sec-WebSocket-Accept": w.di.generateSecWebsocketAccept(sec_websocket_key),
 	} {
 		w.Header().Add(k, v)
 	}
-	// if val, ok := c.ClientInfo.Headers["Sec-WebSocket-Protocol"]; ok && val != "" { // Protocol 可以自己定義，自己做溝通用
-	// 	c.ServerInfo.Header.Add("Sec-WebSocket-Protocol", val)
-	// }
 }
 
 func GenerateSecWebsocketAccept(sec_websocket_key string) string {

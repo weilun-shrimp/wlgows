@@ -177,8 +177,9 @@ func TestResponseWriterDeclineByError(t *testing.T) {
 }
 
 /*
-4.4 asks a 426 to name the versions the server does speak, so a client on an
-older draft learns what to retry with instead of guessing. The status alone
+4.2.2 suggests 426 for a bad version, and 4.4 asks it to name the versions the
+server does speak, so a client on an older draft learns what to retry with
+instead of guessing. The status alone
 would leave it no better off.
 */
 func TestResponseWriterDeclineByErrorVersionNamesThirteen(t *testing.T) {
@@ -216,15 +217,18 @@ func TestResponseWriterUpgradeForWebsocket(t *testing.T) {
 		t.Errorf("statusCode = %d, want 101", writer.statusCode)
 	}
 	want := map[string]string{
-		"Upgrade":               "websocket",
-		"Connection":            "Upgrade",
-		"Sec-Websocket-Version": "13",
-		"Sec-Websocket-Accept":  "ACCEPT(the-key)",
+		"Upgrade":              "websocket",
+		"Connection":           "Upgrade",
+		"Sec-Websocket-Accept": "ACCEPT(the-key)",
 	}
 	for headerKey, wantValue := range want {
 		if got := writer.Header().Get(headerKey); got != wantValue {
 			t.Errorf("header %s = %q, want %q", headerKey, got, wantValue)
 		}
+	}
+	// RFC 6455 4.2.2 sends the version back only when refusing it.
+	if _, ok := writer.Header()["Sec-Websocket-Version"]; ok {
+		t.Errorf("header Sec-Websocket-Version = %q, want none on a 101", writer.Header().Get("Sec-Websocket-Version"))
 	}
 }
 

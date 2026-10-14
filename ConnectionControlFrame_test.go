@@ -43,7 +43,7 @@ func TestSendClose(t *testing.T) {
 		}
 	})
 
-	// 7.1.5: a close may carry no body at all.
+	// 5.5.1: a close may carry no body at all.
 	t.Run("a nil payload builds a close with no body", func(t *testing.T) {
 		var configs []NewControlFrameConfig
 		di := base_di()
@@ -96,7 +96,7 @@ func TestSendPing(t *testing.T) {
 		}
 	}
 
-	// 5.5.2: the pong must echo this payload, so it goes in as given.
+	// 5.5.3: the pong must echo this payload, so it goes in as given.
 	t.Run("builds a ping from the payload and sends it", func(t *testing.T) {
 		payloadData := []byte("hb")
 		var configs []NewControlFrameConfig

@@ -7,50 +7,14 @@ import (
 )
 
 /*
-nextFrameByteLimit is what the next frame may declare. One number serves both
-classes, because the opcode is not known until the frame has been read: data
-frames get whatever is left of MaxDataFramesSize, control frames get their
-RFC 6455 5.5 allowance of 125 whatever is left.
-*/
-func TestListenerNextFrameByteLimit(t *testing.T) {
-	tests := []struct {
-		name                  string
-		maxDataFramesSize     uint64
-		currentDataFramesSize uint64
-		want                  uint64
-	}{
-		{"no limit", 0, 0, 0},
-		{"nothing spent", 1000, 0, 1000},
-		{"partly spent", 1000, 30, 970},
-		// Below the control allowance the floor takes over, or a ping arriving
-		// late in a large message would be refused for being 125 bytes.
-		{"remainder under the floor", 1000, 900, ControlFramePayloadMaxByteLength},
-		{"exactly spent", 1000, 1000, ControlFramePayloadMaxByteLength},
-		// Pausing mid message and lowering MaxDataFramesSize leaves
-		// currentDataFramesSize above it. An unguarded uint64 subtraction would
-		// wrap to ~1.8e19 and hand back a limit larger than the one just set.
-		{"overspent", 1000, 5000, ControlFramePayloadMaxByteLength},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			l := &Listener{configLocker: &sync.Mutex{}, currentDataFramesSize: testCase.currentDataFramesSize}
-			l.config.MaxDataFramesSize = testCase.maxDataFramesSize
-
-			if got := l.nextFrameByteLimit(); got != testCase.want {
-				t.Errorf("nextFrameByteLimit() = %d, want %d", got, testCase.want)
-			}
-		})
-	}
-}
-
-/*
-validateFrame refuses a frame that is malformed on its own terms. Every rule is
-a MUST in RFC 6455, and the caller answers all of them with close code 1002.
+validateFrameHeader refuses a frame by its header, before its payload is read.
+Every rule is a MUST in RFC 6455, answered with close code 1002; the limits are
+the Listener's own, answered with 1009.
 
 PeerIsClient is false throughout except where masking is the subject, so the
 unmasked frames these build are the ones a server peer would send.
 */
-func TestListenerValidateFrame(t *testing.T) {
+func TestListenerValidateFrameHeader(t *testing.T) {
 	// 5.2: the reserved bits belong to negotiated extensions, and none is.
 	t.Run("RSV bits", func(t *testing.T) {
 		for name, frame := range map[string]*Frame{
@@ -59,7 +23,7 @@ func TestListenerValidateFrame(t *testing.T) {
 			"RSV3": {Opcode: OpcodePing, FIN: true, RSV3: true},
 		} {
 			t.Run(name, func(t *testing.T) {
-				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrame(frame); !errors.Is(err, ErrReservedBitsSet) {
+				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrameHeader(frame); !errors.Is(err, ErrReservedBitsSet) {
 					t.Errorf("err = %v, want ErrReservedBitsSet", err)
 				}
 			})
@@ -84,7 +48,7 @@ func TestListenerValidateFrame(t *testing.T) {
 				l := &Listener{configLocker: &sync.Mutex{}}
 				l.config.PeerIsClient = testCase.peerIsClient
 
-				err := l.validateFrame(&Frame{Opcode: OpcodePing, FIN: true, Mask: testCase.mask})
+				err := l.validateFrameHeader(&Frame{Opcode: OpcodePing, FIN: true, Mask: testCase.mask})
 				if !errors.Is(err, testCase.want) {
 					t.Errorf("err = %v, want %v", err, testCase.want)
 				}
@@ -102,34 +66,76 @@ func TestListenerValidateFrame(t *testing.T) {
 			{"ok", &Frame{Opcode: OpcodePing, FIN: true}, nil},
 			{"fragmented", &Frame{Opcode: OpcodePing}, ErrControlFrameFragmented},
 			{
-				"126 bytes",
-				&Frame{Opcode: OpcodePing, FIN: true, PayloadData: make([]byte, 126)},
-				ErrControlFramePayloadTooLong,
+				"125 bytes",
+				&Frame{Opcode: OpcodePing, FIN: true, PayloadLength: 125},
+				nil,
 			},
 			{
-				"125 bytes",
-				&Frame{Opcode: OpcodePing, FIN: true, PayloadData: make([]byte, 125)},
-				nil,
+				"126 bytes",
+				&Frame{Opcode: OpcodePing, FIN: true, PayloadLength: 126, ExtendedPayloadLength: 126},
+				ErrControlFramePayloadTooLong,
 			},
 		}
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
-				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrame(testCase.frame); !errors.Is(err, testCase.want) {
+				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrameHeader(testCase.frame); !errors.Is(err, testCase.want) {
 					t.Errorf("err = %v, want %v", err, testCase.want)
 				}
 			})
 		}
 	})
 
-	// A reserved opcode carries no rule to check against, so it passes through
-	// to Unknown untouched — including the fragmentation and size rules that
-	// would apply if we claimed to know which class it was.
+	// 5.2: a reserved opcode goes to the Unknown hook, so only MaxFrameSize
+	// applies — not the fragment order, the message budget or the frame count,
+	// since it never joins a message. Its header here is 2 bytes.
 	t.Run("reserved opcodes", func(t *testing.T) {
-		for _, opcode := range []byte{0x3, 0x7, 0xB, 0xF} {
-			frame := &Frame{Opcode: opcode, PayloadData: make([]byte, 200)}
-			if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrame(frame); err != nil {
-				t.Errorf("opcode %#x: err = %v, want nil", opcode, err)
-			}
+		tests := []struct {
+			name         string
+			maxFrameSize uint64
+			frame        *Frame
+			want         error
+		}{
+			{
+				name:  "passes with no limit",
+				frame: &Frame{Opcode: 0x3, PayloadLength: 100},
+				want:  nil,
+			},
+			// MaxDataFramesSize does not bound it, so with no MaxFrameSize it
+			// passes whatever it declares.
+			{
+				name:  "passes any size when MaxFrameSize is 0",
+				frame: &Frame{Opcode: 0x3, PayloadLength: 127, ExtendedPayloadLength: 1 << 40},
+				want:  nil,
+			},
+			{
+				name:         "passes exactly at MaxFrameSize",
+				maxFrameSize: 102,
+				frame:        &Frame{Opcode: 0xB, FIN: true, PayloadLength: 100},
+				want:         nil,
+			},
+			{
+				name:         "refused one byte over MaxFrameSize",
+				maxFrameSize: 101,
+				frame:        &Frame{Opcode: 0xF, FIN: true, PayloadLength: 100},
+				want:         ErrFrameByteLengthExceeded,
+			},
+		}
+		for _, testCase := range tests {
+			t.Run(testCase.name, func(t *testing.T) {
+				// A message open with its budget spent: neither may touch a
+				// reserved opcode.
+				listener := &Listener{configLocker: &sync.Mutex{}, currentDataFrameCount: 1, currentDataFramesSize: 10}
+				listener.config.MaxFrameSize = testCase.maxFrameSize
+				listener.config.MaxDataFramesSize = 10
+				listener.config.MaxDataFrameCount = 1
+
+				if err := listener.validateFrameHeader(testCase.frame); !errors.Is(err, testCase.want) {
+					t.Errorf("err = %v, want %v", err, testCase.want)
+				}
+				if listener.currentDataFrameCount != 1 || listener.currentDataFramesSize != 10 {
+					t.Error("a reserved opcode must not touch the message being assembled")
+				}
+			})
 		}
 	})
 
@@ -160,8 +166,131 @@ func TestListenerValidateFrame(t *testing.T) {
 			t.Run(testCase.name, func(t *testing.T) {
 				l := &Listener{configLocker: &sync.Mutex{}, currentDataFrameCount: testCase.currentDataFrameCount}
 
-				if err := l.validateFrame(testCase.frame); !errors.Is(err, testCase.want) {
+				if err := l.validateFrameHeader(testCase.frame); !errors.Is(err, testCase.want) {
 					t.Errorf("err = %v, want %v", err, testCase.want)
+				}
+			})
+		}
+	})
+
+	/*
+		10.4: the limits are judged from the header. Every frame here is
+		unmasked with a 7 bit length, so its header is 2 bytes. A message over a
+		limit can never complete, so its state is reset.
+	*/
+	t.Run("limits", func(t *testing.T) {
+		tests := []struct {
+			name                  string
+			maxFrameSize          uint64
+			maxDataFramesSize     uint64
+			maxDataFrameCount     uint64
+			currentDataFrameCount uint64
+			currentDataFramesSize uint64
+			frame                 *Frame
+			want                  error
+		}{
+			{
+				name:  "no limits",
+				frame: &Frame{Opcode: OpcodeText, PayloadLength: 125},
+				want:  nil,
+			},
+			{
+				name:         "a frame exactly at MaxFrameSize, header included",
+				maxFrameSize: 102,
+				frame:        &Frame{Opcode: OpcodeText, PayloadLength: 100},
+				want:         nil,
+			},
+			{
+				name:         "a frame one byte over MaxFrameSize because of its header",
+				maxFrameSize: 101,
+				frame:        &Frame{Opcode: OpcodeText, PayloadLength: 100},
+				want:         ErrFrameByteLengthExceeded,
+			},
+			{
+				name:                  "a frame exactly filling MaxDataFramesSize",
+				maxDataFramesSize:     100,
+				currentDataFrameCount: 1,
+				currentDataFramesSize: 50,
+				frame:                 &Frame{Opcode: OpcodeContinuation, PayloadLength: 48},
+				want:                  nil,
+			},
+			{
+				name:                  "a frame one byte over MaxDataFramesSize",
+				maxDataFramesSize:     100,
+				currentDataFrameCount: 1,
+				currentDataFramesSize: 50,
+				frame:                 &Frame{Opcode: OpcodeContinuation, PayloadLength: 49},
+				want:                  ErrFrameByteLengthExceeded,
+			},
+			{
+				name:                  "an empty frame still spends its header",
+				maxDataFramesSize:     100,
+				currentDataFrameCount: 1,
+				currentDataFramesSize: 99,
+				frame:                 &Frame{Opcode: OpcodeContinuation},
+				want:                  ErrFrameByteLengthExceeded,
+			},
+			// Pausing mid message and lowering MaxDataFramesSize leaves the
+			// message over it. An unguarded uint64 subtraction would wrap.
+			{
+				name:                  "a message already over a lowered MaxDataFramesSize",
+				maxDataFramesSize:     100,
+				currentDataFrameCount: 1,
+				currentDataFramesSize: 500,
+				frame:                 &Frame{Opcode: OpcodeContinuation},
+				want:                  ErrFrameByteLengthExceeded,
+			},
+			{
+				name:                  "the last frame MaxDataFrameCount allows",
+				maxDataFrameCount:     3,
+				currentDataFrameCount: 2,
+				frame:                 &Frame{Opcode: OpcodeContinuation},
+				want:                  nil,
+			},
+			{
+				name:                  "one frame over MaxDataFrameCount",
+				maxDataFrameCount:     3,
+				currentDataFrameCount: 3,
+				frame:                 &Frame{Opcode: OpcodeContinuation},
+				want:                  ErrDataFrameCountExceeded,
+			},
+			// A control frame has its own fixed cap of 125, not these limits.
+			{
+				name:                  "a ping under every limit",
+				maxFrameSize:          10,
+				maxDataFramesSize:     10,
+				maxDataFrameCount:     1,
+				currentDataFrameCount: 1,
+				currentDataFramesSize: 10,
+				frame:                 &Frame{Opcode: OpcodePing, FIN: true, PayloadLength: 100},
+				want:                  nil,
+			},
+		}
+		for _, testCase := range tests {
+			t.Run(testCase.name, func(t *testing.T) {
+				listener := &Listener{
+					configLocker:          &sync.Mutex{},
+					currentDataFrames:     DataFrames{},
+					currentDataFrameCount: testCase.currentDataFrameCount,
+					currentDataFramesSize: testCase.currentDataFramesSize,
+				}
+				listener.config.MaxFrameSize = testCase.maxFrameSize
+				listener.config.MaxDataFramesSize = testCase.maxDataFramesSize
+				listener.config.MaxDataFrameCount = testCase.maxDataFrameCount
+
+				err := listener.validateFrameHeader(testCase.frame)
+				if !errors.Is(err, testCase.want) {
+					t.Errorf("err = %v, want %v", err, testCase.want)
+				}
+				// A refused message is dropped; an allowed frame leaves the state alone.
+				refused := testCase.want != nil
+				if refused && (listener.currentDataFrameCount != 0 || listener.currentDataFramesSize != 0) {
+					t.Errorf("currentDataFrameCount=%d currentDataFramesSize=%d after a refusal, want 0 and 0",
+						listener.currentDataFrameCount, listener.currentDataFramesSize)
+				}
+				if !refused && (listener.currentDataFrameCount != testCase.currentDataFrameCount ||
+					listener.currentDataFramesSize != testCase.currentDataFramesSize) {
+					t.Error("an allowed frame must not change the totals; routeFrame spends them")
 				}
 			})
 		}
