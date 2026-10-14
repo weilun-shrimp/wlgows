@@ -2,8 +2,10 @@
 
 # WLGOWS
 
-A simple, intuitive and powerful WebSocket library for Go. It is quick to start
-with, and it does not hide how WebSocket works.
+A simple, intuitive, powerful and fast WebSocket library for Go: zero
+allocations on send, and faster than gorilla/websocket almost everywhere
+([benchmarks](./BENCHMARK_COMPARISON.md)).
+It is quick to start with, and it does not hide how WebSocket works.
 
 The Quick Start below is a working echo server. `conn.NewStandardListener()`
 answers ping, pong and close for you. When you need more, you can stream a

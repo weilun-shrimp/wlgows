@@ -2,8 +2,9 @@
 
 # WLGOWS
 
-一個簡單、直覺且強大的 Go WebSocket 函式庫。容易上手，也不隱藏 WebSocket 的
-運作方式。
+一個簡單、直覺、強大且快速的 Go WebSocket 函式庫：送出時零配置，幾乎每項都比
+gorilla/websocket 快（[benchmark](./BENCHMARK_COMPARISON.zh-TW.md)）。容易上手，
+也不隱藏 WebSocket 的運作方式。
 
 下方的 Quick Start 是一個能執行的 echo server。`conn.NewStandardListener()` 會替你
 處理 ping、pong 與 close。需要更多時，你可以串流比記憶體還大的 message、自己處理
