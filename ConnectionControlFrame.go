@@ -17,8 +17,11 @@ Sending close does not close the socket. The RFC handshake is to send this, wait
 for the peer's close frame, then Close — a server at once, a client preferably
 after the server closes the TCP connection (5.5.1, 7.1.1).
 
-Status codes 1005, 1006 and 1015 must never be sent (7.4.1), and Reason must be
-UTF-8 (5.5.1). Neither is checked here.
+A payload the Listener would refuse from the peer is refused here too, with
+nothing written. ErrInvalidCloseStatusCode is a code that may not be sent: 1005,
+1006 or 1015 (RFC 6455 7.4.1), the reserved 1004, or one outside the registered
+and 3000-4999 ranges (7.4.2). ErrInvalidUTF8 is a Reason that is not UTF-8
+(5.5.1).
 */
 func (c *Conn) SendClose(payload *ClosePayload) error {
 	return sendClose(payload, sendCloseDI{

@@ -130,7 +130,7 @@ func TestValidateSendFrame(t *testing.T) {
 		{"text", OpcodeText, 5, false, nil},
 		{"binary", OpcodeBinary, 5, false, nil},
 		{"continuation", OpcodeContinuation, 5, false, nil},
-		{"close", OpcodeClose, 5, false, nil},
+		{"close with no body", OpcodeClose, 0, false, nil},
 		{"ping", OpcodePing, 5, false, nil},
 		{"pong", OpcodePong, 5, false, nil},
 		// 5.5: 125 bytes is the control cap; data frames have none.
@@ -152,6 +152,39 @@ func TestValidateSendFrame(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := &Frame{Opcode: testCase.opcode, PayloadData: make([]byte, testCase.payloadLength)}
+			err := validateSendFrame(f, testCase.closeSent)
+			if !errors.Is(err, testCase.want) {
+				t.Errorf("validateSendFrame = %v, want %v", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestValidateSendFrameClosePayload(t *testing.T) {
+	tooLong := append((&ClosePayload{StatusCode: CloseNormalClosure}).Bytes(), make([]byte, 124)...)
+	tooLong[len(tooLong)-1] = 0xff
+	for _, testCase := range []struct {
+		name      string
+		payload   []byte
+		closeSent bool
+		want      error
+	}{
+		{"no body", nil, false, nil},
+		{"code and reason", (&ClosePayload{StatusCode: CloseGoingAway, Reason: "bye"}).Bytes(), false, nil},
+		// 7.4.1 forbids sending 1005, 1006 and 1015, and 7.4.2 leaves 0-999 unused.
+		{"code 1005", (&ClosePayload{StatusCode: 1005}).Bytes(), false, ErrInvalidCloseStatusCode},
+		{"code 1006", (&ClosePayload{StatusCode: 1006}).Bytes(), false, ErrInvalidCloseStatusCode},
+		{"code 1015", (&ClosePayload{StatusCode: 1015}).Bytes(), false, ErrInvalidCloseStatusCode},
+		{"code 0", (&ClosePayload{StatusCode: 0}).Bytes(), false, ErrInvalidCloseStatusCode},
+		// 5.5.1: the reason is UTF-8, and one byte is half a status code.
+		{"a reason that is not UTF-8", (&ClosePayload{StatusCode: CloseNormalClosure, Reason: "\xff"}).Bytes(), false, ErrInvalidUTF8},
+		{"one byte", []byte{0x03}, false, ErrClosePayloadTooShort},
+		// The close sent and length checks come first.
+		{"second close with code 1005", (&ClosePayload{StatusCode: 1005}).Bytes(), true, ErrCloseAlreadySent},
+		{"over 125 bytes with a reason that is not UTF-8", tooLong, false, ErrControlFramePayloadTooLong},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			f := &Frame{Opcode: OpcodeClose, PayloadData: testCase.payload}
 			err := validateSendFrame(f, testCase.closeSent)
 			if !errors.Is(err, testCase.want) {
 				t.Errorf("validateSendFrame = %v, want %v", err, testCase.want)

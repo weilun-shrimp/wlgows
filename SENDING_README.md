@@ -346,7 +346,8 @@ Receiving has the same trick the other way round: see
 |---|---|
 | `ErrCloseAlreadySent` | A close has gone out, and RFC 6455 allows no data frame after one (5.5.1), and the closing handshake is one close each way (1.4, 7.1.5). Nothing of this frame was sent. A ping or pong is never refused for this. |
 | `ErrControlFramePayloadTooLong` | A close, ping or pong payload over 125 bytes (5.5). Nothing was sent. |
-| `ErrInvalidUTF8` | `SendText` got invalid UTF-8. Nothing was sent. |
+| `ErrInvalidUTF8` | `SendText` got invalid UTF-8, or `SendClose` got a `Reason` that is not UTF-8 (5.5.1). Nothing was sent. |
+| `ErrInvalidCloseStatusCode` | `SendClose` got a status code that may not be sent, such as 1005, 1006 or 1015 (7.4.1), the reserved 1004, or one outside the registered and 3000-4999 ranges (7.4.2). Nothing was sent. |
 | `ErrNotDataFrameOpcode`, `ErrContinuationFrameWithoutMsg` | `Start` or `SendData` got an opcode that cannot open a message. Nothing was locked. |
 | `ErrLongDataTransmissionNotStarted` | `TransmitData` or `End` with no transmission open. |
 | Anything else | A masking key could not be drawn, or the socket write failed. |
@@ -396,8 +397,9 @@ or write parked on a dead peer.
 ## Control frames and your own frames
 
 `SendClose`, `SendPing` and `SendPong` send one control frame each, flushed
-before they return. RFC 6455 caps a control payload at 125 bytes (5.5). Only one
-close goes out; a ping or pong still goes out after it (5.5.2). For pinging on
+before they return. RFC 6455 caps a control payload at 125 bytes (5.5). A close
+code that may not be sent, or a `Reason` that is not UTF-8, is refused (7.4,
+5.5.1). Only one close goes out; a ping or pong still goes out after it (5.5.2). For pinging on
 an interval, see [Pinging on an interval](#pinging-on-an-interval).
 
 `SendFrame` writes a frame you built with `NewFrame`, flushed before it returns.
@@ -406,8 +408,9 @@ It settles what the `Conn` knows and leaves the rest to you:
 - **Settled, in your frame:** `Mask` and a fresh `MaskingKey` on every send from
   a client (5.1, 5.3), the length fields from `len(PayloadData)`, and FIN on a
   close, ping or pong (5.5). So your frame is modified. `PayloadData` never is.
-- **Refused, with nothing written:** a control payload over 125 bytes, and a data
-  frame or second close after this side's close.
+- **Refused, with nothing written:** a control payload over 125 bytes, a data
+  frame or second close after this side's close, and a close payload `SendClose`
+  refuses.
 - **Yours:** the order of a fragmented message (5.4), keeping other senders out
   of it, the opcode and the RSV bits, which go out as you set them.
 

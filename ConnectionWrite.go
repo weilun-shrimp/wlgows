@@ -48,8 +48,9 @@ func bufferedWriteFrame(f *Frame, di bufferedWriteFrameDI) error {
 }
 
 // validateSendFrame refuses a frame that must not be sent: a data frame or a
-// second close after this side's close (5.5.1), or a control frame payload
-// over 125 bytes (5.5).
+// second close after this side's close (5.5.1), a control frame payload over
+// 125 bytes (5.5), or a close payload the Listener would refuse from the peer
+// (5.5.1, 7.4).
 func validateSendFrame(f *Frame, closeSent bool) error {
 	if closeSent && (IsDataOpcode(f.Opcode) || f.Opcode == OpcodeClose) {
 		return ErrCloseAlreadySent
@@ -57,6 +58,9 @@ func validateSendFrame(f *Frame, closeSent bool) error {
 	if IsControlOpcode(f.Opcode) && len(f.PayloadData) > ControlFramePayloadMaxByteLength {
 		return fmt.Errorf("control frame payload is %d bytes: %w",
 			len(f.PayloadData), ErrControlFramePayloadTooLong)
+	}
+	if f.Opcode == OpcodeClose {
+		return validateClosePayload(f.PayloadData)
 	}
 	return nil
 }
@@ -143,8 +147,9 @@ send from the Conn's side (5.1, 5.3), the length fields from len(PayloadData),
 and FIN on a close, ping or pong (5.5). PayloadData is never modified.
 
 Refused with nothing written: a control payload over 125 bytes
-(ErrControlFramePayloadTooLong), and a data frame or second close after this
-side's close (ErrCloseAlreadySent).
+(ErrControlFramePayloadTooLong), a data frame or second close after this
+side's close (ErrCloseAlreadySent), and a close payload SendClose refuses
+(ErrInvalidCloseStatusCode, ErrInvalidUTF8, ErrClosePayloadTooShort).
 */
 func (c *Conn) SendFrame(f *Frame) error {
 	c.di.writeLocker.Lock()

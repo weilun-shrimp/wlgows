@@ -89,7 +89,7 @@ var (
 	// after the first must carry opcode 0 — answer with close code 1002.
 	ErrDataFrameDuringMsg = errors.New("data frame arrived while a message was still being assembled")
 
-	// ErrInvalidUTF8 is a text message payload that is not valid UTF-8. RFC
+	// ErrInvalidUTF8 is a text payload that is not valid UTF-8. RFC
 	// 6455 5.6 makes a text message UTF-8 as a whole, and 8.1 requires failing
 	// the connection when it is not.
 	//
@@ -98,13 +98,15 @@ var (
 	// message was refused before it reached the socket.
 	//
 	// Listen also returns it for a close frame whose reason is not UTF-8 (5.5.1,
-	// 8.1).
-	ErrInvalidUTF8 = errors.New("text message payload is not valid UTF-8")
+	// 8.1), and SendClose or SendFrame for such a reason, with nothing sent.
+	ErrInvalidUTF8 = errors.New("payload is not valid UTF-8")
 
 	// ErrInvalidCloseStatusCode is a close frame whose status code is local only
 	// (1005, 1006, 1015: RFC 6455 7.4.1 forbids sending them), unused (0-999),
 	// reserved with no meaning (1004), not registered in 1000-2999 (7.4.2,
 	// IANA), or above 4999 — answer with close code 1002.
+	//
+	// SendClose or SendFrame also returns it for such a code, with nothing sent.
 	ErrInvalidCloseStatusCode = errors.New("close frame status code is not one the RFC allows on the wire")
 
 	// ErrDataFrameCountExceeded is a message arriving in more frames than

@@ -323,7 +323,8 @@ err := conn.SendText(payload, 0)
 |---|---|
 | `ErrCloseAlreadySent` | close 已經送出，而 RFC 6455 不允許在 close 之後送出 data frame（5.5.1），closing handshake 每個方向也只有一個 close（1.4、7.1.5）。這個 frame 的任何部分都沒有送出。ping 或 pong 從不因此被拒絕。 |
 | `ErrControlFramePayloadTooLong` | close、ping 或 pong 的 payload 超過 125 byte（5.5）。什麼都沒有送出。 |
-| `ErrInvalidUTF8` | `SendText` 收到無效的 UTF-8。什麼都沒有送出。 |
+| `ErrInvalidUTF8` | `SendText` 收到無效的 UTF-8，或 `SendClose` 的 `Reason` 不是 UTF-8（5.5.1）。什麼都沒有送出。 |
+| `ErrInvalidCloseStatusCode` | `SendClose` 收到不能送出的 status code，例如 1005、1006 或 1015（7.4.1）、保留的 1004，或不在已註冊範圍與 3000-4999 之內的 code（7.4.2）。什麼都沒有送出。 |
 | `ErrNotDataFrameOpcode`、`ErrContinuationFrameWithoutMsg` | `Start` 或 `SendData` 收到一個無法開啟 message 的 opcode。沒有取得任何 lock。 |
 | `ErrLongDataTransmissionNotStarted` | 在沒有開啟 transmission 時呼叫了 `TransmitData` 或 `End`。 |
 | 其他 | 無法取得 masking key，或 socket 寫入失敗。 |
@@ -367,7 +368,8 @@ control frame 只取得 `writeLocker`，所以能插在長 message 的 fragment 
 ## Control frame 與自訂 frame
 
 `SendClose`、`SendPing` 與 `SendPong` 各送出一個 control frame，回傳前就已 flush。
-RFC 6455 規定 control frame 的 payload 最多 125 byte（5.5）。close 只會送出一次；
+RFC 6455 規定 control frame 的 payload 最多 125 byte（5.5）。不能送出的 close code，
+或不是 UTF-8 的 `Reason`，會被拒絕（7.4、5.5.1）。close 只會送出一次；
 在它之後 ping 或 pong 仍然會送出（5.5.2）。若要定期發送 ping，見
 [定期送出 ping](#定期送出-ping)。
 
@@ -377,8 +379,8 @@ RFC 6455 規定 control frame 的 payload 最多 125 byte（5.5）。close 只�
 - **替你設定，直接改在你的 frame 上：** client 每次傳送都會設定 `Mask` 與一把新的
   `MaskingKey`（5.1、5.3），length 欄位依 `len(PayloadData)` 設定，close、ping 或
   pong 會設上 FIN（5.5）。所以你的 frame 會被修改，但 `PayloadData` 從不會。
-- **拒絕，且什麼都不寫出：** 超過 125 byte 的 control payload，以及在這一端送出
-  close 之後的 data frame 或第二個 close。
+- **拒絕，且什麼都不寫出：** 超過 125 byte 的 control payload、在這一端送出
+  close 之後的 data frame 或第二個 close，以及 `SendClose` 會拒絕的 close payload。
 - **你的責任：** 分段 message 的順序（5.4）、不讓其他傳送者插進來，以及 opcode 與
   RSV bit，它們會照你設定的樣子送出。
 
