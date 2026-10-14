@@ -403,6 +403,46 @@ func TestRequestSubprotocols(t *testing.T) {
 	}
 }
 
+// The byte set is httpguts.ValidHostHeader's, so each case here is one net/http's
+// server also accepts or refuses — except empty, which it lets through.
+func TestValidHost(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want bool
+	}{
+		{"empty", "", false},
+		{"a name", "example.com", true},
+		{"a name and port", "example.com:8080", true},
+		{"IPv4", "127.0.0.1", true},
+		{"IPv4 and port", "127.0.0.1:8001", true},
+		{"IPv6", "[::1]", true},
+		{"IPv6 and port", "[::1]:8001", true},
+		{"IPv6 with a zone", "[fe80::1%25en0]", true},
+		{"every allowed punctuation byte", "!$%&'()*+,-.:;=[]_~", true},
+		{"a space", "a b", false},
+		{"a tab", "a\tb", false},
+		{"a NUL", "example.com\x00", false},
+		{"a CR", "example.com\r", false},
+		{"DEL", "example.com\x7f", false},
+		{"userinfo", "user@example.com", false},
+		{"a path", "example.com/chat", false},
+		{"a query", "example.com?a", false},
+		{"a fragment", "example.com#a", false},
+		{"a quote", `"example.com"`, false},
+		{"a backslash", `example\com`, false},
+		{"angle brackets", "<example.com>", false},
+		{"non-ASCII", "例え.jp", false},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := validHost(testCase.host); got != testCase.want {
+				t.Errorf("validHost(%q) = %v, want %v", testCase.host, got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestValidateHandShakeRequest(t *testing.T) {
 	t.Run("accepts a well formed request", func(t *testing.T) {
 		if err := ValidateHandShakeRequest(validClientHandShakeRequest(t)); err != nil {
@@ -457,6 +497,12 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			mutate:  func(r *http.Request) { r.Proto = "HTTP/2.0" },
 			wantErr: ErrHttpProtocolOrVersionNotAllowed,
 		},
+		// Which Host values pass is TestValidHost's job; this checks the wiring.
+		{
+			name:    "missing host",
+			mutate:  func(r *http.Request) { r.Host = "" },
+			wantErr: ErrHttpHostHeaderInvalid,
+		},
 		{
 			name:    "missing websocket key",
 			mutate:  func(r *http.Request) { r.Header.Del("Sec-WebSocket-Key") },
@@ -478,6 +524,14 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			name:    "websocket key without padding",
 			mutate:  func(r *http.Request) { r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ") },
 			wantErr: ErrHttpSecWebSocketKeyInvalid,
+		},
+		// 11.3.1: once only, even when both copies are the same valid key.
+		{
+			name: "websocket key on two lines",
+			mutate: func(r *http.Request) {
+				r.Header.Add("Sec-WebSocket-Key", r.Header.Get("Sec-WebSocket-Key"))
+			},
+			wantErr: ErrHttpSecWebSocketKeyDuplicated,
 		},
 		{
 			name:    "connection header not upgrade",
@@ -512,6 +566,12 @@ func TestValidateHandShakeRequest(t *testing.T) {
 			name:    "an older draft version",
 			mutate:  func(r *http.Request) { r.Header.Set("Sec-WebSocket-Version", "8") },
 			wantErr: ErrHttpSecWebSocketVersionNotSupported,
+		},
+		// 11.3.5: once only. Malformed rather than unsupported, so 400, not 426.
+		{
+			name:    "websocket version on two lines",
+			mutate:  func(r *http.Request) { r.Header.Add("Sec-WebSocket-Version", "13") },
+			wantErr: ErrHttpSecWebSocketVersionDuplicated,
 		},
 	}
 	for _, testCase := range tests {

@@ -177,6 +177,10 @@ func TestClientHandShake(t *testing.T) {
 		subprotocolErr error
 	}{
 		{
+			name:        "a 101 that is not HTTP/1.1",
+			validateErr: fmt.Errorf("proto: %w", ErrHandshakeResponseProtoInvalid),
+		},
+		{
 			name:        "a wrong Upgrade",
 			validateErr: fmt.Errorf("upgrade: %w", ErrHandshakeResponseUpgradeHeaderInvalid),
 		},
@@ -570,7 +574,7 @@ func TestValidateHandShakeResponse(t *testing.T) {
 
 	// The server side of the same rule: a response carrying the token among
 	// others is conforming, and refusing it would fail a working connection.
-	t.Run("Connection and Upgrade are read as token lists", func(t *testing.T) {
+	t.Run("Connection is read as a token list", func(t *testing.T) {
 		response := validHandShakeResponse(key)
 		response.Header.Set("Connection", "keep-alive, Upgrade")
 		if err := ValidateHandShakeResponse(response, key); err != nil {
@@ -614,6 +618,21 @@ func TestValidateHandShakeResponse(t *testing.T) {
 			wantErr: ErrHandshakeResponseUpgradeHeaderInvalid,
 		},
 		{
+			name:    "upgrade header carries websocket among others",
+			mutate:  func(r *http.Response) { r.Header.Set("Upgrade", "websocket, h2c") },
+			wantErr: ErrHandshakeResponseUpgradeHeaderInvalid,
+		},
+		{
+			name:    "upgrade header split across two lines",
+			mutate:  func(r *http.Response) { r.Header.Add("Upgrade", "h2c") },
+			wantErr: ErrHandshakeResponseUpgradeHeaderInvalid,
+		},
+		{
+			name:    "upgrade header missing",
+			mutate:  func(r *http.Response) { r.Header.Del("Upgrade") },
+			wantErr: ErrHandshakeResponseUpgradeHeaderInvalid,
+		},
+		{
 			name:    "missing accept header",
 			mutate:  func(r *http.Response) { r.Header.Del("Sec-WebSocket-Accept") },
 			wantErr: ErrHandshakeResponseAcceptHeaderMissing,
@@ -646,6 +665,7 @@ func TestValidateHandShakeResponse(t *testing.T) {
 func TestClientMustFailConnection(t *testing.T) {
 	// Every 4.1 check answered with "Fail the WebSocket Connection".
 	fails := []error{
+		ErrHandshakeResponseProtoInvalid,
 		ErrHandshakeResponseUpgradeHeaderInvalid,
 		ErrHandshakeResponseConnectionHeaderInvalid,
 		ErrHandshakeResponseAcceptHeaderMissing,
@@ -663,7 +683,6 @@ func TestClientMustFailConnection(t *testing.T) {
 	// response checks at all.
 	others := []error{
 		ErrHandshakeResponseStatusCodeInvalid,
-		ErrHandshakeResponseProtoInvalid,
 		errors.New("an error from outside this package"),
 	}
 	for _, other := range others {

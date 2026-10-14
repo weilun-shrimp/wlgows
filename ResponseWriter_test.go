@@ -157,8 +157,11 @@ func TestResponseWriterDeclineByError(t *testing.T) {
 		{"msg formation invalid", ErrHttpMsgFormationInvalid, http.StatusBadRequest},
 		{"method not allowed", ErrHttpMethodNotAllowed, http.StatusMethodNotAllowed},
 		{"protocol not allowed", ErrHttpProtocolOrVersionNotAllowed, http.StatusHTTPVersionNotSupported},
+		{"host invalid", ErrHttpHostHeaderInvalid, http.StatusBadRequest},
 		{"websocket key not set", ErrHttpSecWebSocketKeyHeaderNotSet, http.StatusBadRequest},
 		{"websocket key invalid", ErrHttpSecWebSocketKeyInvalid, http.StatusBadRequest},
+		{"websocket key duplicated", ErrHttpSecWebSocketKeyDuplicated, http.StatusBadRequest},
+		{"websocket version duplicated", ErrHttpSecWebSocketVersionDuplicated, http.StatusBadRequest},
 		{"connection not upgrade", ErrHttpConnectionHeaderNotUpgrade, http.StatusBadRequest},
 		{"upgrade not websocket", ErrHttpUpgradeHeaderNotWebsocket, http.StatusBadRequest},
 		{"websocket version not 13", ErrHttpSecWebSocketVersionNotSupported, http.StatusUpgradeRequired},
@@ -179,16 +182,34 @@ func TestResponseWriterDeclineByError(t *testing.T) {
 /*
 4.2.2 suggests 426 for a bad version, and 4.4 asks it to name the versions the
 server does speak, so a client on an older draft learns what to retry with
-instead of guessing. The status alone
-would leave it no better off.
+instead of guessing. RFC 9110 15.5.22 and 7.8 also require a 426 to carry
+Upgrade, and Connection listing it.
 */
-func TestResponseWriterDeclineByErrorVersionNamesThirteen(t *testing.T) {
+func TestResponseWriterDeclineByErrorVersionSendsUpgradeHeaders(t *testing.T) {
 	writer := NewResponseWriter()
 
 	writer.DeclineByError(ErrHttpSecWebSocketVersionNotSupported)
 
-	if got := writer.Header().Get("Sec-WebSocket-Version"); got != "13" {
-		t.Errorf("Sec-WebSocket-Version = %q, want 13", got)
+	want := map[string]string{
+		"Sec-Websocket-Version": "13",
+		"Upgrade":               "websocket",
+		"Connection":            "Upgrade",
+	}
+	for headerKey, wantValue := range want {
+		if got := writer.Header().Get(headerKey); got != wantValue {
+			t.Errorf("header %s = %q, want %q", headerKey, got, wantValue)
+		}
+	}
+}
+
+// RFC 9110 15.5.6: a 405 must say which methods would have worked.
+func TestResponseWriterDeclineByErrorMethodSendsAllow(t *testing.T) {
+	writer := NewResponseWriter()
+
+	writer.DeclineByError(ErrHttpMethodNotAllowed)
+
+	if got := writer.Header().Get("Allow"); got != "GET" {
+		t.Errorf("Allow = %q, want GET", got)
 	}
 }
 

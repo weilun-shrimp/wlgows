@@ -124,7 +124,7 @@ say why. The other ways an answer can be wrong, each a sentinel for
 
 | Error | The answer | Closes the connection |
 |---|---|---|
-| `ErrHandshakeResponseProtoInvalid` | is not HTTP/1.1 | no |
+| `ErrHandshakeResponseProtoInvalid` | is a 101 that is not HTTP/1.1 | yes |
 | `ErrHandshakeResponseConnectionHeaderInvalid` | has no `Upgrade` token in `Connection` | yes |
 | `ErrHandshakeResponseUpgradeHeaderInvalid` | has no `websocket` token in `Upgrade` | yes |
 | `ErrHandshakeResponseAcceptHeaderMissing` | has no `Sec-WebSocket-Accept` | yes |
@@ -136,8 +136,7 @@ say why. The other ways an answer can be wrong, each a sentinel for
 "Fail the WebSocket Connection", which means close it (7.1.7). For those, the
 "yes" rows above, `ClientHandShake` closes `netConn` before it returns the
 error. The error is the report 7.1.7 allows. Every other error leaves `netConn`
-open, and closing it is yours: a failed send or read, a non-HTTP/1.1 answer,
-and a status other than 101, which 4.1 says to handle as plain HTTP, such as a
+open, and closing it is yours: a failed send or read, and a status other than 101, which 4.1 says to handle as plain HTTP, such as a
 redirect or a 401.
 
 **Unless you have a better reason not to, we recommend closing the connection on every handshake error.** After any of

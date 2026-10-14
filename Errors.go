@@ -164,6 +164,10 @@ var (
 
 	// ErrUrlHostEmpty is a url with no host to dial, or to send as Host.
 	ErrUrlHostEmpty = errors.New("url host is empty")
+
+	// ErrUrlFragmentSet is a url with a #fragment, which RFC 6455 3 forbids. A
+	// literal # belongs escaped as %23.
+	ErrUrlFragmentSet = errors.New("url has a fragment")
 )
 
 // handshake
@@ -173,9 +177,23 @@ var (
 	ErrHttpProtocolOrVersionNotAllowed = errors.New("http protocol or version not allowed")
 	ErrHttpSecWebSocketKeyHeaderNotSet = errors.New("Sec-WebSocket-Key header is not set")
 
+	// ErrHttpHostHeaderInvalid is a handshake request with no Host, or one with
+	// bytes no host can hold. RFC 6455 4.2.1 requires Host, and RFC 7230 5.4
+	// has the server answer 400.
+	ErrHttpHostHeaderInvalid = errors.New("Host header is missing or invalid")
+
 	// ErrHttpSecWebSocketKeyInvalid is a Sec-WebSocket-Key that is not base64 of
 	// 16 bytes, as RFC 6455 4.2.1 requires.
-	ErrHttpSecWebSocketKeyInvalid     = errors.New("Sec-WebSocket-Key is not base64 of 16 bytes")
+	ErrHttpSecWebSocketKeyInvalid = errors.New("Sec-WebSocket-Key is not base64 of 16 bytes")
+
+	// ErrHttpSecWebSocketKeyDuplicated is a Sec-WebSocket-Key on more than one
+	// line. RFC 6455 11.3.1 allows it once.
+	ErrHttpSecWebSocketKeyDuplicated = errors.New("Sec-WebSocket-Key appears more than once")
+
+	// ErrHttpSecWebSocketVersionDuplicated is a Sec-WebSocket-Version on more
+	// than one line. RFC 6455 11.3.5 allows it once.
+	ErrHttpSecWebSocketVersionDuplicated = errors.New("Sec-WebSocket-Version appears more than once")
+
 	ErrHttpConnectionHeaderNotUpgrade = errors.New("Connection header is not Upgrade")
 	ErrHttpUpgradeHeaderNotWebsocket  = errors.New("Upgrade header is not websocket")
 
@@ -200,7 +218,7 @@ var (
 	ErrHandshakeResponseStatusCodeInvalid       = errors.New("handshake response status code is not 101")
 	ErrHandshakeResponseProtoInvalid            = errors.New("handshake response protocol is not HTTP/1.1")
 	ErrHandshakeResponseConnectionHeaderInvalid = errors.New("handshake response Connection header does not contain the Upgrade token")
-	ErrHandshakeResponseUpgradeHeaderInvalid    = errors.New("handshake response Upgrade header does not contain the websocket token")
+	ErrHandshakeResponseUpgradeHeaderInvalid    = errors.New("handshake response Upgrade header is not websocket")
 	ErrHandshakeResponseAcceptHeaderMissing     = errors.New("handshake response Sec-WebSocket-Accept header is not set")
 	ErrHandshakeResponseAcceptHeaderMismatch    = errors.New("handshake response Sec-WebSocket-Accept header does not match the request's key")
 

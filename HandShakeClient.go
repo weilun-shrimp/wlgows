@@ -31,10 +31,11 @@ rather than wrapping c again.
 w is the returned *Conn's writer, such as bufio.NewWriter(c) — see NewConn.
 
 A response that breaks a rule RFC 6455 4.1 answers with "Fail the WebSocket
-Connection" closes c before the error returns (7.1.7): a wrong Upgrade,
-Connection, Sec-WebSocket-Accept or Sec-WebSocket-Protocol. Every other error
-leaves c open, and closing it is yours. A status other than 101 is one of them,
-since 4.1 has it handled as plain HTTP, such as a redirect or a 401.
+Connection" closes c before the error returns (7.1.7): a 101 that is not
+HTTP/1.1, or a wrong Upgrade, Connection, Sec-WebSocket-Accept or
+Sec-WebSocket-Protocol. Every other error leaves c open, and closing it is
+yours. A status other than 101 is one of them, since 4.1 has it handled as
+plain HTTP, such as a redirect or a 401.
 ClientMustFailConnection(err) tells the two apart.
 */
 func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request) (*Conn, *http.Response, error) {
@@ -184,7 +185,9 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 			ErrHandshakeResponseConnectionHeaderInvalid,
 		)
 	}
-	if !headerHasToken(res.Header, "Upgrade", "websocket") {
+	// Compared whole, not as a token list: RFC 6455 4.1 fails any value other
+	// than "websocket", so "websocket, h2c" or a second line is refused.
+	if upgrade := res.Header.Values("Upgrade"); len(upgrade) != 1 || !strings.EqualFold(strings.TrimSpace(upgrade[0]), "websocket") {
 		return fmt.Errorf(
 			"invalid handshake response header Upgrade %s: %w",
 			strings.Join(res.Header.Values("Upgrade"), ", "),
@@ -210,14 +213,17 @@ func ValidateHandShakeResponse(res *http.Response, sec_websocket_key string) err
 /*
 ClientMustFailConnection reports whether err is a response check RFC 6455
 4.1 answers with "Fail the WebSocket Connection", which means closing it
-(7.1.7). The list follows 4.1's order.
+(7.1.7). The list follows 4.1's order. A version other than HTTP/1.1 is one:
+the check runs only on a 101, and a 101 that is not a valid HTTP/1.1 upgrade
+cannot be read as one.
 
 ClientHandShake has already closed the connection for these. If you run the
 checks yourself, close it. Only for errors from the client handshake: for
 errors from Listen, see StandardClosePayloadFor.
 */
 func ClientMustFailConnection(err error) bool {
-	return errors.Is(err, ErrHandshakeResponseUpgradeHeaderInvalid) ||
+	return errors.Is(err, ErrHandshakeResponseProtoInvalid) ||
+		errors.Is(err, ErrHandshakeResponseUpgradeHeaderInvalid) ||
 		errors.Is(err, ErrHandshakeResponseConnectionHeaderInvalid) ||
 		errors.Is(err, ErrHandshakeResponseAcceptHeaderMissing) ||
 		errors.Is(err, ErrHandshakeResponseAcceptHeaderMismatch) ||

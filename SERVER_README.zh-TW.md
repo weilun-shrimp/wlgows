@@ -66,8 +66,8 @@ func handle(netConn net.Conn) {
 ## Handshake
 
 `ServerHandShake(netConn, reader, writer, request, config)` 會依 RFC 6455 4.2.1 檢查
-request 的 method、HTTP 版本、`Upgrade`、`Connection`、`Sec-WebSocket-Key` 與
-`Sec-WebSocket-Version`，寫出回應，並建立 `Conn`。`Host`、`Origin` 與其他欄位不檢查。
+request 的 method、HTTP 版本、`Host`、`Upgrade`、`Connection`、`Sec-WebSocket-Key` 與
+`Sec-WebSocket-Version`，寫出回應，並建立 `Conn`。`Origin` 與其他欄位不檢查。
 
 | 參數 | 必須是 |
 |---|---|
@@ -103,7 +103,9 @@ request 的 method、HTTP 版本、`Upgrade`、`Connection`、`Sec-WebSocket-Key
 |---|---|
 | `ErrHttpMethodNotAllowed` | 405 Method Not Allowed |
 | `ErrHttpProtocolOrVersionNotAllowed` | 505 HTTP Version Not Supported |
+| `ErrHttpHostHeaderInvalid` | 400 Bad Request（RFC 6455 4.2.1、RFC 7230 5.4） |
 | `ErrHttpSecWebSocketKeyHeaderNotSet`、`ErrHttpSecWebSocketKeyInvalid` | 400 Bad Request |
+| `ErrHttpSecWebSocketKeyDuplicated`、`ErrHttpSecWebSocketVersionDuplicated` | 400 Bad Request（RFC 6455 11.3.1、11.3.5） |
 | `ErrHttpConnectionHeaderNotUpgrade`、`ErrHttpUpgradeHeaderNotWebsocket` | 400 Bad Request |
 | `ErrHttpSecWebSocketVersionNotSupported` | 426 Upgrade Required，並帶上 `Sec-WebSocket-Version: 13`（4.2.2、4.4） |
 

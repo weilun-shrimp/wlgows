@@ -120,14 +120,17 @@ func RequestSubprotocols(req *http.Request) []string {
 
 /*
 ValidateHandShakeRequest checks a client's opening request against RFC 6455
-4.2.1 — the method, the HTTP version, Upgrade, Connection, Sec-WebSocket-Key and
-Sec-WebSocket-Version — returning the first rule it breaks wrapped around the
-sentinel for it, which is what DeclineByError routes on to pick a status code.
-Host and the other fields are not checked.
+4.2.1 — the method, the HTTP version, Host, Upgrade, Connection,
+Sec-WebSocket-Key and Sec-WebSocket-Version — returning the first rule it breaks
+wrapped around the sentinel for it, which is what DeclineByError routes on to
+pick a status code. The other fields are not checked.
+
+Host is read from req.Host, since http.ReadRequest moves it out of Header.
 
 Connection and Upgrade are read as token lists rather than compared whole — see
 headerHasToken. Sec-WebSocket-Key must be base64 of 16 bytes. The rest are
-single values the RFC fixes exactly.
+single values the RFC fixes exactly. Sec-WebSocket-Key and Sec-WebSocket-Version
+must each come on one line (11.3.1, 11.3.5).
 
 The failing value is reported as it arrived, joined across lines if it came on
 more than one, so a rejected handshake says what the peer actually sent.
@@ -140,7 +143,13 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 	if client_request.Proto != "HTTP/1.1" {
 		return fmt.Errorf("validate handshake: protocol %q: %w", client_request.Proto, ErrHttpProtocolOrVersionNotAllowed)
 	}
+	if !validHost(client_request.Host) {
+		return fmt.Errorf("validate handshake: Host %q: %w", client_request.Host, ErrHttpHostHeaderInvalid)
+	}
 	// header validation
+	if vals := client_request.Header.Values("Sec-WebSocket-Key"); len(vals) > 1 {
+		return fmt.Errorf("validate handshake: Sec-WebSocket-Key is %q: %w", strings.Join(vals, ", "), ErrHttpSecWebSocketKeyDuplicated)
+	}
 	if val := client_request.Header.Get("Sec-WebSocket-Key"); val == "" {
 		return fmt.Errorf("validate handshake: %w", ErrHttpSecWebSocketKeyHeaderNotSet)
 	} else if key, err := base64.StdEncoding.DecodeString(val); err != nil || len(key) != 16 {
@@ -156,6 +165,9 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 			strings.Join(client_request.Header.Values("Upgrade"), ", "),
 			ErrHttpUpgradeHeaderNotWebsocket)
 	}
+	if vals := client_request.Header.Values("Sec-WebSocket-Version"); len(vals) > 1 {
+		return fmt.Errorf("validate handshake: Sec-WebSocket-Version is %q: %w", strings.Join(vals, ", "), ErrHttpSecWebSocketVersionDuplicated)
+	}
 	// 4.2.1: the header is required and 13 is the only version RFC 6455 defines.
 	// Missing and wrong are the same answer — a client that sends neither is
 	// speaking a draft this package does not implement.
@@ -163,6 +175,24 @@ func ValidateHandShakeRequest(client_request *http.Request) error {
 		return fmt.Errorf("validate handshake: Sec-WebSocket-Version is %q: %w", val, ErrHttpSecWebSocketVersionNotSupported)
 	}
 	return nil
+}
+
+// validHost uses httpguts.ValidHostHeader's byte set but also refuses empty,
+// since a ws URI always has a host (RFC 6455 3, 4.2.1).
+func validHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	for i := 0; i < len(host); i++ {
+		c := host[i]
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' {
+			continue
+		}
+		if !strings.ContainsRune("!$%&'()*+,-.:;=[]_~", rune(c)) {
+			return false
+		}
+	}
+	return true
 }
 
 // SendHandShakeResponse writes res to w as a plain HTTP message.

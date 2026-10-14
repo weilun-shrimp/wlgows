@@ -15,8 +15,8 @@ response's Connection. "keep-alive, Upgrade" is a conforming client and a proxy
 is entitled to add to the list on the way through, so comparing the whole field
 value refuses a request the RFC allows.
 
-The response's Upgrade is stricter: 4.1 fails any value other than "websocket".
-The client still reads it as a token list.
+The response's Upgrade is stricter: 4.1 fails any value other than "websocket",
+so ValidateHandShakeResponse compares it whole and does not use this.
 
 Values rather than Get, because Get returns the first line only and a field
 split across two would have its second half ignored.

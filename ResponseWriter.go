@@ -81,21 +81,29 @@ func (w *ResponseWriter) DeclineByError(err error) {
 	case errors.Is(err, ErrHttpMsgFormationInvalid):
 		w.WriteHeader(http.StatusBadRequest)
 
+	// RFC 9110 15.5.6: a 405 must list the methods the resource allows.
 	case errors.Is(err, ErrHttpMethodNotAllowed):
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.Header().Set("Allow", "GET")
 
 	case errors.Is(err, ErrHttpProtocolOrVersionNotAllowed):
 		w.WriteHeader(http.StatusHTTPVersionNotSupported)
 
 	// 4.4: the answer names the version this package speaks, so a client on an
-	// older draft can retry rather than guess.
+	// older draft can retry rather than guess. RFC 9110 15.5.22 requires a 426
+	// to name the protocol in Upgrade, and 7.8 to list upgrade in Connection.
 	case errors.Is(err, ErrHttpSecWebSocketVersionNotSupported):
 		w.WriteHeader(http.StatusUpgradeRequired)
-		w.Header().Add("Sec-WebSocket-Version", "13")
+		w.Header().Set("Sec-WebSocket-Version", "13")
+		w.Header().Set("Upgrade", "websocket")
+		w.Header().Set("Connection", "Upgrade")
 		w.Write([]byte(err.Error()))
 
-	case errors.Is(err, ErrHttpSecWebSocketKeyHeaderNotSet),
+	case errors.Is(err, ErrHttpHostHeaderInvalid),
+		errors.Is(err, ErrHttpSecWebSocketKeyHeaderNotSet),
 		errors.Is(err, ErrHttpSecWebSocketKeyInvalid),
+		errors.Is(err, ErrHttpSecWebSocketKeyDuplicated),
+		errors.Is(err, ErrHttpSecWebSocketVersionDuplicated),
 		errors.Is(err, ErrHttpConnectionHeaderNotUpgrade),
 		errors.Is(err, ErrHttpUpgradeHeaderNotWebsocket):
 		w.WriteHeader(http.StatusBadRequest)

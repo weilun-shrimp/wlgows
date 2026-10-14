@@ -118,7 +118,7 @@ request.Header.Set("Authorization", "Bearer "+token)
 
 | Error | 回應 | 會關閉連線 |
 |---|---|---|
-| `ErrHandshakeResponseProtoInvalid` | 不是 HTTP/1.1 | 否 |
+| `ErrHandshakeResponseProtoInvalid` | 是 101，但不是 HTTP/1.1 | 是 |
 | `ErrHandshakeResponseConnectionHeaderInvalid` | `Connection` 中沒有 `Upgrade` token | 是 |
 | `ErrHandshakeResponseUpgradeHeaderInvalid` | `Upgrade` 中沒有 `websocket` token | 是 |
 | `ErrHandshakeResponseAcceptHeaderMissing` | 沒有 `Sec-WebSocket-Accept` | 是 |
@@ -129,8 +129,8 @@ request.Header.Set("Authorization", "Bearer "+token)
 **誰來關閉連線。** RFC 6455 4.1 對某些不正確的回應要求「Fail the WebSocket
 Connection」，也就是關閉連線（7.1.7）。對這些情況，也就是上表中「是」的那幾列，
 `ClientHandShake` 會在回傳 error 之前關閉 `netConn`。這個 error 就是 7.1.7 允許的
-回報。其他 error 都會讓 `netConn` 保持開啟，由你負責關閉：送出或讀取失敗、不是
-HTTP/1.1 的回應，以及不是 101 的狀態碼；4.1 規定後者要當成一般 HTTP 處理，例如
+回報。其他 error 都會讓 `netConn` 保持開啟，由你負責關閉：送出或讀取失敗，以及不是
+101 的狀態碼；4.1 規定後者要當成一般 HTTP 處理，例如
 redirect 或 401。
 
 **除非你有更好的理由，否則我們建議在每一種 handshake error 之後都關閉連線。** 不論是哪一種，這條連線都不可能

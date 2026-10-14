@@ -97,12 +97,21 @@ func dialContext(ctx context.Context, raw_url string, dialer *net.Dialer, tls_co
 	return conn, req, nil
 }
 
+/*
+ValidateWebsocketUrl checks parsedUrl for a ws, wss, http or https scheme, a
+host, and no fragment (RFC 6455 3: fragments MUST NOT be used on WebSocket
+URIs). A bare trailing # parses to an empty fragment, which a *url.URL cannot
+tell apart from none, so it passes; nothing is lost by it.
+*/
 func ValidateWebsocketUrl(parsedUrl *url.URL) error {
 	if !slices.Contains([]string{"http", "https", "ws", "wss"}, parsedUrl.Scheme) {
 		return fmt.Errorf("%q: %w", parsedUrl.String(), ErrUrlSchemeInvalid)
 	}
 	if parsedUrl.Host == "" {
 		return fmt.Errorf("%q: %w", parsedUrl.String(), ErrUrlHostEmpty)
+	}
+	if parsedUrl.Fragment != "" {
+		return fmt.Errorf("%q: %w", parsedUrl.String(), ErrUrlFragmentSet)
 	}
 	return nil
 }

@@ -280,6 +280,26 @@ func TestValidateWebsocketUrl(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects a fragment", func(t *testing.T) {
+		u, err := url.Parse("ws://localhost:8001/chat?room=a#b")
+		if err != nil {
+			t.Fatalf("url.Parse: %v", err)
+		}
+		if got := ValidateWebsocketUrl(u); !errors.Is(got, ErrUrlFragmentSet) {
+			t.Errorf("err = %v, want %v", got, ErrUrlFragmentSet)
+		}
+	})
+
+	t.Run("accepts a # escaped as %23", func(t *testing.T) {
+		u, err := url.Parse("ws://localhost:8001/chat?room=a%23b")
+		if err != nil {
+			t.Fatalf("url.Parse: %v", err)
+		}
+		if err := ValidateWebsocketUrl(u); err != nil {
+			t.Errorf("rejected: %v", err)
+		}
+	})
+
 	t.Run("the error quotes the offending url", func(t *testing.T) {
 		u, err := url.Parse("ftp://example.com")
 		if err != nil {

@@ -67,9 +67,9 @@ settable.
 ## The handshake
 
 `ServerHandShake(netConn, reader, writer, request, config)` checks the request's
-method, HTTP version, `Upgrade`, `Connection`, `Sec-WebSocket-Key` and
+method, HTTP version, `Host`, `Upgrade`, `Connection`, `Sec-WebSocket-Key` and
 `Sec-WebSocket-Version` against RFC 6455 4.2.1, writes the answer, and builds
-the `Conn`. `Host`, `Origin` and the other fields are not checked.
+the `Conn`. `Origin` and the other fields are not checked.
 
 | Parameter | What it must be |
 |---|---|
@@ -108,7 +108,9 @@ that names it:
 |---|---|
 | `ErrHttpMethodNotAllowed` | 405 Method Not Allowed |
 | `ErrHttpProtocolOrVersionNotAllowed` | 505 HTTP Version Not Supported |
+| `ErrHttpHostHeaderInvalid` | 400 Bad Request (RFC 6455 4.2.1, RFC 7230 5.4) |
 | `ErrHttpSecWebSocketKeyHeaderNotSet`, `ErrHttpSecWebSocketKeyInvalid` | 400 Bad Request |
+| `ErrHttpSecWebSocketKeyDuplicated`, `ErrHttpSecWebSocketVersionDuplicated` | 400 Bad Request (RFC 6455 11.3.1, 11.3.5) |
 | `ErrHttpConnectionHeaderNotUpgrade`, `ErrHttpUpgradeHeaderNotWebsocket` | 400 Bad Request |
 | `ErrHttpSecWebSocketVersionNotSupported` | 426 Upgrade Required, with `Sec-WebSocket-Version: 13` (4.2.2, 4.4) |
 
