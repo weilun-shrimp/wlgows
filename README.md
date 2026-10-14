@@ -245,10 +245,12 @@ code is unchanged. These no longer compile:
 | v6 | v7 |
 |---|---|
 | `go get .../wlgows/v6` | `go get github.com/weilun-shrimp/wlgows/v7` |
+| Go 1.22 or newer | Go 1.24 or newer: from 1.24 on, `crypto/rand.Read` cannot fail |
 | `wlgows.GetFrameFromReader(netConn, max)` | two steps: `frame, err := wlgows.GetFrameHeaderFromReader(reader)`, check `frame.GetDeclaredPayloadSize()` yourself, then `frame.FillFramePayloadFromReader(reader)`, with `reader := bufio.NewReader(netConn)`. Keep one `reader` per connection: it holds bytes already read. |
 | `conn.GetNextFrame(max)` | the same two steps under `conn.LockRead()`: `conn.GetNextFrameHeader()`, then `conn.ReadFramePayload(frame)`, then `conn.UnlockRead()` |
 | `frame.GetMaxPayloadLength()` | `frame.GetDeclaredPayloadSize()` |
 | `wlgows.ReadFromReader(reader, length)` | gone: `buffer := make([]byte, length)`, then `io.ReadFull(reader, buffer)` |
+| `err := wlgows.FillMaskingKey(&key)` | `wlgows.FillMaskingKey(&key)`: it returns nothing |
 | `ListenerConfig{MaxMsgFrameCount: n}` | `ListenerConfig{MaxDataFrameCount: n}` |
 | `ListenerConfig{MaxMsgPayloadByteLen: n}` | `ListenerConfig{MaxDataFramesSize: n, MaxFrameSize: n}` |
 | `wlgows.ErrMsgFrameCountExceeded` | `wlgows.ErrDataFrameCountExceeded` |

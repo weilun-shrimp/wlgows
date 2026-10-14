@@ -350,7 +350,7 @@ Receiving has the same trick the other way round: see
 | `ErrInvalidCloseStatusCode` | `SendClose` got a status code that may not be sent, such as 1005, 1006 or 1015 (7.4.1), the reserved 1004, or one outside the registered and 3000-4999 ranges (7.4.2). Nothing was sent. |
 | `ErrNotDataFrameOpcode`, `ErrContinuationFrameWithoutMsg` | `Start` or `SendData` got an opcode that cannot open a message. Nothing was locked. |
 | `ErrLongDataTransmissionNotStarted` | `TransmitData` or `End` with no transmission open. |
-| Anything else | A masking key could not be drawn, or the socket write failed. |
+| Anything else | The socket write failed. |
 
 **A failed socket write is final.** The write buffer keeps its first error, so
 every send after it fails the same way, and so does `RenewWriter`. Close

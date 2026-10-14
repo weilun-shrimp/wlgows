@@ -155,9 +155,11 @@ func (f *Frame) fillPayloadLength() {
 	}
 }
 
-// FillMaskingKey fills key with 4 random bytes; on error its contents are unspecified.
-func FillMaskingKey(key *[4]byte) error {
-	return fillMaskingKey(key, fillMaskingKeyDI{
+// FillMaskingKey fills key with 4 random bytes (RFC 6455 5.3).
+func FillMaskingKey(key *[4]byte) {
+	fillMaskingKey(key, fillMaskingKeyDI{
+		// Go 1.24+: crypto/rand.Read never returns an error; it crashes the
+		// program instead, so a key is never left unfilled.
 		randRead: rand.Read,
 	})
 }
@@ -166,8 +168,6 @@ type fillMaskingKeyDI struct {
 	randRead func(b []byte) (n int, err error)
 }
 
-// fillMaskingKey overwrites key; on error its contents are unspecified.
-func fillMaskingKey(key *[4]byte, di fillMaskingKeyDI) error {
-	_, err := di.randRead(key[:]) // WebSocket规范要求4个字节的掩码密钥
-	return err
+func fillMaskingKey(key *[4]byte, di fillMaskingKeyDI) {
+	_, _ = di.randRead(key[:])
 }

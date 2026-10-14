@@ -240,10 +240,12 @@ Listener 的上限也改了名。其他 `Conn` 程式碼不用改。以下會編
 | v6 | v7 |
 |---|---|
 | `go get .../wlgows/v6` | `go get github.com/weilun-shrimp/wlgows/v7` |
+| Go 1.22 以上 | Go 1.24 以上：從 1.24 起，`crypto/rand.Read` 不會失敗 |
 | `wlgows.GetFrameFromReader(netConn, max)` | 分兩步：`frame, err := wlgows.GetFrameHeaderFromReader(reader)`，自己檢查 `frame.GetDeclaredPayloadSize()`，再 `frame.FillFramePayloadFromReader(reader)`，其中 `reader := bufio.NewReader(netConn)`。每條連線只用同一個 `reader`：它保存著已經讀進來的 bytes。 |
 | `conn.GetNextFrame(max)` | 在 `conn.LockRead()` 之下同樣兩步：`conn.GetNextFrameHeader()`，再 `conn.ReadFramePayload(frame)`，最後 `conn.UnlockRead()` |
 | `frame.GetMaxPayloadLength()` | `frame.GetDeclaredPayloadSize()` |
 | `wlgows.ReadFromReader(reader, length)` | 已移除：`buffer := make([]byte, length)`，再 `io.ReadFull(reader, buffer)` |
+| `err := wlgows.FillMaskingKey(&key)` | `wlgows.FillMaskingKey(&key)`：不再回傳任何值 |
 | `ListenerConfig{MaxMsgFrameCount: n}` | `ListenerConfig{MaxDataFrameCount: n}` |
 | `ListenerConfig{MaxMsgPayloadByteLen: n}` | `ListenerConfig{MaxDataFramesSize: n, MaxFrameSize: n}` |
 | `wlgows.ErrMsgFrameCountExceeded` | `wlgows.ErrDataFrameCountExceeded` |

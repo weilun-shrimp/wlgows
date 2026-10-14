@@ -327,7 +327,7 @@ err := conn.SendText(payload, 0)
 | `ErrInvalidCloseStatusCode` | `SendClose` 收到不能送出的 status code，例如 1005、1006 或 1015（7.4.1）、保留的 1004，或不在已註冊範圍與 3000-4999 之內的 code（7.4.2）。什麼都沒有送出。 |
 | `ErrNotDataFrameOpcode`、`ErrContinuationFrameWithoutMsg` | `Start` 或 `SendData` 收到一個無法開啟 message 的 opcode。沒有取得任何 lock。 |
 | `ErrLongDataTransmissionNotStarted` | 在沒有開啟 transmission 時呼叫了 `TransmitData` 或 `End`。 |
-| 其他 | 無法取得 masking key，或 socket 寫入失敗。 |
+| 其他 | socket 寫入失敗。 |
 
 **socket 寫入失敗是無法挽回的。** write buffer 會記住它的第一個 error，所以之後的
 每一次傳送都會以同樣的方式失敗，`RenewWriter` 也一樣。請關閉連線。

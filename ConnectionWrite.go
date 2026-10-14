@@ -17,7 +17,7 @@ func (c *Conn) bufferedWriteFrame(f *Frame) error {
 		validateSendFrame: validateSendFrame,
 		prepareSendFrame:  prepareSendFrame,
 		// Passed as a value, not closed over, so building this allocates nothing.
-		prepareSendFrameDI: prepareSendFrameDI{fillMaskingKey: c.di.fillMaskingKey},
+		prepareSendFrameDI: prepareSendFrameDI{fillMaskingKey: FillMaskingKey},
 		writeFrameHeader:   writeFrameHeader,
 		writeFramePayload:  writeFramePayload,
 	})
@@ -28,7 +28,7 @@ type bufferedWriteFrameDI struct {
 	maskSendFrame      bool
 	writer             *bufio.Writer
 	validateSendFrame  func(f *Frame, closeSent bool) error
-	prepareSendFrame   func(f *Frame, maskSendFrame bool, di prepareSendFrameDI) error
+	prepareSendFrame   func(f *Frame, maskSendFrame bool, di prepareSendFrameDI)
 	prepareSendFrameDI prepareSendFrameDI
 	writeFrameHeader   func(f *Frame, w *bufio.Writer) error
 	writeFramePayload  func(f *Frame, w *bufio.Writer) error
@@ -38,9 +38,7 @@ func bufferedWriteFrame(f *Frame, di bufferedWriteFrameDI) error {
 	if err := di.validateSendFrame(f, di.closeSent); err != nil {
 		return err
 	}
-	if err := di.prepareSendFrame(f, di.maskSendFrame, di.prepareSendFrameDI); err != nil {
-		return err
-	}
+	di.prepareSendFrame(f, di.maskSendFrame, di.prepareSendFrameDI)
 	if err := di.writeFrameHeader(f, di.writer); err != nil {
 		return err
 	}
@@ -66,17 +64,15 @@ func validateSendFrame(f *Frame, closeSent bool) error {
 }
 
 type prepareSendFrameDI struct {
-	fillMaskingKey func(key *[4]byte) error
+	fillMaskingKey func(key *[4]byte)
 }
 
 // prepareSendFrame sets what the header carries. A client gets Mask and a
 // fresh key for every frame (5.3), a server neither. The length fields follow
 // len(PayloadData), and a control frame gets FIN (5.5).
-func prepareSendFrame(f *Frame, maskSendFrame bool, di prepareSendFrameDI) error {
+func prepareSendFrame(f *Frame, maskSendFrame bool, di prepareSendFrameDI) {
 	if maskSendFrame {
-		if err := di.fillMaskingKey(&f.MaskingKey); err != nil {
-			return err
-		}
+		di.fillMaskingKey(&f.MaskingKey)
 	} else {
 		f.MaskingKey = [4]byte{}
 	}
@@ -85,7 +81,6 @@ func prepareSendFrame(f *Frame, maskSendFrame bool, di prepareSendFrameDI) error
 	if IsControlOpcode(f.Opcode) {
 		f.FIN = true
 	}
-	return nil
 }
 
 // writeFrameHeader seals f's header straight into w's free space, flushing

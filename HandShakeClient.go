@@ -268,6 +268,8 @@ func ValidateHandShakeResponseSubprotocol(res *http.Response, req *http.Request)
 
 func GenerateWebSocketKey() string {
 	return generateWebSocketKey(generateWebSocketKeyDI{
+		// Go 1.24+: crypto/rand.Read never returns an error; it crashes the
+		// program instead.
 		randRead: rand.Read,
 	})
 }
@@ -277,8 +279,8 @@ type generateWebSocketKeyDI struct {
 }
 
 func generateWebSocketKey(di generateWebSocketKeyDI) string {
-	key := make([]byte, 16)
-	di.randRead(key)
+	key := make([]byte, 16) // RFC 6455 4.1: a random 16 byte nonce
+	_, _ = di.randRead(key)
 	return base64.StdEncoding.EncodeToString(key)
 }
 

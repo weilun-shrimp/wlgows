@@ -60,7 +60,6 @@ type connDI struct {
 	fillFramePayload      func(f *Frame, r *bufio.Reader) error
 	newControlFrame       func(config NewControlFrameConfig) (*Frame, error)
 	newDataFrame          func(config NewFrameConfig) (*Frame, error)
-	fillMaskingKey        func(key *[4]byte) error
 	loop                  func(trigger func(stop_signal chan<- struct{}), interval time.Duration)
 	writeLocker           sync.Locker // Guards writer and closeSent; held per frame.
 	readLocker            sync.Locker // Guards reading one frame, header and payload; see LockRead.
@@ -97,7 +96,6 @@ func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (
 			fillFramePayload:      (*Frame).FillFramePayloadFromReader,
 			newControlFrame:       NewControlFrame,
 			newDataFrame:          NewDataFrame,
-			fillMaskingKey:        FillMaskingKey,
 			loop:                  Loop,
 			writeLocker:           &sync.Mutex{},
 			readLocker:            &sync.Mutex{},
