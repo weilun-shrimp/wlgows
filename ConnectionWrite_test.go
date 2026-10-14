@@ -18,8 +18,8 @@ func TestBufferedWriteFrame(t *testing.T) {
 		return bufferedWriteFrameDI{
 			writer:             bufio.NewWriter(&fakeIOWriter{}),
 			validateSendFrame:  func(f *Frame, closeSent bool) error { return nil },
-			prepareSendFrame:   func(f *Frame, maskSendFrame bool, di prepareSendFrameDI) error { return nil },
-			prepareSendFrameDI: prepareSendFrameDI{fillMaskingKey: func(key *[4]byte) error { return nil }},
+			prepareSendFrame:   func(f *Frame, maskSendFrame bool, di prepareSendFrameDI) {},
+			prepareSendFrameDI: prepareSendFrameDI{fillMaskingKey: func(key *[4]byte) {}},
 			writeFrameHeader:   func(f *Frame, w *bufio.Writer) error { return nil },
 			writeFramePayload:  func(f *Frame, w *bufio.Writer) error { return nil },
 		}
@@ -34,13 +34,12 @@ func TestBufferedWriteFrame(t *testing.T) {
 			steps = append(steps, fmt.Sprintf("validate same=%v closeSent=%v", got == f, closeSent))
 			return nil
 		}
-		di.prepareSendFrameDI.fillMaskingKey = func(*[4]byte) error {
+		di.prepareSendFrameDI.fillMaskingKey = func(*[4]byte) {
 			steps = append(steps, "fillMaskingKey")
-			return nil
 		}
-		di.prepareSendFrame = func(got *Frame, maskSendFrame bool, prepareDI prepareSendFrameDI) error {
+		di.prepareSendFrame = func(got *Frame, maskSendFrame bool, prepareDI prepareSendFrameDI) {
 			steps = append(steps, fmt.Sprintf("prepare same=%v maskSendFrame=%v", got == f, maskSendFrame))
-			return prepareDI.fillMaskingKey(nil)
+			prepareDI.fillMaskingKey(nil)
 		}
 		di.writeFrameHeader = func(got *Frame, w *bufio.Writer) error {
 			steps = append(steps, fmt.Sprintf("header same=%v writer=%v", got == f, w == di.writer))
@@ -69,23 +68,8 @@ func TestBufferedWriteFrame(t *testing.T) {
 		wantErr := errors.New("refused")
 		di := base_di()
 		di.validateSendFrame = func(*Frame, bool) error { return wantErr }
-		di.prepareSendFrame = func(*Frame, bool, prepareSendFrameDI) error {
+		di.prepareSendFrame = func(*Frame, bool, prepareSendFrameDI) {
 			t.Error("prepared after a validate error")
-			return nil
-		}
-
-		if err := bufferedWriteFrame(&Frame{}, di); !errors.Is(err, wantErr) {
-			t.Errorf("bufferedWriteFrame = %v, want %v", err, wantErr)
-		}
-	})
-
-	t.Run("stops at a prepare error", func(t *testing.T) {
-		wantErr := errors.New("no entropy")
-		di := base_di()
-		di.prepareSendFrame = func(*Frame, bool, prepareSendFrameDI) error { return wantErr }
-		di.writeFrameHeader = func(*Frame, *bufio.Writer) error {
-			t.Error("wrote the header after a prepare error")
-			return nil
 		}
 
 		if err := bufferedWriteFrame(&Frame{}, di); !errors.Is(err, wantErr) {
@@ -197,7 +181,7 @@ func TestPrepareSendFrame(t *testing.T) {
 	// base_di hands out a fixed key; each case overrides what it looks at.
 	base_di := func() prepareSendFrameDI {
 		return prepareSendFrameDI{
-			fillMaskingKey: func(key *[4]byte) error { *key = [4]byte{1, 2, 3, 4}; return nil },
+			fillMaskingKey: func(key *[4]byte) { *key = [4]byte{1, 2, 3, 4} },
 		}
 	}
 
@@ -205,9 +189,7 @@ func TestPrepareSendFrame(t *testing.T) {
 	t.Run("a client masks with a fresh key", func(t *testing.T) {
 		f := &Frame{Opcode: OpcodeText, Mask: false, MaskingKey: [4]byte{9, 9, 9, 9}, PayloadData: []byte("hello")}
 
-		if err := prepareSendFrame(f, true, base_di()); err != nil {
-			t.Fatalf("prepareSendFrame: %v", err)
-		}
+		prepareSendFrame(f, true, base_di())
 		want := Frame{
 			Opcode: OpcodeText, Mask: true, MaskingKey: [4]byte{1, 2, 3, 4},
 			PayloadLength: 5, PayloadData: []byte("hello"),
@@ -220,14 +202,11 @@ func TestPrepareSendFrame(t *testing.T) {
 	t.Run("a server sends unmasked, with no key", func(t *testing.T) {
 		f := &Frame{Opcode: OpcodeText, Mask: true, MaskingKey: [4]byte{9, 9, 9, 9}, PayloadData: []byte("hello")}
 		di := base_di()
-		di.fillMaskingKey = func(*[4]byte) error {
+		di.fillMaskingKey = func(*[4]byte) {
 			t.Error("a server drew a key")
-			return nil
 		}
 
-		if err := prepareSendFrame(f, false, di); err != nil {
-			t.Fatalf("prepareSendFrame: %v", err)
-		}
+		prepareSendFrame(f, false, di)
 		want := Frame{Opcode: OpcodeText, PayloadLength: 5, PayloadData: []byte("hello")}
 		if !reflect.DeepEqual(*f, want) {
 			t.Errorf("frame = %+v, want %+v", *f, want)
@@ -238,9 +217,7 @@ func TestPrepareSendFrame(t *testing.T) {
 	t.Run("rewrites the length fields", func(t *testing.T) {
 		f := &Frame{Opcode: OpcodeBinary, PayloadLength: 3, ExtendedPayloadLength: 3, PayloadData: make([]byte, 300)}
 
-		if err := prepareSendFrame(f, false, base_di()); err != nil {
-			t.Fatalf("prepareSendFrame: %v", err)
-		}
+		prepareSendFrame(f, false, base_di())
 		if f.PayloadLength != 126 || f.ExtendedPayloadLength != 300 {
 			t.Errorf("PayloadLength=%d ExtendedPayloadLength=%d, want 126 and 300", f.PayloadLength, f.ExtendedPayloadLength)
 		}
@@ -257,27 +234,10 @@ func TestPrepareSendFrame(t *testing.T) {
 		} {
 			f := &Frame{Opcode: testCase.opcode, FIN: false}
 
-			if err := prepareSendFrame(f, false, base_di()); err != nil {
-				t.Fatalf("opcode %#x: prepareSendFrame: %v", testCase.opcode, err)
-			}
+			prepareSendFrame(f, false, base_di())
 			if f.FIN != testCase.wantFIN {
 				t.Errorf("opcode %#x: FIN = %v, want %v", testCase.opcode, f.FIN, testCase.wantFIN)
 			}
-		}
-	})
-
-	// A frame with no key must not claim to be masked.
-	t.Run("returns a key error and leaves Mask unset", func(t *testing.T) {
-		wantErr := errors.New("no entropy")
-		f := &Frame{Opcode: OpcodeText, PayloadData: []byte("hello")}
-		di := base_di()
-		di.fillMaskingKey = func(*[4]byte) error { return wantErr }
-
-		if err := prepareSendFrame(f, true, di); !errors.Is(err, wantErr) {
-			t.Errorf("prepareSendFrame = %v, want %v", err, wantErr)
-		}
-		if f.Mask {
-			t.Error("Mask was set without a key")
 		}
 	})
 }

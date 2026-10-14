@@ -6,21 +6,21 @@
 
 | 項目 | 對 gorilla | 對 gobwas |
 |---|---|---|
-| server 送出，小 frame | **勝**（35 vs 45 ns） | 平手（35 vs 32 ns），配置次數**勝**（0 次 vs 1 次） |
-| server 送出，大 frame | **勝**（107 vs 179 ns） | 平手（107 vs 112 ns） |
-| server 送出，64 個 frame 批次 | **勝**（1308 vs 2741 ns） | **勝**（1308 vs 1515 ns） |
+| server 送出，小 frame | **勝**（19 vs 23 ns） | 負（19 vs 15 ns），配置次數**勝**（0 次 vs 1 次） |
+| server 送出，大 frame | **勝**（53 vs 90 ns） | **勝**（53 vs 59 ns） |
+| server 送出，64 個 frame 批次 | **勝**（672 vs 1480 ns） | **勝**（672 vs 811 ns） |
 | 送出的記憶體 | **勝**（永遠 0 次配置） | **勝**（0 次配置 vs 每個 frame 1 次） |
-| client 送出，小 frame | 負（120 vs 90 ns）<br>安全性**勝**，masking key 較強 | 負（120 vs 56 ns）<br>安全性**勝**，masking key 較強 |
-| client 送出，大 frame | 平手（107 µs） | 負（107 vs 64 µs），安全性**勝**（從不寫入呼叫端的 buffer） |
-| 讀取，大 frame | **勝**（快 1.5 到 3 倍） | client 平手，server 慢 6% 到 15% |
-| 讀取，小 frame | **勝**（快 2 到 2.9 倍） | server **勝**（最多快 15%）<br>client 讀單一 frame 平手<br>client 連續讀很多個小 frame 慢 14% 到 19% |
+| client 送出，小 frame | 負（65 vs 46 ns）<br>安全性**勝**，masking key 較強 | 負（65 vs 28 ns）<br>安全性**勝**，masking key 較強 |
+| client 送出，大 frame | 平手（55 µs） | 負（55 vs 33 µs），安全性**勝**（從不寫入呼叫端的 buffer） |
+| 讀取，大 frame | **勝**（快 1.3 到 3.2 倍） | client 平手，讀單一 1MB frame 快 20%<br>server 慢 2% 到 15% |
+| 讀取，小 frame | **勝**（快 1.9 到 2.8 倍） | server 16B **勝**（快 8% 到 12%）<br>1KB 時 client 平手，server 慢 4% 到 6%<br>client 16B 慢 13% 到 24% |
 | 讀取的記憶體，1MB frame | **勝**（1.05 MB vs 2.23 MB） | 平手（1.05 MB） |
 
 除了 client 送出小 frame 之外，wlgows 在每一項都比 gorilla 快，而且是三者中唯一
-送出時從不配置記憶體的。對 gobwas，wlgows 贏下 server 批次送出與 server 小 frame
-讀取，server 送出單一 frame 與 client 讀取單一 frame 平手，輸掉 client 送出；在
-client 送出這一側，gobwas 是拿安全性換速度。client 連續讀取小 frame 與 server 讀取
-大 frame 也落後 gobwas。
+送出時從不配置記憶體的。對 gobwas，wlgows 贏下 server 批次送出、server 大 frame
+送出與 server 16B 讀取，client 讀取 1KB 以上的單一 frame 平手，輸掉 client 送出；
+在 client 送出這一側，gobwas 是拿安全性換速度。server 送出單一 16B frame、client
+讀取小 frame 與 server 讀取大 frame 也落後 gobwas。
 
 **兩項 client 送出的落後都是刻意的。** wlgows 把正確性與安全性放在 benchmark
 數字之前（見 [正確性優先](./README.zh-TW.md)）。下面每一項落後，都是量測過、
@@ -56,17 +56,17 @@ client 送出這一側，gobwas 是拿安全性換速度。client 連續讀取�
 | gorilla | `WriteMessage`；「many」是呼叫 64 次，因為每個 message 都會 flush | `ReadMessage` |
 | gobwas | `ws.WriteFrame` 寫到 `bufio.Writer`，client 端用 `ws.MaskFrameInPlace`；「many」flush 一次 | `ws.ReadFrame`，server 端再用 `ws.Cipher` |
 
-gorilla 的 `Conn` 是用它自己的 `Upgrader` 或 `Dialer` 在那條連線上建立的，buffer
+gorilla 的 `Conn` 是用它自己的 `Upgrader` 或 `NewClient` 在那條連線上建立的，buffer
 同樣是 4096 byte。gobwas 和 wlgows 都用最底層的 API 讀取：`ws.ReadFrame` 與
 兩個 `FromReader` 步驟；透過 `Conn` 讀取時，每個 frame 會再加一把讀取鎖（`LockRead`）。
 
-送出的每個案例只跑一次，所以 10% 左右以內的差距算是雜訊；對 gobwas 的 server 小
-frame 送出差距跑了 5 次確認過，這裡的數字就是那 5 次的中位數。讀取的數字，三者都是
-5 次的中位數。
+每個數字都是 5 次執行的中位數。每一輪三個函式庫輪流跑，所以機器狀態的變化會同樣
+影響三者。5% 左右以內的差距算是雜訊。
 
 wlgows：
 
 	go test -run TestBenchmarkReport -report
+	go test -run '^$' -bench '//^(16B|1KB|16KB|1MB)$' -count 5
 
 ## wlgows 勝出的地方
 
@@ -80,17 +80,17 @@ Write，花兩倍時間。
 
 | server 送出，64 個 frame | wlgows | gorilla | gobwas |
 |---|---|---|---|
-| 16B | **1308 ns** | 2741 ns | 1515 ns |
-| 1KB | **2690 ns** | 4174 ns | 3173 ns |
-| 1MB | **5727 ns** | 11339 ns | 6929 ns |
+| 16B | **672 ns** | 1480 ns | 811 ns |
+| 1KB | **1368 ns** | 2148 ns | 1634 ns |
+| 1MB | **2885 ns** | 5757 ns | 3802 ns |
 
 **server 的大 frame。** 比 buffer 大的 payload 直接寫到連線上，不做複製：比 gorilla
-快 1.7 倍，與 gobwas 持平。
+快 1.7 倍，比 gobwas 快 10%。
 
 | server 送出，一個 frame | wlgows | gorilla | gobwas |
 |---|---|---|---|
-| 16KB | **104 ns** | 175 ns | 111 ns |
-| 1MB | **107 ns** | 179 ns | 112 ns |
+| 16KB | **53 ns** | 89 ns | 59 ns |
+| 1MB | **53 ns** | 90 ns | 59 ns |
 
 **讀取，對 gorilla。** wlgows 依 payload 的確切大小讀取 frame。gorilla 的
 `ReadMessage` 透過 `io.ReadAll` 逐步擴大 buffer，所以一個 1MB 的 message 要用
@@ -98,10 +98,10 @@ Write，花兩倍時間。
 
 | 讀取，一個 frame | wlgows | gorilla |
 |---|---|---|
-| server，1KB | **279 ns** | 548 ns |
-| server，1MB | **160 µs** | 245 µs |
-| client，1KB | **217 ns** | 474 ns |
-| client，1MB | **65 µs** | 178 µs |
+| server，1KB | **153 ns** | 295 ns |
+| server，1MB | **100 µs** | 169 µs |
+| client，1KB | **123 ns** | 259 ns |
+| client，1MB | **46 µs** | 147 µs |
 
 ## wlgows 為了安全而落後的地方
 
@@ -122,26 +122,26 @@ wlgows 每一把 key 都從 `crypto/rand` 讀取。gorilla 和 gobwas 都用 `ma
 
 | 4 byte key | ns/op |
 |---|---|
-| `crypto/rand.Read` | 95 |
-| `math/rand.Uint32` | 8 |
+| `crypto/rand.Read` | 48 |
+| `math/rand.Uint32` | 4 |
 
-這 87 ns 涵蓋了 client 小 frame 的全部差距（16B 時 wlgows 120 ns、gorilla 90 ns、
-gobwas 56 ns）。
+這 44 ns 涵蓋了 client 小 frame 的全部差距（16B 時 wlgows 65 ns、gorilla 46 ns、
+gobwas 28 ns）。
 
 量測過但放棄的更快來源：
 
 | 來源 | ns/key | 為什麼不用 |
 |---|---|---|
-| `math/rand/v2` 頂層函式 | 7 | Go 文件明說它不適合用在安全相關的用途 |
-| `math/rand/v2.ChaCha8`，只從 `crypto/rand` 取一次 seed | 5 | seed 之後不再有新的 entropy：任何能讀到它 320 B 狀態的人，都能預測之後的每一把 key |
-| `crypto/rand`，一次讀 256 B | 7 | key 在使用前就放在記憶體裡，而且每條 client 連線多佔 256 B |
+| `math/rand/v2` 頂層函式 | 4 | Go 文件明說它不適合用在安全相關的用途 |
+| `math/rand/v2.ChaCha8`，只從 `crypto/rand` 取一次 seed | 3 | seed 之後不再有新的 entropy：任何能讀到它 320 B 狀態的人，都能預測之後的每一把 key |
+| `crypto/rand`，一次讀 256 B | 4 | key 在使用前就放在記憶體裡，而且每條 client 連線多佔 256 B |
 
-只有 `crypto/rand` 能無條件守住這個承諾，所以 wlgows 付出這 87 ns。
+只有 `crypto/rand` 能無條件守住這個承諾，所以 wlgows 付出這 44 ns。
 
 **client 送出大 frame：wlgows 從不寫入呼叫端的 payload。**
 `ws.MaskFrameInPlace` 把 mask 直接 XOR 進呼叫端傳入的 slice。這省下一次複製，
-所以 gobwas 送出 1MB frame 只要 2 次 Write，約 16 GB/s。wlgows 則是把 mask 套在
-自己的 write buffer 上，需要 257 次 Write，約 10 GB/s。
+所以 gobwas 送出 1MB frame 只要 2 次 Write，約 32 GB/s。wlgows 則是把 mask 套在
+自己的 write buffer 上，需要 257 次 Write，約 19 GB/s。
 
 原地加 mask 代表呼叫端不能傳入：
 
@@ -160,72 +160,72 @@ wlgows 這些都能接受，因為 README 承諾你的 payload 只會被讀取�
 
 v7 用 `Peek` 直接在 `bufio.Reader` 的 buffer 裡解析每個 header，所以讀一個 frame
 只會配置 `Frame` 和它的 payload。在同一層級比較，也就是兩個 `FromReader` 步驟對
-`ws.ReadFrame`，server 的小 frame 讀取比 gobwas 快，client 讀取單一 frame 持平。
+`ws.ReadFrame`，server 的 16B 讀取比 gobwas 快，client 讀取 1KB 以上持平。
 
 | 讀取 | wlgows | gobwas |
 |---|---|---|
-| server，一個 16B | **71 ns** | 84 ns |
-| server，many 16B | **3898 ns** | 4318 ns |
-| client，一個 16B | 64 ns | 61 ns |
-| client，many 16B | 3428 ns | 2872 ns |
-| server，一個 1MB | 160 µs | 142 µs |
-| client，一個 1MB | 65 µs | 65 µs |
+| server，一個 16B | **36 ns** | 41 ns |
+| server，many 16B | **2073 ns** | 2256 ns |
+| client，一個 16B | 34 ns | 30 ns |
+| client，many 16B | 1869 ns | 1509 ns |
+| server，一個 1MB | 100 µs | 98 µs |
+| client，一個 1MB | **46 µs** | 58 µs |
 
-還剩兩個差距。client 連續讀取小 frame 慢了 14% 到 19%：每個 frame 都是一個 48 byte、
+還剩兩個差距。client 的小 frame 慢了 13% 到 24%：每個 frame 都是一個 48 byte、
 呼叫端擁有且可以保留的 `*Frame`，而 `ws.ReadFrame` 是以值回傳 `Frame`；而且即使
 payload 已經在 buffer 裡，也還是透過 `io.ReadFull` 讀取。在 server 端，大 frame 慢了
-6% 到 15%。不需要解除 mask 的 client 讀取是持平的，所以這個差距在於解除 payload 的
+2% 到 15%。不需要解除 mask 的 client 讀取持平或更快，所以這個差距在於解除 payload 的
 mask：`ws.Cipher` 每一步 XOR 16 byte，`MaskPayload` 是 8 byte。
 
 ## 完整結果
 
 ns/op，越低越好。B/op 與配置次數都是每個 op 的值；讀取的部分包含 payload 本身。
-「many」的 1MB 讀取每個 op 配置 64 MB，每次執行之間最多有 30% 的差異。
+「many」的 1MB 讀取每個 op 配置 64 MB，每次執行之間最多有 25% 的差異。
 
 ### server 送出
 
 | frame 數 | 大小 | wlgows | gorilla | gobwas | wlgows B/配置 | gorilla B/配置 | gobwas B/配置 |
 |---|---|---|---|---|---|---|---|
-| one | 16B | 35 | 45 | 32 | 0 / 0 | 0 / 0 | 16 / 1 |
-| one | 1KB | 52 | 67 | 52 | 0 / 0 | 0 / 0 | 16 / 1 |
-| one | 16KB | 104 | 175 | 111 | 0 / 0 | 72 / 2 | 16 / 1 |
-| one | 1MB | 107 | 179 | 112 | 0 / 0 | 72 / 2 | 16 / 1 |
-| many | 16B | 1308 | 2741 | 1515 | 0 / 0 | 0 / 0 | 1024 / 64 |
-| many | 1KB | 2690 | 4174 | 3173 | 0 / 0 | 0 / 0 | 1024 / 64 |
-| many | 1MB | 5727 | 11339 | 6929 | 0 / 0 | 4608 / 128 | 1024 / 64 |
+| one | 16B | 19 | 23 | 15 | 0 / 0 | 0 / 0 | 16 / 1 |
+| one | 1KB | 27 | 34 | 26 | 0 / 0 | 0 / 0 | 16 / 1 |
+| one | 16KB | 53 | 89 | 59 | 0 / 0 | 72 / 2 | 16 / 1 |
+| one | 1MB | 53 | 90 | 59 | 0 / 0 | 72 / 2 | 16 / 1 |
+| many | 16B | 672 | 1480 | 811 | 0 / 0 | 0 / 0 | 1024 / 64 |
+| many | 1KB | 1368 | 2148 | 1634 | 0 / 0 | 0 / 0 | 1024 / 64 |
+| many | 1MB | 2885 | 5757 | 3802 | 0 / 0 | 4608 / 128 | 1024 / 64 |
 
 ### client 送出
 
 | frame 數 | 大小 | wlgows | gorilla | gobwas | wlgows B/配置 | gorilla B/配置 | gobwas B/配置 |
 |---|---|---|---|---|---|---|---|
-| one | 16B | 120 | 90 | 56 | 0 / 0 | 48 / 1 | 16 / 1 |
-| one | 1KB | 218 | 185 | 126 | 0 / 0 | 48 / 1 | 16 / 1 |
-| one | 16KB | 1725 | 1599 | 1112 | 0 / 0 | 48 / 1 | 16 / 1 |
-| one | 1MB | 106618 | 106892 | 64025 | 0 / 0 | 48 / 1 | 16 / 1 |
-| many | 16B | 6716 | 5750 | 3206 | 0 / 0 | 3072 / 64 | 1024 / 64 |
-| many | 1KB | 13144 | 11770 | 8050 | 0 / 0 | 3072 / 64 | 1024 / 64 |
-| many | 1MB | 6845576 | 6862762 | 4088968 | 0 / 0 | 3072 / 64 | 1024 / 64 |
+| one | 16B | 65 | 46 | 28 | 0 / 0 | 48 / 1 | 16 / 1 |
+| one | 1KB | 111 | 94 | 64 | 0 / 0 | 48 / 1 | 16 / 1 |
+| one | 16KB | 889 | 826 | 572 | 0 / 0 | 48 / 1 | 16 / 1 |
+| one | 1MB | 54629 | 54915 | 32655 | 0 / 0 | 48 / 1 | 16 / 1 |
+| many | 16B | 3395 | 2950 | 1641 | 0 / 0 | 3072 / 64 | 1024 / 64 |
+| many | 1KB | 6719 | 6030 | 4100 | 0 / 0 | 3072 / 64 | 1024 / 64 |
+| many | 1MB | 3493092 | 3515985 | 2080063 | 0 / 0 | 3072 / 64 | 1024 / 64 |
 
 ### server 讀取
 
 | frame 數 | 大小 | wlgows | gorilla | gobwas | wlgows B/配置 | gorilla B/配置 | gobwas B/配置 |
 |---|---|---|---|---|---|---|---|
-| one | 16B | 71 | 176 | 84 | 64 / 2 | 520 / 2 | 32 / 2 |
-| one | 1KB | 279 | 548 | 268 | 1072 / 2 | 2184 / 5 | 1040 / 2 |
-| one | 16KB | 2975 | 6312 | 2748 | 16432 / 2 | 37768 / 14 | 16400 / 2 |
-| one | 1MB | 159546 | 245472 | 141980 | 1048630 / 2 | 2227983 / 25 | 1048596 / 2 |
-| many | 16B | 3898 | 10488 | 4318 | 4096 / 128 | 33280 / 128 | 2048 / 128 |
-| many | 1KB | 18090 | 35408 | 16722 | 68608 / 128 | 139776 / 320 | 66560 / 128 |
-| many | 1MB | 10126184 | 11865124 | 7624184 | 67111941 / 128 | 142590481 / 1600 | 67109892 / 128 |
+| one | 16B | 36 | 93 | 41 | 64 / 2 | 520 / 2 | 32 / 2 |
+| one | 1KB | 153 | 295 | 147 | 1072 / 2 | 2184 / 5 | 1040 / 2 |
+| one | 16KB | 1681 | 3550 | 1592 | 16432 / 2 | 37768 / 14 | 16400 / 2 |
+| one | 1MB | 100178 | 169412 | 97963 | 1048631 / 2 | 2227995 / 25 | 1048598 / 2 |
+| many | 16B | 2073 | 5556 | 2256 | 4096 / 128 | 33280 / 128 | 2048 / 128 |
+| many | 1KB | 9884 | 19074 | 9298 | 68608 / 128 | 139776 / 320 | 66560 / 128 |
+| many | 1MB | 4516326 | 6009597 | 3911598 | 67111941 / 128 | 142590520 / 1600 | 67109893 / 128 |
 
 ### client 讀取
 
 | frame 數 | 大小 | wlgows | gorilla | gobwas | wlgows B/配置 | gorilla B/配置 | gobwas B/配置 |
 |---|---|---|---|---|---|---|---|
-| one | 16B | 64 | 166 | 61 | 64 / 2 | 520 / 2 | 32 / 2 |
-| one | 1KB | 217 | 474 | 221 | 1072 / 2 | 2184 / 5 | 1040 / 2 |
-| one | 16KB | 2175 | 5430 | 2092 | 16432 / 2 | 37768 / 14 | 16400 / 2 |
-| one | 1MB | 65280 | 178005 | 64544 | 1048631 / 2 | 2227983 / 25 | 1048594 / 2 |
-| many | 16B | 3428 | 9997 | 2872 | 4096 / 128 | 33280 / 128 | 2048 / 128 |
-| many | 1KB | 14172 | 30488 | 13452 | 68608 / 128 | 139776 / 320 | 66560 / 128 |
-| many | 1MB | 3968289 | 10904299 | 4102774 | 67111963 / 128 | 142590480 / 1600 | 67109894 / 128 |
+| one | 16B | 34 | 89 | 30 | 64 / 2 | 520 / 2 | 32 / 2 |
+| one | 1KB | 123 | 259 | 123 | 1072 / 2 | 2184 / 5 | 1040 / 2 |
+| one | 16KB | 1223 | 3149 | 1227 | 16432 / 2 | 37768 / 14 | 16400 / 2 |
+| one | 1MB | 46178 | 147292 | 57680 | 1048628 / 2 | 2227980 / 25 | 1048601 / 2 |
+| many | 16B | 1869 | 5149 | 1509 | 4096 / 128 | 33280 / 128 | 2048 / 128 |
+| many | 1KB | 7749 | 16764 | 7745 | 68608 / 128 | 139776 / 320 | 66560 / 128 |
+| many | 1MB | 1745745 | 4483379 | 1736500 | 67111943 / 128 | 142590486 / 1600 | 67109895 / 128 |

@@ -1,6 +1,6 @@
 module github.com/weilun-shrimp/wlgows/v7/example
 
-go 1.22.1
+go 1.24.0
 
 require (
 	github.com/gin-gonic/gin v1.10.0

@@ -2,7 +2,6 @@ package wlgows
 
 import (
 	"bytes"
-	"errors"
 	"reflect"
 	"testing"
 )
@@ -261,32 +260,20 @@ func TestFrameFillPayloadLength(t *testing.T) {
 func TestFillMaskingKey(t *testing.T) {
 	t.Run("returns the injected bytes", func(t *testing.T) {
 		var key [4]byte
-		err := fillMaskingKey(&key, fillMaskingKeyDI{
+		fillMaskingKey(&key, fillMaskingKeyDI{
 			randRead: fixedRandRead(0xAA, 0xBB, 0xCC, 0xDD),
 		})
-		if err != nil {
-			t.Fatalf("fillMaskingKey: %v", err)
-		}
 		if key != [4]byte{0xAA, 0xBB, 0xCC, 0xDD} {
 			t.Errorf("got % x", key)
 		}
 	})
 
-	t.Run("propagates the rand error", func(t *testing.T) {
-		want := errors.New("entropy exhausted")
-		var key [4]byte
-		err := fillMaskingKey(&key, fillMaskingKeyDI{
-			randRead: func([]byte) (int, error) { return 0, want },
-		})
-		if !errors.Is(err, want) {
-			t.Errorf("err = %v, want %v", err, want)
-		}
-	})
-
-	t.Run("real wiring fills the key", func(t *testing.T) {
-		var key [4]byte
-		if err := FillMaskingKey(&key); err != nil {
-			t.Fatalf("FillMaskingKey: %v", err)
+	t.Run("real wiring varies between calls", func(t *testing.T) {
+		var firstKey, secondKey [4]byte
+		FillMaskingKey(&firstKey)
+		FillMaskingKey(&secondKey)
+		if firstKey == secondKey {
+			t.Errorf("two keys should not be identical: % x", firstKey)
 		}
 	})
 }
