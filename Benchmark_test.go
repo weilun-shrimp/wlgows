@@ -145,7 +145,7 @@ func TestBenchmarkReport(t *testing.T) {
 func benchmarkSend(mask bool, total, count int) func(*testing.B) {
 	return func(b *testing.B) {
 		conn := &benchmarkConn{}
-		c, err := NewConn(conn, nil, bufio.NewWriterSize(conn, benchmarkBufferSize), mask)
+		c, err := NewConn(conn, nil, bufio.NewWriterSize(conn, benchmarkBufferSize), NewConnConfig{PeerIsClient: !mask})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -183,7 +183,7 @@ func benchmarkRead(mask bool, total, count int) func(*testing.B) {
 	return func(b *testing.B) {
 		// The other side sends the frames once, so the wire is real.
 		sender := newFakeConn(nil)
-		senderConn, err := NewConn(sender, nil, bufio.NewWriterSize(sender, benchmarkBufferSize), mask)
+		senderConn, err := NewConn(sender, nil, bufio.NewWriterSize(sender, benchmarkBufferSize), NewConnConfig{PeerIsClient: !mask})
 		if err != nil {
 			b.Fatal(err)
 		}

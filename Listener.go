@@ -31,6 +31,11 @@ type Listener struct {
 	// replace at any time, and which is read through GetConfig for that reason.
 	conn ListenerConn
 
+	// Fixed by NewListener like conn, so they are read without a lock. See
+	// NewListenerConfig.
+	peerIsClient                  bool
+	permessageDeflateAgreedConfig *PermessageDeflateConfig
+
 	// Written one item at a time by the setters, which a hook may call from
 	// inside the read loop. Nothing reads it directly: GetConfig is the only way
 	// in, so there is one place taking configLocker rather than one per reader
@@ -57,6 +62,9 @@ type Listener struct {
 	// The message's type, from its first frame — 5.4 makes it the type of every
 	// fragment after it. See GetCurrentMsgOpcode.
 	currentDataFrameOpcode byte
+	// Whether the message is compressed, from its first frame's RSV1 (RFC 7692
+	// 6): its continuations carry RSV1 clear.
+	currentDataFramesDeflated bool
 
 	// Guards pauseChan, so Listen and PauseListen can be called from different
 	// goroutines without two loops starting on one connection or a closed
@@ -94,24 +102,44 @@ type ListenerConn interface {
 	SetReadDeadline(t time.Time) error
 }
 
+// NewListenerConfig is what a Listener is fixed to for its whole life, unlike
+// ListenerConfig, which SetConfig can replace at any time.
+type NewListenerConfig struct {
+	// PeerIsClient is true when the peer is a client. RFC 6455 5.1 says a
+	// client masks every frame and a server masks none. If it is set wrong,
+	// every frame fails with ErrFrameNotMasked or ErrFrameMasked; its zero
+	// value says the peer is a server.
+	PeerIsClient bool
+
+	// PermessageDeflateAgreedConfig is the config the handshake agreed. nil
+	// means permessage-deflate was not agreed.
+	PermessageDeflateAgreedConfig *PermessageDeflateConfig
+}
+
 /*
 NewListener builds a Listener reading from conn.
 
 The zero value is not usable — the lockers would be nil and panic on the first
-Lock — so this is the only way to make one. The connection is settled here for
-good; the configuration is not, and SetConfig may replace it whenever, including
-while a loop runs.
+Lock — so this is the only way to make one. The connection and the
+NewListenerConfig are settled here for good; the ListenerConfig is not, and
+SetConfig may replace it whenever, including while a loop runs.
 
-	listener := wlgows.NewListener(conn)
+	listener := wlgows.NewListener(conn, wlgows.NewListenerConfig{
+		PeerIsClient:                  true,
+		PermessageDeflateAgreedConfig: conn.GetPermessageDeflateAgreedConfig(),
+	})
 	listener.SetConfig(config)
 	err := listener.Listen()
 
 A nil conn is not refused here, since there is nothing to return it in. Listen
 answers ErrListenerConnIsNil instead, before it reads anything.
 */
-func NewListener(conn ListenerConn) *Listener {
+func NewListener(conn ListenerConn, config NewListenerConfig) *Listener {
 	return &Listener{
 		conn: conn,
+
+		peerIsClient:                  config.PeerIsClient,
+		permessageDeflateAgreedConfig: config.PermessageDeflateAgreedConfig,
 
 		configLocker: &sync.Mutex{},
 
@@ -133,11 +161,22 @@ func (l *Listener) GetCurrentMsgOpcode() byte {
 }
 
 /*
+IsCurrentMsgDeflated is whether the message in flight is deflated, from its
+first frame's RSV1 (RFC 7692 6). False when none is open.
+
+It is for the Data hook, where a continuation frame carries RSV1 clear. Call it
+from inside the hook, as GetCurrentMsgOpcode.
+*/
+func (l *Listener) IsCurrentMsgDeflated() bool {
+	return l.currentDataFramesDeflated
+}
+
+/*
 validateFrameHeader refuses a frame by its header, before its payload is
-allocated: the reserved bits, the masking direction, the rules every control
-frame shares, the fragment order and the limits. What a particular opcode
-requires of its own payload is routeFrame's question, since that is where each
-one is handled.
+allocated: the reserved bits (RSV1 for permessage-deflate), the masking
+direction, the rules every control frame shares, the fragment order and the
+limits. What a particular opcode requires of its own payload is routeFrame's
+question, since that is where each one is handled.
 
 f has every header field set and no payload yet. The rules are MUSTs in RFC
 6455, answered with close code 1002; the limits are this Listener's, answered
@@ -145,10 +184,15 @@ with 1009.
 */
 func (l *Listener) validateFrameHeader(f *Frame) error {
 	config := l.GetConfig()
-	peerIsClient := config.PeerIsClient
+	peerIsClient := l.peerIsClient
 
-	// 5.2: the reserved bits belong to negotiated extensions, and none is.
-	if f.RSV1 || f.RSV2 || f.RSV3 {
+	// 5.2: the reserved bits belong to negotiated extensions. RFC 7692 6:
+	// permessage-deflate takes RSV1, set on the first frame of a compressed
+	// message, never on a control frame or a continuation. A text or binary
+	// frame while a message is open is refused below (5.4).
+	rsv1_allowed := l.permessageDeflateAgreedConfig != nil &&
+		(f.Opcode == OpcodeText || f.Opcode == OpcodeBinary)
+	if (f.RSV1 && !rsv1_allowed) || f.RSV2 || f.RSV3 {
 		return ErrReservedBitsSet
 	}
 

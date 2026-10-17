@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"net/http"
+	"reflect"
 	"testing"
 )
 
@@ -117,4 +118,130 @@ func TestHeaderHasToken(t *testing.T) {
 			t.Error("headerHasToken with a lowercased key = false, want true")
 		}
 	})
+}
+
+func TestHeaderValues(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string // one entry per line the field arrived on
+		want  []string
+	}{
+		{name: "absent field"},
+		{
+			name:  "one value",
+			lines: []string{"chat"},
+			want:  []string{"chat"},
+		},
+		{
+			name:  "a list on one line",
+			lines: []string{"chat, superchat"},
+			want:  []string{"chat", "superchat"},
+		},
+		{
+			name:  "a list across two lines keeps the order",
+			lines: []string{"chat, superchat", "mine"},
+			want:  []string{"chat", "superchat", "mine"},
+		},
+		{
+			name:  "padded with spaces and tabs",
+			lines: []string{" \tchat \t,superchat "},
+			want:  []string{"chat", "superchat"},
+		},
+		{
+			name:  "empty values are skipped",
+			lines: []string{", chat, , superchat,", ""},
+			want:  []string{"chat", "superchat"},
+		},
+		{
+			name:  "a comma inside quotes does not split",
+			lines: []string{`x-ext; note="a,b", chat`},
+			want:  []string{`x-ext; note="a,b"`, "chat"},
+		},
+	}
+	for _, testCase := range cases {
+		header := http.Header{}
+		for _, line := range testCase.lines {
+			header.Add("Sec-WebSocket-Protocol", line)
+		}
+		if got := headerValues(header, "Sec-WebSocket-Protocol"); !reflect.DeepEqual(got, testCase.want) {
+			t.Errorf("%s: headerValues = %q, want %q", testCase.name, got, testCase.want)
+		}
+	}
+}
+
+func TestSplitOutsideQuotes(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		separator byte
+		want      []string
+	}{
+		{
+			name:      "splits at each separator",
+			input:     "a,b,c",
+			separator: ',',
+			want:      []string{"a", "b", "c"},
+		},
+		{
+			name:      "splits at another separator",
+			input:     "a;b",
+			separator: ';',
+			want:      []string{"a", "b"},
+		},
+		{
+			name:      "no separator",
+			input:     "abc",
+			separator: ',',
+			want:      []string{"abc"},
+		},
+		{
+			name:      "an empty string is one empty part",
+			input:     "",
+			separator: ',',
+			want:      []string{""},
+		},
+		{
+			name:      "separators at the ends keep empty parts",
+			input:     ",a,",
+			separator: ',',
+			want:      []string{"", "a", ""},
+		},
+		{
+			// RFC 7230 3.2.6.
+			name:      "a separator inside quotes does not split",
+			input:     `a="x,y",b`,
+			separator: ',',
+			want:      []string{`a="x,y"`, "b"},
+		},
+		{
+			// RFC 7230 3.2.6: a quoted-pair escapes the next byte.
+			name:      "an escaped quote does not close the quotes",
+			input:     `a="x\",y",b`,
+			separator: ',',
+			want:      []string{`a="x\",y"`, "b"},
+		},
+		{
+			name:      "a backslash outside quotes is not an escape",
+			input:     `a\,b`,
+			separator: ',',
+			want:      []string{`a\`, "b"},
+		},
+		{
+			name:      "an unclosed quote keeps the rest as one part",
+			input:     `a="x,y`,
+			separator: ',',
+			want:      []string{`a="x,y`},
+		},
+		{
+			name:      "a backslash at the end inside quotes",
+			input:     `a="x\`,
+			separator: ',',
+			want:      []string{`a="x\`},
+		},
+	}
+	for _, testCase := range cases {
+		if got := splitOutsideQuotes(testCase.input, testCase.separator); !reflect.DeepEqual(got, testCase.want) {
+			t.Errorf("%s: splitOutsideQuotes = %q, want %q", testCase.name, got, testCase.want)
+		}
+	}
 }

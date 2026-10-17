@@ -15,7 +15,8 @@ func TestNewConn(t *testing.T) {
 		r := bufio.NewReader(netConn)
 		w := bufio.NewWriterSize(netConn, 100)
 
-		wsConn, err := NewConn(netConn, r, w, true)
+		deflate := &PermessageDeflateConfig{}
+		wsConn, err := NewConn(netConn, r, w, NewConnConfig{PeerIsClient: true, PermessageDeflate: deflate})
 		if err != nil {
 			t.Fatalf("NewConn: %v", err)
 		}
@@ -28,8 +29,18 @@ func TestNewConn(t *testing.T) {
 		if wsConn.writer != w {
 			t.Error("writer was not set")
 		}
-		if !wsConn.maskSendFrame {
-			t.Error("maskSendFrame was not set")
+		if !wsConn.peerIsClient {
+			t.Error("peerIsClient was not set")
+		}
+		if wsConn.permessageDeflateAgreedConfig != deflate {
+			t.Error("permessageDeflateAgreedConfig was not set")
+		}
+		// Each deflater needs its own lock, or its first call panics.
+		if context_deflater, ok := wsConn.contextDeflater.(*contextDeflater); !ok || context_deflater.locker == nil {
+			t.Errorf("contextDeflater = %#v, want a *contextDeflater with a locker", wsConn.contextDeflater)
+		}
+		if no_context_deflater, ok := wsConn.noContextDeflater.(*noContextDeflater); !ok || no_context_deflater.locker == nil {
+			t.Errorf("noContextDeflater = %#v, want a *noContextDeflater with a locker", wsConn.noContextDeflater)
 		}
 		// Constructors are mandatory precisely because they populate di.
 		if wsConn.di.getFrameHeader == nil || wsConn.di.fillFramePayload == nil || wsConn.di.newControlFrame == nil {
@@ -47,7 +58,7 @@ func TestNewConn(t *testing.T) {
 		w := bufio.NewWriterSize(netConn, 5)
 		w.WriteString("abc")
 
-		wsConn, err := NewConn(netConn, bufio.NewReader(netConn), w, true)
+		wsConn, err := NewConn(netConn, bufio.NewReader(netConn), w, NewConnConfig{})
 		if !errors.Is(err, wantErr) || wsConn != nil {
 			t.Errorf("NewConn = %v, %v, want nil, %v", wsConn, err, wantErr)
 		}
@@ -59,7 +70,7 @@ func TestNewConn(t *testing.T) {
 func TestConnLocking(t *testing.T) {
 	t.Run("LockRead and UnlockRead take and release the read lock", func(t *testing.T) {
 		var steps []string
-		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), NewConnConfig{PeerIsClient: true})
 		wsConn.di.readLocker = fakeFuncLocker{
 			lock:   func() { steps = append(steps, "read lock") },
 			unlock: func() { steps = append(steps, "read unlock") },
@@ -76,7 +87,7 @@ func TestConnLocking(t *testing.T) {
 	// sync.Mutex would deadlock on the second Lock.
 	t.Run("the two read steps leave the lock to the caller", func(t *testing.T) {
 		var steps []string
-		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+		wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), NewConnConfig{PeerIsClient: true})
 		wsConn.di.readLocker = fakeFuncLocker{
 			lock:   func() { steps = append(steps, "read lock") },
 			unlock: func() { steps = append(steps, "read unlock") },
@@ -101,7 +112,7 @@ func TestConnLocking(t *testing.T) {
 func TestConnGetNextFrameHeader(t *testing.T) {
 	want := &Frame{FIN: true, Opcode: OpcodeText, PayloadLength: 5}
 	wantErr := errors.New("read failed")
-	wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+	wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), NewConnConfig{PeerIsClient: true})
 	var gotReader *bufio.Reader
 	wsConn.di.getFrameHeader = func(reader *bufio.Reader) (*Frame, error) {
 		gotReader = reader
@@ -120,7 +131,7 @@ func TestConnGetNextFrameHeader(t *testing.T) {
 func TestConnReadFramePayload(t *testing.T) {
 	frame := &Frame{Opcode: OpcodeText, PayloadLength: 5}
 	wantErr := errors.New("read failed")
-	wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+	wsConn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), NewConnConfig{PeerIsClient: true})
 	var gotReader *bufio.Reader
 	var gotFrame *Frame
 	wsConn.di.fillFramePayload = func(payloadFrame *Frame, reader *bufio.Reader) error {
@@ -136,10 +147,41 @@ func TestConnReadFramePayload(t *testing.T) {
 	}
 }
 
+func TestConnGetPermessageDeflateAgreedConfig(t *testing.T) {
+	t.Run("nil when none was agreed", func(t *testing.T) {
+		c := &Conn{}
+
+		if got := c.GetPermessageDeflateAgreedConfig(); got != nil {
+			t.Errorf("got %+v, want nil", got)
+		}
+	})
+
+	t.Run("a copy of the agreed config", func(t *testing.T) {
+		agreed := &PermessageDeflateConfig{
+			ClientNoContextTakeover:    true,
+			ServerNoContextTakeover:    true,
+			ClientMaxWindowBitsEnabled: true,
+			ClientMaxWindowBits:        15,
+			ServerMaxWindowBits:        15,
+		}
+		c := &Conn{permessageDeflateAgreedConfig: agreed}
+
+		got := c.GetPermessageDeflateAgreedConfig()
+		if got == nil || *got != *agreed {
+			t.Fatalf("got %+v, want %+v", got, *agreed)
+		}
+		// Changing the copy leaves the Conn's agreement as it was.
+		got.ClientNoContextTakeover = false
+		if !c.permessageDeflateAgreedConfig.ClientNoContextTakeover {
+			t.Error("changing the result changed the Conn's agreed config")
+		}
+	})
+}
+
 func TestConnClose(t *testing.T) {
 	t.Run("closes the socket", func(t *testing.T) {
 		netConn := newFakeConn(nil)
-		wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+		wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 
 		if err := wsConn.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -153,7 +195,7 @@ func TestConnClose(t *testing.T) {
 		want := errors.New("close failed")
 		netConn := newFakeConn(nil)
 		netConn.closeErr = want
-		wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+		wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 
 		if err := wsConn.Close(); !errors.Is(err, want) {
 			t.Fatalf("err = %v, want %v", err, want)

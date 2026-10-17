@@ -113,10 +113,12 @@ var (
 	// MaxDataFrameCount allows — answer with close code 1009.
 	ErrDataFrameCountExceeded = errors.New("message arrived in more frames than allowed")
 
-	// ErrReservedBitsSet is a frame with RSV1, RSV2 or RSV3 set. RFC 6455 5.2
-	// requires them clear unless an extension defining them was negotiated in
-	// the handshake, and none is — answer with close code 1002.
-	ErrReservedBitsSet = errors.New("frame has a reserved bit set with no extension negotiated")
+	// ErrReservedBitsSet is a frame with RSV1, RSV2 or RSV3 set where no
+	// negotiated extension allows it. RFC 6455 5.2 requires them clear unless
+	// an extension defining them was negotiated in the handshake. The only one
+	// is permessage-deflate, which allows RSV1 on the first frame of a text or
+	// binary message (RFC 7692 6, 6.1) — answer with close code 1002.
+	ErrReservedBitsSet = errors.New("frame has a reserved bit set that no negotiated extension allows")
 
 	// ErrControlFrameFragmented is a control frame with FIN clear. RFC 6455 5.5
 	// forbids fragmenting one — answer with close code 1002.
@@ -157,6 +159,30 @@ var (
 	// same message may have, leaving it unterminated. A ping or pong is never
 	// refused: 5.5.2 still allows both.
 	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
+
+	// ErrDeflateLevelInvalid is a DeflateLevel compress/flate has no level
+	// for: below flate.HuffmanOnly (-2) or above flate.BestCompression (9).
+	// Nothing is sent.
+	ErrDeflateLevelInvalid = errors.New("deflate level is not a compress/flate level")
+
+	// ErrInflateDataInvalid is a compressed message that does not inflate:
+	// the peer sent a corrupt or truncated deflate stream (RFC 7692 7.2.2).
+	// It wraps compress/flate's error — answer with close code 1007.
+	ErrInflateDataInvalid = errors.New("compressed message does not inflate")
+
+	// ErrInflatedSizeExceeded is a message past the size you allow. Nothing in
+	// this package returns it: pass it to StandardClosePayloadFor for close
+	// code 1009.
+	ErrInflatedSizeExceeded = errors.New("inflated data exceeds the size allowed")
+
+	// ErrInflateFramesTokenStale is a token from StartInflateDataFrames whose
+	// message ended, or another message's token.
+	ErrInflateFramesTokenStale = errors.New("token is not the open inflated message's")
+
+	// ErrDataFramesNotEnded is data frames given to DataFramesReader that are
+	// empty or whose last frame has FIN clear, so they are not one whole
+	// message (RFC 6455 5.4).
+	ErrDataFramesNotEnded = errors.New("data frames do not end with a FIN frame")
 )
 
 // dial
@@ -215,6 +241,17 @@ var (
 	// ReadHandShakeResponse called with a nil *http.Request.
 	ErrHandshakeRequestNil = errors.New("handshake request is nil")
 
+	// ErrHandshakeRequestDeflateWindowBitsInvalid is a PermessageDeflateConfig
+	// whose ServerMaxWindowBits is not 0 or 8 to 15 (RFC 7692 7.1.2.1). A
+	// server must decline such an offer (RFC 7692 7).
+	ErrHandshakeRequestDeflateWindowBitsInvalid = errors.New("permessage-deflate window bits are not 0 or 8 to 15")
+
+	// ErrHandshakeRequestDeflateUnsupported is a PermessageDeflateConfig with
+	// ClientMaxWindowBitsEnabled (library choice). It would let the server set
+	// the client's window under 15 bits, and Go's compress/flate cannot send
+	// with a window that small.
+	ErrHandshakeRequestDeflateUnsupported = errors.New("permessage-deflate offer with client_max_window_bits is not supported")
+
 	// The following are ValidateHandShakeResponse rejecting the server's
 	// opening handshake response against RFC 6455 4.1.
 	ErrHandshakeResponseStatusCodeInvalid       = errors.New("handshake response status code is not 101")
@@ -226,10 +263,22 @@ var (
 
 	// The following are ValidateHandShakeResponseSubprotocol rejecting the
 	// server's Sec-WebSocket-Protocol. RFC 6455 4.1 has the client fail the
-	// connection on either. More than one value is checked first, on one line
-	// or several, since the server may answer with one only (4.2.2).
+	// connection on each. Repeated is the header sent more than once (11.3.4).
+	// Multiple is one header holding a list, where the response allows one
+	// token (4.3).
+	ErrHandshakeResponseSubprotocolRepeated   = errors.New("handshake response Sec-WebSocket-Protocol header must not appear more than once")
 	ErrHandshakeResponseSubprotocolMultiple   = errors.New("handshake response Sec-WebSocket-Protocol has more than one value")
 	ErrHandshakeResponseSubprotocolNotOffered = errors.New("handshake response Sec-WebSocket-Protocol is not a value the client offered")
+
+	// The following are ValidateHandShakeResponseDeflate rejecting the server's
+	// permessage-deflate answer. RFC 7692 5 has the client fail the connection
+	// on each. ExtensionNotOffered is an answer no single offer allows, or
+	// permessage-deflate accepted twice. DeflateParamsInvalid is a param RFC
+	// 7692 7 forbids. DeflateUnsupported is a valid answer wlgows cannot follow
+	// (library choice).
+	ErrHandshakeResponseExtensionNotOffered  = errors.New("handshake response Sec-WebSocket-Extensions is not what the client offered")
+	ErrHandshakeResponseDeflateParamsInvalid = errors.New("handshake response permessage-deflate params are invalid")
+	ErrHandshakeResponseDeflateUnsupported   = errors.New("handshake response permessage-deflate params are not supported")
 )
 
 // server handshake
@@ -237,6 +286,14 @@ var (
 	// ErrHandshakeResponseNil is SendHandShakeResponse called with a nil
 	// *http.Response.
 	ErrHandshakeResponseNil = errors.New("handshake response is nil")
+
+	// The following are ValidateServerDeflateConfig rejecting
+	// ServerHandShakeConfig.PermessageDeflates. DeflateConfigInvalid would put a
+	// param RFC 7692 7 forbids in the response. DeflateConfigUnsupported is a
+	// window under 15 bits for the server, which Go's compress/flate cannot
+	// send with (library choice).
+	ErrHandshakeServerDeflateConfigInvalid     = errors.New("server permessage-deflate config is invalid")
+	ErrHandshakeServerDeflateConfigUnsupported = errors.New("server permessage-deflate config is not supported")
 )
 
 /*
@@ -246,9 +303,11 @@ nil when a close frame is not the answer.
 RFC 6455 7.1.7 fails the connection on a protocol violation and 7.4.1 defines
 the codes an endpoint may use to name each one. This is that table:
 
-	ErrInvalidUTF8                                -> 1007 CloseInvalidFramePayloadData
+	ErrInvalidUTF8,
+	ErrInflateDataInvalid                         -> 1007 CloseInvalidFramePayloadData
 	ErrFrameByteLengthExceeded,
-	ErrDataFrameCountExceeded                     -> 1009 CloseMessageTooBig
+	ErrDataFrameCountExceeded,
+	ErrInflatedSizeExceeded                       -> 1009 CloseMessageTooBig
 	every other violation a frame can commit      -> 1002 CloseProtocolError
 
 Reason is left empty. What to tell the peer about your own internals is a policy
@@ -284,11 +343,13 @@ section of LISTENER_README.md works through the whole shape.
 */
 func StandardClosePayloadFor(err error) *ClosePayload {
 	switch {
-	case errors.Is(err, ErrInvalidUTF8):
+	case errors.Is(err, ErrInvalidUTF8),
+		errors.Is(err, ErrInflateDataInvalid):
 		return &ClosePayload{StatusCode: CloseInvalidFramePayloadData}
 
 	case errors.Is(err, ErrFrameByteLengthExceeded),
-		errors.Is(err, ErrDataFrameCountExceeded):
+		errors.Is(err, ErrDataFrameCountExceeded),
+		errors.Is(err, ErrInflatedSizeExceeded):
 		return &ClosePayload{StatusCode: CloseMessageTooBig}
 
 	case errors.Is(err, ErrReservedBitsSet),

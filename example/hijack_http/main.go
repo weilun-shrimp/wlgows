@@ -135,7 +135,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("text: frames=%d bytes=%d runes=%d: %s\n",
 			len(frames), frames.ByteLen(), utf8.RuneCountInString(text), text)
 
-		if err := conn.SendText(frames.Bytes(), 0); err != nil {
+		if err := conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}); err != nil {
 			fmt.Println("echo text:", err)
 		}
 	}
@@ -144,7 +144,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	config.Binary = func(frames wlgows.DataFrames) {
 		fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), frames.ByteLen())
 
-		if err := conn.SendBinary(frames.Bytes(), 0); err != nil {
+		if err := conn.SendBinary(frames.Bytes(), wlgows.SendDataConfig{}); err != nil {
 			fmt.Println("echo binary:", err)
 		}
 	}

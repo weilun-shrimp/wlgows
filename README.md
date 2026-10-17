@@ -106,7 +106,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	config.MaxFrameSize = 10 * 1024 * 1024
 	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 	config.Text = func(frames wlgows.DataFrames) {
-		conn.SendText(frames.Bytes(), 0) // echo
+		conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
 	}
 	listener.SetConfig(config)
 
@@ -158,7 +158,7 @@ func main() {
 	defer netConn.Close()
 
 	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see LISTENER_README.md to shrink it
-	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request) // 4096 bytes/conn; see SENDING_README.md
+	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 4096 bytes/conn; see SENDING_README.md
 	if err != nil {
 		panic(err)
 	}
@@ -176,7 +176,7 @@ func main() {
 
 	go conn.StartPingLoop(30*time.Second, nil) // heartbeat; ends itself
 
-	conn.SendText([]byte("Hello, WebSocket!"), 0)
+	conn.SendText([]byte("Hello, WebSocket!"), wlgows.SendDataConfig{})
 
 	if err := listener.Listen(); err != nil {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
@@ -198,7 +198,7 @@ none (RFC 6455 5.1).
 | **[SERVER_README.md](./SERVER_README.md)** | Accepting a connection, the handshake and its refusals, HTTP hijacking from `net/http` or Gin, TLS, subprotocols |
 | **[CLIENT_README.md](./CLIENT_README.md)** | Dialing, TLS, the handshake, adding headers, subprotocols |
 | **[LISTENER_README.md](./LISTENER_README.md)** | Reading: hooks, limits, errors, noticing a dead peer, one frame at a time, the read buffer |
-| **[SENDING_README.md](./SENDING_README.md)** | Sending: whole messages, streaming, control frames, pinging on an interval, the write buffer, locks |
+| **[SENDING_README.md](./SENDING_README.md)** | Sending: whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks |
 | **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket and gobwas/ws: every number, and why each loss stays |
 
 ## Examples

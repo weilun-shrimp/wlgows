@@ -3,8 +3,8 @@ package wlgows
 import "time"
 
 /*
-ListenerConfig is everything a Listener reads from, handed over whole by
-SetConfig. Every item has a working zero value, so a Listener is usable before
+ListenerConfig is what a Listener reads from that may change while it runs,
+handed over whole by SetConfig. What is fixed for its life is NewListenerConfig. Every item has a working zero value, so a Listener is usable before
 SetConfig is called — one that refuses malformed frames and answers nothing.
 */
 type ListenerConfig struct {
@@ -34,11 +34,6 @@ type ListenerConfig struct {
 	// than the bytes they spend. 0 means no limit. When a message goes over it,
 	// answer 1009 and close. LISTENER_README.md explains how to pick a value.
 	MaxDataFrameCount uint64
-
-	// PeerIsClient is true when the peer is a client. RFC 6455 5.1 says a
-	// client masks every frame and a server masks none. If it is set wrong,
-	// every frame fails with ErrFrameNotMasked or ErrFrameMasked.
-	PeerIsClient bool
 
 	// The hooks run one at a time in the read loop. A slow hook stops reading,
 	// so hand slow work to a goroutine. A nil hook drops its frames.
@@ -97,9 +92,7 @@ why changing one thing is a GetConfig away:
 	listener.SetConfig(config)
 
 Nothing here is required. Every item has a working zero value, so a Listener
-this was never called on still reads — though a zero PeerIsClient says the peer
-is a server, and a server that never says otherwise refuses every frame a client
-sends.
+this was never called on still reads.
 */
 func (l *Listener) SetConfig(config ListenerConfig) {
 	l.configLocker.Lock()

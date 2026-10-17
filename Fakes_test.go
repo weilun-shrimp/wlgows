@@ -78,6 +78,33 @@ type fakeFuncLocker struct {
 func (locker fakeFuncLocker) Lock()   { locker.lock() }
 func (locker fakeFuncLocker) Unlock() { locker.unlock() }
 
+// fakeFuncReadCloser runs its funcs, so a test can record each call. It is an
+// io.ReadCloser. Set the ones the code under test calls.
+type fakeFuncReadCloser struct {
+	readFunc  func(p []byte) (int, error)
+	closeFunc func() error
+}
+
+func (r *fakeFuncReadCloser) Read(p []byte) (int, error) { return r.readFunc(p) }
+func (r *fakeFuncReadCloser) Close() error               { return r.closeFunc() }
+
+// fakeFuncDeflater runs its funcs, so a test can record each call. It is a
+// connContextDeflater, and so every deflater interface. Set the ones the code
+// under test calls.
+type fakeFuncDeflater struct {
+	deflateFunc             func(data []byte, level int) ([]byte, error)
+	releaseResultBufferFunc func()
+	resultBufferCapFunc     func() int
+	dropContextFunc         func()
+}
+
+func (d fakeFuncDeflater) deflate(data []byte, level int) ([]byte, error) {
+	return d.deflateFunc(data, level)
+}
+func (d fakeFuncDeflater) releaseResultBuffer() { d.releaseResultBufferFunc() }
+func (d fakeFuncDeflater) resultBufferCap() int { return d.resultBufferCapFunc() }
+func (d fakeFuncDeflater) dropContext()         { d.dropContextFunc() }
+
 // fakeIOWriter is a plain io.Writer double: it records what it's given and can
 // be told to fail, for callers that only need io.Writer rather than the
 // net.Conn-shaped fakeConn.

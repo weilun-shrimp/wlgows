@@ -12,7 +12,7 @@ import (
 func (c *Conn) bufferedWriteFrame(f *Frame) error {
 	return bufferedWriteFrame(f, bufferedWriteFrameDI{
 		closeSent:         c.closeSent,
-		maskSendFrame:     c.maskSendFrame,
+		maskSendFrame:     !c.peerIsClient, // RFC 6455 5.1: a client masks, a server does not
 		writer:            c.writer,
 		validateSendFrame: validateSendFrame,
 		prepareSendFrame:  prepareSendFrame,
@@ -133,9 +133,10 @@ returns. Prefer SendText, SendClose, SendPing or SendPong.
 
 Yours to keep: a fragmented message's sequence (5.4) — first frame carries the
 opcode, continuations 0, only the last sets FIN, nothing in between; serialise
-concurrent senders yourself. The opcode and RSV bits are sent as they are: RSV
-must be 0, as no extension is negotiated (5.2), and only the opcode's low 4 bits
-reach the wire. A text payload must be valid UTF-8 (5.6).
+concurrent senders yourself. The opcode and RSV bits are sent as they are, and
+only the opcode's low 4 bits reach the wire. RSV2 and RSV3 must be 0 (5.2).
+SendFrame never compresses, so leave RSV1 0 too: it marks a compressed message
+(RFC 7692 6). A text payload must be valid UTF-8 (5.6).
 
 Settled in place, so your frame is modified: Mask and a fresh MaskingKey per
 send from the Conn's side (5.1, 5.3), the length fields from len(PayloadData),

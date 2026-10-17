@@ -2,7 +2,9 @@ package wlgows
 
 import (
 	"bytes"
+	"io"
 	"testing"
+	"testing/iotest"
 	"unicode/utf8"
 )
 
@@ -230,6 +232,147 @@ func BenchmarkDataFramesAssembly(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			benchmarkFramesAssemblyStrSink = msg.String()
+		}
+	})
+}
+
+func TestCheckDataFramesFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		frames DataFrames
+	}{
+		{"one frame", DataFrames{{Opcode: OpcodeText, FIN: true}}},
+		{"a deflated message", DataFrames{
+			{Opcode: OpcodeBinary, RSV1: true},
+			{Opcode: OpcodeContinuation, FIN: true},
+		}},
+	} {
+		t.Run(tc.name+" is one message", func(t *testing.T) {
+			if err := checkDataFramesFormat(tc.frames); err != nil {
+				t.Errorf("checkDataFramesFormat = %v, want nil", err)
+			}
+		})
+	}
+
+	// RFC 6455 5.4: one message is a text or binary frame, then continuations,
+	// the last with FIN set.
+	for _, tc := range []struct {
+		name   string
+		frames DataFrames
+		want   error
+	}{
+		{"no frames", DataFrames{}, ErrDataFramesNotEnded},
+		{"a continuation first", DataFrames{
+			{Opcode: OpcodeContinuation, FIN: true},
+		}, ErrContinuationFrameWithoutMsg},
+		{"a text or binary frame after the first", DataFrames{
+			{Opcode: OpcodeBinary},
+			{Opcode: OpcodeText, FIN: true},
+		}, ErrDataFrameDuringMsg},
+		{"a frame after a FIN frame", DataFrames{
+			{Opcode: OpcodeBinary, FIN: true},
+			{Opcode: OpcodeContinuation, FIN: true},
+		}, ErrContinuationFrameWithoutMsg},
+		{"a last frame with FIN clear", DataFrames{
+			{Opcode: OpcodeBinary},
+			{Opcode: OpcodeContinuation},
+		}, ErrDataFramesNotEnded},
+	} {
+		t.Run(tc.name+" is not one message", func(t *testing.T) {
+			if err := checkDataFramesFormat(tc.frames); err != tc.want {
+				t.Errorf("checkDataFramesFormat = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	// RFC 7692 6.1: only the first frame carries RSV1.
+	t.Run("RSV1 on a frame after the first returns ErrReservedBitsSet", func(t *testing.T) {
+		frames := DataFrames{
+			{Opcode: OpcodeBinary, PayloadData: []byte("x")},
+			{Opcode: OpcodeContinuation, FIN: true, RSV1: true, PayloadData: []byte("y")},
+		}
+		if err := checkDataFramesFormat(frames); err != ErrReservedBitsSet {
+			t.Errorf("checkDataFramesFormat = %v, want ErrReservedBitsSet", err)
+		}
+	})
+}
+
+func TestNewDataFramesReader(t *testing.T) {
+	// iotest.TestReader checks order, small reads and io.EOF again after the
+	// end. Empty and nil payloads between frames are skipped.
+	t.Run("reads every payload in order", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{
+			{PayloadData: []byte("ab")},
+			{PayloadData: []byte{}},
+			{PayloadData: nil},
+			{PayloadData: []byte("cde")},
+			{PayloadData: nil},
+		})
+		if err := iotest.TestReader(reader, []byte("abcde")); err != nil {
+			t.Error(err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		frames DataFrames
+	}{
+		{"no frames", nil},
+		{"only empty payloads", DataFrames{{PayloadData: nil}, {PayloadData: []byte{}}}},
+	} {
+		t.Run(tc.name+" is an empty message", func(t *testing.T) {
+			if got, err := io.ReadAll(newDataFramesReader(tc.frames)); len(got) != 0 || err != nil {
+				t.Errorf("ReadAll = %q, %v, want empty, nil", got, err)
+			}
+		})
+	}
+
+	t.Run("reads the payloads in place: a change before the Read shows", func(t *testing.T) {
+		payload := []byte("ab")
+		reader := newDataFramesReader(DataFrames{{PayloadData: payload}})
+		payload[0] = 'x'
+		if got, _ := io.ReadAll(reader); string(got) != "xb" {
+			t.Errorf("ReadAll = %q, want \"xb\"", got)
+		}
+	})
+
+	t.Run("one Read fills p across frames", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{{PayloadData: []byte("ab")}, {PayloadData: []byte("cd")}})
+		p := make([]byte, 3)
+		if n, err := reader.Read(p); n != 3 || err != nil || string(p) != "abc" {
+			t.Errorf("Read = %d, %v, %q, want 3, nil, \"abc\"", n, err, p[:n])
+		}
+	})
+
+	t.Run("an empty p reads nothing, no error, before the end", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{{PayloadData: []byte("ab")}})
+		if n, err := reader.Read(nil); n != 0 || err != nil {
+			t.Errorf("Read(nil) = %d, %v, want 0, nil", n, err)
+		}
+	})
+
+	t.Run("allocates once", func(t *testing.T) {
+		frames := DataFrames{{PayloadData: []byte("ab")}, {PayloadData: []byte("cd")}, {PayloadData: []byte("e")}}
+		var reader io.ReadCloser // kept outside the func, so the reader goes to the heap as in real use
+		if allocs := testing.AllocsPerRun(100, func() { reader = newDataFramesReader(frames) }); allocs != 1 {
+			t.Errorf("newDataFramesReader allocates %v times, want 1", allocs)
+		}
+		_ = reader
+	})
+
+	t.Run("Close lets go of the frames; a Read after returns io.ErrClosedPipe", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{{PayloadData: []byte("ab")}})
+		if err := reader.Close(); err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+		if frames := reader.(*dataFramesPayloadReader).dataFrames; frames != nil {
+			t.Errorf("frames after Close %v, want nil", frames)
+		}
+		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != io.ErrClosedPipe {
+			t.Errorf("Read after Close = %d, %v, want 0, io.ErrClosedPipe", n, err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Errorf("second Close = %v, want nil", err)
 		}
 	})
 }

@@ -6,25 +6,147 @@ import (
 	"testing"
 )
 
+func TestNewListener(t *testing.T) {
+	conn, _ := hookConn()
+	agreed := &PermessageDeflateConfig{}
+
+	l := NewListener(conn, NewListenerConfig{
+		PeerIsClient:                  true,
+		PermessageDeflateAgreedConfig: agreed,
+	})
+
+	if l.conn != ListenerConn(conn) {
+		t.Error("conn was not set")
+	}
+	if !l.peerIsClient {
+		t.Error("peerIsClient was not set")
+	}
+	if l.permessageDeflateAgreedConfig != agreed {
+		t.Error("permessageDeflateAgreedConfig was not set")
+	}
+	// The zero Listener panics on the first Lock, which is why this exists.
+	if l.configLocker == nil || l.listenLocker == nil {
+		t.Error("NewListener must populate both lockers")
+	}
+}
+
+func TestListenerIsCurrentMsgDeflated(t *testing.T) {
+	t.Run("is whether the message in flight is deflated", func(t *testing.T) {
+		l := &Listener{}
+		if l.IsCurrentMsgDeflated() {
+			t.Error("IsCurrentMsgDeflated = true with none open, want false")
+		}
+		l.currentDataFramesDeflated = true
+		if !l.IsCurrentMsgDeflated() {
+			t.Error("IsCurrentMsgDeflated = false for a deflated message, want true")
+		}
+	})
+}
+
 /*
 validateFrameHeader refuses a frame by its header, before its payload is read.
 Every rule is a MUST in RFC 6455, answered with close code 1002; the limits are
 the Listener's own, answered with 1009.
 
-PeerIsClient is false throughout except where masking is the subject, so the
+peerIsClient is false throughout except where masking is the subject, so the
 unmasked frames these build are the ones a server peer would send.
 */
 func TestListenerValidateFrameHeader(t *testing.T) {
-	// 5.2: the reserved bits belong to negotiated extensions, and none is.
+	// 5.2: the reserved bits belong to negotiated extensions. RFC 7692 6, 6.1:
+	// permessage-deflate takes RSV1, on the first frame of a data message only.
 	t.Run("RSV bits", func(t *testing.T) {
-		for name, frame := range map[string]*Frame{
-			"RSV1": {Opcode: OpcodePing, FIN: true, RSV1: true},
-			"RSV2": {Opcode: OpcodePing, FIN: true, RSV2: true},
-			"RSV3": {Opcode: OpcodePing, FIN: true, RSV3: true},
-		} {
-			t.Run(name, func(t *testing.T) {
-				if err := (&Listener{configLocker: &sync.Mutex{}}).validateFrameHeader(frame); !errors.Is(err, ErrReservedBitsSet) {
-					t.Errorf("err = %v, want ErrReservedBitsSet", err)
+		tests := []struct {
+			name        string
+			agreed      bool
+			messageOpen bool
+			frame       *Frame
+			want        error
+		}{
+			{
+				name:  "RSV1 on text, not agreed",
+				frame: &Frame{Opcode: OpcodeText, FIN: true, RSV1: true},
+				want:  ErrReservedBitsSet,
+			},
+			{
+				name:  "RSV1 on ping, not agreed",
+				frame: &Frame{Opcode: OpcodePing, FIN: true, RSV1: true},
+				want:  ErrReservedBitsSet,
+			},
+			{
+				name:  "RSV2, not agreed",
+				frame: &Frame{Opcode: OpcodePing, FIN: true, RSV2: true},
+				want:  ErrReservedBitsSet,
+			},
+			{
+				name:  "RSV3, not agreed",
+				frame: &Frame{Opcode: OpcodePing, FIN: true, RSV3: true},
+				want:  ErrReservedBitsSet,
+			},
+			{
+				name:   "RSV1 on a first text frame, agreed",
+				agreed: true,
+				frame:  &Frame{Opcode: OpcodeText, RSV1: true},
+				want:   nil,
+			},
+			{
+				name:   "RSV1 on a first binary frame, agreed",
+				agreed: true,
+				frame:  &Frame{Opcode: OpcodeBinary, FIN: true, RSV1: true},
+				want:   nil,
+			},
+			{
+				name:        "RSV1 on a continuation, agreed",
+				agreed:      true,
+				messageOpen: true,
+				frame:       &Frame{Opcode: OpcodeContinuation, FIN: true, RSV1: true},
+				want:        ErrReservedBitsSet,
+			},
+			{
+				name:   "RSV1 on ping, agreed",
+				agreed: true,
+				frame:  &Frame{Opcode: OpcodePing, FIN: true, RSV1: true},
+				want:   ErrReservedBitsSet,
+			},
+			{
+				name:   "RSV1 on a reserved opcode, agreed",
+				agreed: true,
+				frame:  &Frame{Opcode: 0x3, FIN: true, RSV1: true},
+				want:   ErrReservedBitsSet,
+			},
+			{
+				name:   "RSV2 on text, agreed",
+				agreed: true,
+				frame:  &Frame{Opcode: OpcodeText, FIN: true, RSV2: true},
+				want:   ErrReservedBitsSet,
+			},
+			{
+				name:   "RSV3 on text, agreed",
+				agreed: true,
+				frame:  &Frame{Opcode: OpcodeText, FIN: true, RSV3: true},
+				want:   ErrReservedBitsSet,
+			},
+			// Passes the bits as a first frame would, then 5.4 refuses it.
+			{
+				name:        "RSV1 on text while a message is open, agreed",
+				agreed:      true,
+				messageOpen: true,
+				frame:       &Frame{Opcode: OpcodeText, FIN: true, RSV1: true},
+				want:        ErrDataFrameDuringMsg,
+			},
+		}
+		for _, testCase := range tests {
+			t.Run(testCase.name, func(t *testing.T) {
+				l := &Listener{configLocker: &sync.Mutex{}}
+				if testCase.agreed {
+					l.permessageDeflateAgreedConfig = &PermessageDeflateConfig{}
+				}
+				if testCase.messageOpen {
+					l.currentDataFrameCount = 1
+					l.currentDataFrameOpcode = OpcodeText
+				}
+
+				if err := l.validateFrameHeader(testCase.frame); !errors.Is(err, testCase.want) {
+					t.Errorf("err = %v, want %v", err, testCase.want)
 				}
 			})
 		}
@@ -46,7 +168,7 @@ func TestListenerValidateFrameHeader(t *testing.T) {
 		for _, testCase := range tests {
 			t.Run(testCase.name, func(t *testing.T) {
 				l := &Listener{configLocker: &sync.Mutex{}}
-				l.config.PeerIsClient = testCase.peerIsClient
+				l.peerIsClient = testCase.peerIsClient
 
 				err := l.validateFrameHeader(&Frame{Opcode: OpcodePing, FIN: true, Mask: testCase.mask})
 				if !errors.Is(err, testCase.want) {

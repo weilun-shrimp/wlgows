@@ -11,9 +11,11 @@ Most WebSocket packages fix the frame size and buffer size for you. wlgows lets
 you choose both:
 
 - **The write buffer**, per connection: the `*bufio.Writer` you give the `Conn`.
-  `RenewWriter` swaps it any time. It is the only memory sending uses, and it
-  never grows. See [Memory: the write buffer](#memory-the-write-buffer).
-- **The frame size**, per send: `chunkSize`. It decides where a message is split
+  `RenewWriter` swaps it any time. Without deflate it is the only memory
+  sending uses, and it never grows. See
+  [Memory: the write buffer](#memory-the-write-buffer). A deflated message also
+  holds a result buffer, until `ReleaseDeflaterResultBuffer`.
+- **The frame size**, per send: `ChunkSize`. It decides where a message is split
   into frames. It does not change memory use. See
   [Choosing a chunk size](#choosing-a-chunk-size).
 
@@ -27,6 +29,7 @@ as 14 bytes per connection. See
 - [Choosing a call](#choosing-a-call)
 - [Whole messages](#whole-messages) — `SendText`, `SendBinary`, `SendData`
 - [Streaming](#streaming) — `Start`, `TransmitData`, `End`, `Release`
+- [Compression (permessage-deflate)](#compression-permessage-deflate) — [streaming deflated](#streaming-deflated) · [context takeover](#context-takeover) · [the result buffer](#memory-the-result-buffer)
 - [Memory: the write buffer](#memory-the-write-buffer) — [changing it: `RenewWriter`](#changing-it-renewwriter) · [the lowest memory setup](#the-lowest-memory-setup) · [the smallest connection](#the-smallest-connection)
 - [Choosing a chunk size](#choosing-a-chunk-size)
 - [Faster and less memory: sending a string with `unsafe`](#faster-and-less-memory-sending-a-string-with-unsafe) — only if you know what you are doing
@@ -43,9 +46,9 @@ Getting a `Conn` is in [SERVER_README.md](./SERVER_README.md) and
 
 | You have | Call |
 |---|---|
-| A text message in memory | `SendText(text, chunkSize)` |
-| A binary message in memory | `SendBinary(data, chunkSize)` |
-| A message whose opcode you pick at run time, like an echo | `SendData(opcode, payload, chunkSize)` |
+| A text message in memory | `SendText(text, config)` |
+| A binary message in memory | `SendBinary(data, config)` |
+| A message whose opcode you pick at run time, like an echo | `SendData(opcode, payload, config)` |
 | A message too large to hold in memory | `StartLongDataTransmission` → `TransmitData` → `EndLongDataTransmission`, with `ReleaseLongDataTransmission` deferred |
 | A close, ping or pong | `SendClose(payload)`, `SendPing(payloadData)`, `SendPong(payloadData)` |
 | A frame you built yourself | `SendFrame(frame)` |
@@ -56,20 +59,21 @@ You never set masking. A client masks every frame and a server masks none
 ## Whole messages
 
 ```go
-conn.SendText([]byte("hello"), 0)                  // one frame
-conn.SendBinary(data, 4*1024)                      // frames of 4 KB
-conn.SendData(wlgows.OpcodeText, []byte("abc"), 0) // like SendText, without the UTF-8 check
-conn.SendData(frames[0].Opcode, frames.Bytes(), 0) // echo back what arrived
+conn.SendText([]byte("hello"), wlgows.SendDataConfig{})                  // one frame
+conn.SendBinary(data, wlgows.SendDataConfig{ChunkSize: 4 * 1024})        // frames of 4 KB
+conn.SendData(wlgows.OpcodeText, []byte("abc"), wlgows.SendDataConfig{}) // like SendText, without the UTF-8 check
+conn.SendData(frames[0].Opcode, frames.Bytes(), wlgows.SendDataConfig{}) // echo back what arrived
 ```
 
-`chunkSize` is the payload of each frame, in bytes:
+`ChunkSize` is the payload of each frame, in bytes:
 
 - **0 or less** sends the message as one frame.
 - **A positive size** splits it into frames of that many payload bytes. Only the
   last frame can be shorter, and only the last frame carries FIN.
-- The frame header (2 to 14 bytes) is not counted. So the same `chunkSize` means
+- The frame header (2 to 14 bytes) is not counted. So the same `ChunkSize` means
   the same thing on a client and a server.
-- An empty message goes out as one empty frame. RFC 6455 allows it.
+- An empty message goes out as one empty frame. RFC 6455 allows it. Deflated, it
+  is one frame of the single byte `00` (RFC 7692 7.2.3.6).
 
 `SendText` checks the whole message is valid UTF-8 before it sends anything, and
 refuses it with `ErrInvalidUTF8` if not. A peer would close the connection over
@@ -95,7 +99,7 @@ For a message too large to hold, send it chunk by chunk. Each `TransmitData`
 call sends one frame.
 
 ```go
-if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
+if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary, wlgows.StartLongDataTransmissionConfig{}); err != nil {
 	return err
 }
 defer conn.ReleaseLongDataTransmission()
@@ -104,12 +108,12 @@ buffer := make([]byte, 4*1024)
 for {
 	length, err := file.Read(buffer)
 	if length > 0 {
-		if err := conn.TransmitData(buffer[:length]); err != nil {
+		if err := conn.TransmitData(buffer[:length], wlgows.TransmitDataConfig{}); err != nil {
 			return err // no FIN: the message is left unterminated
 		}
 	}
 	if err == io.EOF {
-		return conn.EndLongDataTransmission(nil)
+		return conn.EndLongDataTransmission(nil, wlgows.TransmitDataConfig{})
 	}
 	if err != nil {
 		return err
@@ -121,9 +125,9 @@ The four calls:
 
 | Call | What it does |
 |---|---|
-| `StartLongDataTransmission(opcode)` | Opens a text or binary message and takes the connection for it. |
-| `TransmitData(chunk)` | Sends one chunk as one frame. An empty chunk is sent as an empty frame. |
-| `EndLongDataTransmission(last)` | Sends `last` as the final frame, with FIN. |
+| `StartLongDataTransmission(opcode, config)` | Opens a text or binary message and takes the connection for it. |
+| `TransmitData(chunk, config)` | Sends one chunk as one frame. An empty chunk is sent as an empty frame, or as the flush's bytes when deflated. |
+| `EndLongDataTransmission(last, config)` | Sends `last` as the final frame, with FIN. |
 | `ReleaseLongDataTransmission()` | Frees the connection. Sends nothing. |
 
 The rules:
@@ -147,6 +151,105 @@ The rules:
 [`stream_client`](./example/stream_client/main.go) streams a file this way, and
 [`stream_server`](./example/stream_server/main.go) receives it frame by frame.
 
+## Compression (permessage-deflate)
+
+A message goes out deflated only when both hold:
+
+- **permessage-deflate was agreed** in the handshake. See
+  [CLIENT_README.md](./CLIENT_README.md#compression-permessage-deflate) and
+  [SERVER_README.md](./SERVER_README.md#compression-permessage-deflate). Without
+  it, asking is not an error: the message goes out as it is (RFC 7692 5).
+- **You ask for it**, per message, with `DeflateIfAgreed`.
+
+```go
+import "compress/flate"
+
+config := wlgows.SendDataConfig{DeflateIfAgreed: true, DeflateLevel: flate.BestSpeed}
+conn.SendText([]byte("hello"), config)
+
+config.ChunkSize = 4 * 1024
+conn.SendBinary(data, config) // frames of 4 KB of the deflated bytes
+```
+
+- **Always set `DeflateLevel`.** It is a `compress/flate` level, from
+  `flate.HuffmanOnly` (-2) to `flate.BestCompression` (9). Its zero value is
+  `flate.NoCompression`: the message is marked deflated but stored as it is, a
+  few bytes larger. `flate.BestSpeed` is a fair default. A level outside the
+  range is refused with `ErrDeflateLevelInvalid` before anything is sent, even
+  when nothing would be deflated.
+- **`ChunkSize` cuts the deflated bytes**, not your message. The whole message
+  is deflated first, then split into frames.
+- **Ask only where it pays.** Deflate adds a few bytes of its own, so a short
+  message can come out longer, and it costs CPU. You decide per message.
+- **Control frames are never deflated** (RFC 7692 6), and `SendFrame` never
+  deflates.
+
+### Streaming deflated
+
+Start decides once for the whole message. The level is per chunk:
+
+```go
+start_config := wlgows.StartLongDataTransmissionConfig{DeflateIfAgreed: true}
+if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary, start_config); err != nil {
+	return err
+}
+defer conn.ReleaseLongDataTransmission()
+
+config := wlgows.TransmitDataConfig{DeflateLevel: flate.BestSpeed}
+buffer := make([]byte, 4*1024)
+for {
+	length, err := file.Read(buffer)
+	if length > 0 {
+		if err := conn.TransmitData(buffer[:length], config); err != nil {
+			return err // close the connection
+		}
+	}
+	if err == io.EOF {
+		return conn.EndLongDataTransmission(nil, config)
+	}
+	if err != nil {
+		return err
+	}
+}
+```
+
+- **Each chunk is flushed on its own**, so it is on the wire when
+  `TransmitData` returns, as without deflate. Its frame holds what the chunk
+  deflated to, not the chunk.
+- **The chunks are one stream.** A chunk may refer back to earlier ones of the
+  same message, so large repeats compress across chunks.
+- **After a failure, close the connection.** The peer's inflater is missing
+  what failed, so End cannot deliver the rest as a message.
+
+### Context takeover
+
+The handshake decides it and wlgows follows it (RFC 7692 7.1.1). You set
+nothing when sending. What it costs a `Conn`:
+
+| This side sends | Kept between messages |
+|---|---|
+| With context | a `compress/flate` writer, about 1 MB, and the last 32 to 64 KB sent |
+| Without context | nothing. A whole message borrows a writer shared by all connections; a stream uses one of its own, freed at End |
+
+With context, keep the level steady: a new level builds a new writer, about
+1 MB.
+
+### Memory: the result buffer
+
+The deflated bytes are held in a result buffer of the `Conn`. It keeps the size
+of the largest deflated result since it was last freed, for the life of the
+connection, and nothing frees it for you:
+
+```go
+if conn.DeflaterResultBufferCap() > 1024*1024 { // 1 MB
+	conn.ReleaseDeflaterResultBuffer()
+}
+```
+
+`ReleaseDeflaterResultBuffer` waits for a data message being sent, so never
+call it between your own Start and Release. `DeflaterResultBufferCap` waits
+only for a deflate in progress.
+
 ## Memory: the write buffer
 
 Every frame a `Conn` sends goes through one write buffer: the `*bufio.Writer`
@@ -154,7 +257,7 @@ you hand it when it is built. Its size is the buffer's size:
 
 ```go
 serverConn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriterSize(netConn, 16*1024), request, wlgows.ServerHandShakeConfig{}) // 16 KB
-clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)        // bufio's 4096
+clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{})              // bufio's 4096
 ```
 
 - **It must write to the same connection.** Build it on `netConn`.
@@ -164,8 +267,8 @@ clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(ne
 - Hijacked from `net/http`? Pass `bufRW.Writer` and keep net/http's writer.
 
 **It is fixed.** It never grows and never shrinks by itself, whatever you send.
-A `Conn` holds exactly the writer's size for sending, from the first frame to
-the last, so memory per connection is known before any message is sent:
+Without deflate, a `Conn` holds exactly the writer's size for sending, from the
+first frame to the last, so memory per connection is known before any message is sent:
 
 | Writer size | Per connection | 100,000 connections |
 |---|---|---|
@@ -187,7 +290,7 @@ counting writes to the socket:
 | Send | 14, server | 14, client | 4096 | 64 KB |
 |---|---|---|---|---|
 | One 10 B message | 1 | 2 | 1 | 1 |
-| 1000 B in 10 B frames (`chunkSize` 10) | 86 | 134 | 1 | 1 |
+| 1000 B in 10 B frames (`ChunkSize` 10) | 86 | 134 | 1 | 1 |
 | One 1 MB message, server | 2 | | 2 | 2 |
 | One 1 MB message, client | | 87,383 | 257 | 17 |
 
@@ -276,7 +379,7 @@ for each `StartPingLoop`. wlgows cannot shrink those. What you can do:
 
 ## Choosing a chunk size
 
-`chunkSize` decides where a message is cut into frames. It does not change
+`ChunkSize` decides where a message is cut into frames. It does not change
 memory: the write buffer is fixed, and a whole message given to `SendData` is
 already in memory. What it changes:
 
@@ -288,7 +391,7 @@ already in memory. What it changes:
   peer may cap frames per message. wlgows' own `Listener` can, with
   `MaxDataFrameCount` (16 with `NewStandardListener`, no limit in a bare
   `ListenerConfig`), and refuses the message with
-  `ErrDataFrameCountExceeded`. Keep message size ÷ `chunkSize` under that cap.
+  `ErrDataFrameCountExceeded`. Keep message size ÷ `ChunkSize` under that cap.
   For example, 16 MB in 4 KB chunks is 4,096 frames, more than the 4,000 the
   [Listener guide](./LISTENER_README.md#configuration) uses as its example.
 
@@ -309,16 +412,16 @@ writes to it either.
 
 ```go
 payload := unsafe.Slice(unsafe.StringData(text), len(text))
-err := conn.SendText(payload, 0)
+err := conn.SendText(payload, wlgows.SendDataConfig{})
 ```
 
 Measured on a 1 MB text message:
 
 | | Time | Allocated |
 |---|---|---|
-| `conn.SendText([]byte(text), 0)` | ~80–110 µs | 1 MB |
-| `conn.SendText(payload, 0)`, through `unsafe` | ~23 µs | 0.3 KB |
-| `conn.SendBinary(payload, 0)`, through `unsafe` | ~1.3 µs | 0.3 KB |
+| `conn.SendText([]byte(text), wlgows.SendDataConfig{})` | ~80–110 µs | 1 MB |
+| `conn.SendText(payload, wlgows.SendDataConfig{})`, through `unsafe` | ~23 µs | 0.3 KB |
+| `conn.SendBinary(payload, wlgows.SendDataConfig{})`, through `unsafe` | ~1.3 µs | 0.3 KB |
 
 `[]byte(text)` copies the string. Of the 23 µs left, about 20 µs is `SendText`'s
 UTF-8 check.
@@ -350,6 +453,7 @@ Receiving has the same trick the other way round: see
 | `ErrInvalidCloseStatusCode` | `SendClose` got a status code that may not be sent, such as 1005, 1006 or 1015 (7.4.1), the reserved 1004, or one outside the registered and 3000-4999 ranges (7.4.2). Nothing was sent. |
 | `ErrNotDataFrameOpcode`, `ErrContinuationFrameWithoutMsg` | `Start` or `SendData` got an opcode that cannot open a message. Nothing was locked. |
 | `ErrLongDataTransmissionNotStarted` | `TransmitData` or `End` with no transmission open. |
+| `ErrDeflateLevelInvalid` | `DeflateLevel` is not a `compress/flate` level. Nothing was sent. |
 | Anything else | The socket write failed. |
 
 **A failed socket write is final.** The write buffer keeps its first error, so
@@ -376,7 +480,10 @@ want.
 - **A slow stream blocks other data sends.** While a stream is open, every
   `SendText`, `SendBinary` and `SendData` on that connection waits for it.
 - **Do not send a data message from inside your own stream.** Calling `SendText`
-  between your `Start` and `Release` waits on the lock you hold, forever.
+  between your `Start` and `Release` waits on the lock you hold, forever. So
+  does `ReleaseDeflaterResultBuffer`.
+- **Deflating does not hold control frames back.** A message is deflated before
+  its frames take the write lock.
 
 Two locks are what make this work, both `*sync.Mutex` by default:
 

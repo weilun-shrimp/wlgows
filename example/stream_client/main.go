@@ -96,7 +96,7 @@ func main() {
 	// req.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
 
 	r := bufio.NewReader(netConn)
-	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req, wlgows.ClientHandShakeConfig{})
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
@@ -160,7 +160,7 @@ func main() {
 }
 
 func stream(conn *wlgows.Conn, r io.Reader) (sum []byte, chunks int, bytes int64, err error) {
-	if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
+	if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary, wlgows.StartLongDataTransmissionConfig{}); err != nil {
 		return nil, 0, 0, err
 	}
 	defer conn.ReleaseLongDataTransmission()
@@ -173,7 +173,7 @@ func stream(conn *wlgows.Conn, r io.Reader) (sum []byte, chunks int, bytes int64
 		// Read may return bytes AND io.EOF together. Handling n before readErr
 		// is what stops the last chunk being dropped.
 		if n > 0 {
-			if err := conn.TransmitData(buf[:n]); err != nil {
+			if err := conn.TransmitData(buf[:n], wlgows.TransmitDataConfig{}); err != nil {
 				return nil, chunks, bytes, err
 			}
 			hasher.Write(buf[:n])
@@ -185,7 +185,7 @@ func stream(conn *wlgows.Conn, r io.Reader) (sum []byte, chunks int, bytes int64
 		if readErr == io.EOF {
 			// FIN tells the server the message ended. Any return before this
 			// leaves it unterminated, so a partial file is never taken as whole.
-			if err := conn.EndLongDataTransmission(nil); err != nil {
+			if err := conn.EndLongDataTransmission(nil, wlgows.TransmitDataConfig{}); err != nil {
 				return nil, chunks, bytes, err
 			}
 			return hasher.Sum(nil), chunks, bytes, nil

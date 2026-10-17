@@ -56,7 +56,6 @@ func TestListenerSetConfig(t *testing.T) {
 	called := 0
 
 	l.SetConfig(ListenerConfig{
-		PeerIsClient:      true,
 		MaxDataFramesSize: 1000,
 		MaxDataFrameCount: 4000,
 		FrameReadTimeout:  30 * time.Second,
@@ -67,7 +66,7 @@ func TestListenerSetConfig(t *testing.T) {
 	if want := []string{"config lock", "config unlock frames=4000"}; !slices.Equal(steps, want) {
 		t.Errorf("steps %q, want %q", steps, want)
 	}
-	if !l.config.PeerIsClient || l.config.MaxDataFramesSize != 1000 ||
+	if l.config.MaxDataFramesSize != 1000 ||
 		l.config.MaxDataFrameCount != 4000 || l.config.FrameReadTimeout != 30*time.Second {
 		t.Errorf("config = %+v, want what was set", l.config)
 	}
