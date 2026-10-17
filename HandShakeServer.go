@@ -26,6 +26,31 @@ type ServerHandShakeConfig struct {
 	// the connection opens without a subprotocol. One value, not a list,
 	// because RFC 6455 4.2.2 lets the server answer with a single subprotocol.
 	Subprotocol string
+
+	// PermessageDeflates are the permessage-deflate answers the server wants,
+	// in its order of preference. On an upgrade, the first one an offer allows
+	// is answered, see AcceptDeflateOffer. The server's order first is a
+	// library choice: RFC 7692 5 lets the server accept any one offer. When none fits, or the
+	// list is empty, the connection opens without compression. The server reads
+	// each field this way:
+	//
+	//   - ServerNoContextTakeover true: the server resets its window after each
+	//     message. It is also set when the offer asks for it (RFC 7692 7.1.1.1).
+	//   - ClientNoContextTakeover true: the server asks the client to reset its
+	//     window after each message. It is also set when the offer has it
+	//     (RFC 7692 7.1.1.2).
+	//   - ServerMaxWindowBits: 0 or 15. 8 to 14 returns
+	//     ErrHandshakeServerDeflateConfigUnsupported (library choice), because
+	//     Go's compress/flate cannot send with a window under 15 bits.
+	//   - ClientMaxWindowBitsEnabled false: the server accepts any client
+	//     window, up to 15 bits. ClientMaxWindowBits is ignored.
+	//   - ClientMaxWindowBitsEnabled true: the client's window is at most
+	//     ClientMaxWindowBits, which must be 8 to 15. An offer without
+	//     client_max_window_bits is accepted only when it is 15
+	//     (RFC 7692 7.1.2.2).
+	//
+	// Other values return ErrHandshakeServerDeflateConfigInvalid.
+	PermessageDeflates []PermessageDeflateConfig
 }
 
 /*
@@ -51,23 +76,32 @@ your own, such as bufio.NewWriterSize(c, 16*1024).
 */
 func ServerHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ServerHandShakeConfig) (*Conn, *http.Response, error) {
 	return serverHandShake(c, r, w, req, config, serverHandShakeDI{
-		validateHandShakeRequest: ValidateHandShakeRequest,
-		newResponseWriter:        func() ServerHandShakeRespWriter { return NewResponseWriter() },
-		sendHandShakeResponse:    SendHandShakeResponse,
-		newConn:                  NewConn,
+		validateServerDeflateConfig: ValidateServerDeflateConfig,
+		validateHandShakeRequest:    ValidateHandShakeRequest,
+		newResponseWriter:           func() ServerHandShakeRespWriter { return NewResponseWriter() },
+		acceptDeflateOffer:          AcceptDeflateOffer,
+		sendHandShakeResponse:       SendHandShakeResponse,
+		newConn:                     NewConn,
 	})
 }
 
 type serverHandShakeDI struct {
-	validateHandShakeRequest func(req *http.Request) error
-	newResponseWriter        func() ServerHandShakeRespWriter
-	sendHandShakeResponse    func(w io.Writer, res *http.Response) error
-	newConn                  func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
+	validateServerDeflateConfig func(server_config PermessageDeflateConfig) error
+	validateHandShakeRequest    func(req *http.Request) error
+	newResponseWriter           func() ServerHandShakeRespWriter
+	acceptDeflateOffer          func(server_config PermessageDeflateConfig, req *http.Request) *PermessageDeflateConfig
+	sendHandShakeResponse       func(w io.Writer, res *http.Response) error
+	newConn                     func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
 }
 
 func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ServerHandShakeConfig, di serverHandShakeDI) (*Conn, *http.Response, error) {
 	if req == nil {
 		return nil, nil, fmt.Errorf("ServerHandShake: %w", ErrHandshakeRequestNil)
+	}
+	for index, server_config := range config.PermessageDeflates {
+		if err := di.validateServerDeflateConfig(server_config); err != nil {
+			return nil, nil, fmt.Errorf("ServerHandShake: PermessageDeflates[%d]: %w", index, err)
+		}
 	}
 
 	invalid := di.validateHandShakeRequest(req)
@@ -82,6 +116,16 @@ func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 	res := writer.GenerateResponse()
 	if invalid == nil && config.Subprotocol != "" && slices.Contains(RequestSubprotocols(req), config.Subprotocol) {
 		res.Header.Set("Sec-WebSocket-Protocol", config.Subprotocol)
+	}
+	if invalid == nil {
+		// Library choice: the server's order first. Within one config, the
+		// client's order picks the offer (RFC 7692 5).
+		for _, server_config := range config.PermessageDeflates {
+			if answer_deflate_config := di.acceptDeflateOffer(server_config, req); answer_deflate_config != nil {
+				res.Header.Set("Sec-WebSocket-Extensions", answer_deflate_config.Format())
+				break
+			}
+		}
 	}
 	err := di.sendHandShakeResponse(c, res)
 	req.Response = res
@@ -103,19 +147,115 @@ func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 RequestSubprotocols returns the subprotocols the client offered, in its order.
 Pick one for ServerHandShakeConfig.Subprotocol.
 
-The offer is read as a token list across every line, like headerHasToken, so
-"a, b" on one line and "a" and "b" on two give the same result.
+The offer is read with headerValues, so "a, b" on one line and "a" and "b" on
+two give the same result.
 */
 func RequestSubprotocols(req *http.Request) []string {
-	var offered []string
-	for _, value := range req.Header.Values("Sec-WebSocket-Protocol") {
-		for _, token := range strings.Split(value, ",") {
-			if token = strings.TrimSpace(token); token != "" {
-				offered = append(offered, token)
-			}
-		}
+	return headerValues(req.Header, "Sec-WebSocket-Protocol")
+}
+
+/*
+ValidateServerDeflateConfig checks the server's permessage-deflate config
+before it is used to answer an offer. ServerHandShake already runs it on each
+of ServerHandShakeConfig.PermessageDeflates. Call it yourself to know a config
+is right without a handshake, for example in a test or before a handshake. It
+returns ErrHandshakeServerDeflateConfigInvalid or
+ErrHandshakeServerDeflateConfigUnsupported when one of these fails:
+
+  - ServerMaxWindowBits is 0 or 8 to 15 (RFC 7692 7.1.2.1).
+  - ClientMaxWindowBits is 8 to 15 when ClientMaxWindowBitsEnabled is true,
+    since a response must give it a value (RFC 7692 7.1.2.2).
+  - ServerMaxWindowBits is not 8 to 14, since Go's compress/flate cannot send
+    with a window under 15 bits (library choice).
+*/
+func ValidateServerDeflateConfig(server_config PermessageDeflateConfig) error {
+	if server_config.ServerMaxWindowBits != 0 && (server_config.ServerMaxWindowBits < 8 || server_config.ServerMaxWindowBits > 15) {
+		return fmt.Errorf("ServerMaxWindowBits %d: %w", server_config.ServerMaxWindowBits, ErrHandshakeServerDeflateConfigInvalid)
 	}
-	return offered
+	if server_config.ClientMaxWindowBitsEnabled && (server_config.ClientMaxWindowBits < 8 || server_config.ClientMaxWindowBits > 15) {
+		return fmt.Errorf("ClientMaxWindowBits %d: %w", server_config.ClientMaxWindowBits, ErrHandshakeServerDeflateConfigInvalid)
+	}
+	// Library choice: 8 to 14 is valid (RFC 7692 7.1.2.1), but the server would
+	// promise to send within that window, and Go's compress/flate cannot.
+	if server_config.ServerMaxWindowBits != 0 && server_config.ServerMaxWindowBits < 15 {
+		return fmt.Errorf("ServerMaxWindowBits %d: %w", server_config.ServerMaxWindowBits, ErrHandshakeServerDeflateConfigUnsupported)
+	}
+	return nil
+}
+
+/*
+AcceptDeflateOffer returns the answer to the first offer in req that allows
+server_config, or nil when none does. Offers are tried in the client's order
+(RFC 7692 5). ServerHandShake calls it for each of
+ServerHandShakeConfig.PermessageDeflates. Call it yourself to pick a config by
+your own rule. server_config must pass ValidateServerDeflateConfig.
+
+The answer is server_config plus what the offer requires:
+
+  - server_no_context_takeover is added if offered (RFC 7692 7.1.1.1).
+  - client_no_context_takeover is sent back if offered (RFC 7692 7.1.1.2).
+  - server_max_window_bits is lowered to the offer's value (RFC 7692 7.1.2.1).
+  - client_max_window_bits is lowered to the offer's value (RFC 7692 7.1.2.2).
+
+An offer without client_max_window_bits is skipped when server_config limits
+the client under 15 bits (RFC 7692 7.1.2.2). An offer is also skipped when the
+server's window would be under 15 bits, since Go's compress/flate cannot send
+with a window that small (library choice).
+
+There is no validator for the request's offers. An invalid offer is declined,
+not an error that fails the handshake (RFC 7692 7), so it is skipped here like
+any offer that does not allow server_config.
+*/
+func AcceptDeflateOffer(server_config PermessageDeflateConfig, req *http.Request) *PermessageDeflateConfig {
+	for _, extension := range parseExtensions(req.Header) {
+		if extension.name != permessageDeflateName {
+			continue
+		}
+		// An offer that does not parse must be declined (RFC 7692 7).
+		offer, err := parseDeflateParams(extension.params)
+		if err != nil {
+			continue
+		}
+		// A copy of server_config, so changing answer_deflate_config never
+		// touches server_config. It is made again for each offer, so a skipped
+		// offer leaves nothing behind. Only what the offer requires is changed
+		// below.
+		answer_deflate_config := server_config
+		if offer.ServerNoContextTakeover {
+			answer_deflate_config.ServerNoContextTakeover = true
+		}
+		// The offer's client_no_context_takeover is only a hint. Sending it back
+		// makes it agreed, so the server knows the client drops its context
+		// (RFC 7692 7.1.1.2).
+		if offer.ClientNoContextTakeover {
+			answer_deflate_config.ClientNoContextTakeover = true
+		}
+		if offer.ServerMaxWindowBits != 0 && (answer_deflate_config.ServerMaxWindowBits == 0 || offer.ServerMaxWindowBits < answer_deflate_config.ServerMaxWindowBits) {
+			answer_deflate_config.ServerMaxWindowBits = offer.ServerMaxWindowBits
+		}
+		// Library choice: 8 to 14 is valid (RFC 7692 7.1.2.1), but the server would
+		// promise to send within that window, and Go's compress/flate cannot.
+		if answer_deflate_config.ServerMaxWindowBits != 0 && answer_deflate_config.ServerMaxWindowBits < 15 {
+			continue
+		}
+		// Without client_max_window_bits in the offer, the server must not send it
+		// and the client may use 15 bits (RFC 7692 7.1.2.2). Only a server limit
+		// of 15 allows that.
+		if answer_deflate_config.ClientMaxWindowBitsEnabled && !offer.ClientMaxWindowBitsEnabled {
+			if answer_deflate_config.ClientMaxWindowBits != 15 {
+				continue
+			}
+			// The client's 15 bits are accepted, so no client_max_window_bits is
+			// sent. The server takes the 0 as 15 bits (RFC 7692 7.1.2.2).
+			answer_deflate_config.ClientMaxWindowBitsEnabled = false
+			answer_deflate_config.ClientMaxWindowBits = 0
+		}
+		if answer_deflate_config.ClientMaxWindowBitsEnabled && offer.ClientMaxWindowBits != 0 && offer.ClientMaxWindowBits < answer_deflate_config.ClientMaxWindowBits {
+			answer_deflate_config.ClientMaxWindowBits = offer.ClientMaxWindowBits
+		}
+		return &answer_deflate_config
+	}
+	return nil
 }
 
 /*

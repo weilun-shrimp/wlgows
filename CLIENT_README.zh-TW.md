@@ -3,15 +3,16 @@
 # Client
 
 client 如何從一個 URL，變成一個可以使用的 `*wlgows.Conn`：建立連線、TLS、
-handshake，以及 subprotocol。
+handshake、subprotocol，以及壓縮。
 
 ## Contents
 
 - [建立連線](#建立連線)
 - [TLS (wss://)](#tls-wss)
-- [Handshake](#handshake) — [加上 header](#加上-header) · [回傳值](#回傳值)
+- [Handshake](#handshake) — [設定](#設定) · [加上 header](#加上-header) · [回傳值](#回傳值)
 - [Subprotocols](#subprotocols) — [提出](#提出) · [檢查回應](#檢查回應) · [一定要有](#一定要有)
-- [自己建立 Conn](#自己建立-conn) — 不建議
+- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — 設定見 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)
+- [自己跑 handshake](#自己跑-handshake) — 不建議
 - [下一步：讀取與傳送](#下一步讀取與傳送)
 
 讀取見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)，傳送見
@@ -67,12 +68,14 @@ netConn, request, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer,
 
 ## Handshake
 
-`ClientHandShake(netConn, reader, writer, request)` 會加上升級用的 header、送出
-request、讀取回應、依 RFC 6455 4.1 檢查回應，再建立 `Conn`。
+`ClientHandShake(netConn, reader, writer, request, config)` 會加上升級用的 header
+與 `config` 要求的內容、送出 request、讀取回應、依 RFC 6455 4.1 檢查回應，再建立
+`Conn`。
 
 ```go
 reader := bufio.NewReader(netConn)
-conn, resp, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)
+writer := bufio.NewWriter(netConn)
+conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})
 if err != nil {
 	netConn.Close() // 每一種 handshake error 之後都建議關閉
 	return
@@ -84,8 +87,31 @@ if err != nil {
 - **`writer`** 是每個 frame 送出時經過的地方。client 會在裡面替每個 payload 的複本做
   mask，所以它的大小決定了大 message 需要幾次 socket 寫入。見
   [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
+  handshake 的 request 本身直接寫進 `netConn`。
+- **`config`** 是 handshake 要提出的內容。`ClientHandShakeConfig{}` 什麼都不提出，
+  就是一般的 handshake。見 [設定](#設定)。
 
 回傳的 `Conn` 會做 mask：client 送出的每個 frame 都要 mask（5.1）。
+
+### 設定
+
+`ClientHandShakeConfig` 放的是 handshake 要加到 request 上的內容：
+
+| 欄位 | 加上 | 見 |
+|---|---|---|
+| `Subprotocols` | `Sec-WebSocket-Protocol`，最想用的放最前面 | [Subprotocols](#subprotocols) |
+| `PermessageDeflates` | `Sec-WebSocket-Extensions`，每個是一個 permessage-deflate 提議 | [壓縮](#壓縮-permessage-deflate) |
+
+```go
+config := wlgows.ClientHandShakeConfig{
+	Subprotocols:       []string{"chat.v2", "chat.v1"},
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+}
+conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, config)
+```
+
+每個欄位都會單獨加成一行，放在 `request` 原有的那幾行之後；原有的行會照原樣送出。
+同一個 header 既自己設定又放進 config，不建議這麼做，除非你清楚自己在做什麼。
 
 ### 加上 header
 
@@ -99,7 +125,8 @@ request.Header.Set("Authorization", "Bearer "+token)
 
 `ClientHandShake` 只會設定 RFC 6455 4.1 規定的部分：method `GET`、版本
 `HTTP/1.1`、沒有 body，以及 `Upgrade`、`Connection`、`Sec-WebSocket-Key` 與
-`Sec-WebSocket-Version`。你沒有設定 `Host` 時，它也會從 URL 填入。
+`Sec-WebSocket-Version`。你沒有設定 `Host` 時，它也會從 URL 填入，並加上 `config`
+要求的內容。
 
 ### 回傳值
 
@@ -107,6 +134,7 @@ request.Header.Set("Authorization", "Bearer "+token)
 |---|---|---|---|
 | 升級成功 | 那個 `Conn` | 收到的 101 | `nil` |
 | request 的 URL 沒有 host | `nil` | `nil` | `ErrUrlHostEmpty` |
+| `config` 裡有 wlgows 拒絕的提議 —— 見 [壓縮](#壓縮-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateUnsupported` 或 `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 | request 送不出去 | `nil` | `nil` | 原因 |
 | 回應讀不進來 | `nil` | `nil` | 原因 |
 | server 拒絕，或回應不正確 | `nil` | 它的回應 | 原因 |
@@ -123,8 +151,11 @@ request.Header.Set("Authorization", "Bearer "+token)
 | `ErrHandshakeResponseUpgradeHeaderInvalid` | `Upgrade` 中沒有 `websocket` token | 是 |
 | `ErrHandshakeResponseAcceptHeaderMissing` | 沒有 `Sec-WebSocket-Accept` | 是 |
 | `ErrHandshakeResponseAcceptHeaderMismatch` | `Sec-WebSocket-Accept` 與送出的 key 不符 | 是 |
-| `ErrHandshakeResponseSubprotocolMultiple` | `Sec-WebSocket-Protocol` 不只一個值 —— 見 [Subprotocols](#subprotocols) | 是 |
+| `ErrHandshakeResponseSubprotocolRepeated` | `Sec-WebSocket-Protocol` header 出現不只一次 —— 見 [Subprotocols](#subprotocols) | 是 |
+| `ErrHandshakeResponseSubprotocolMultiple` | `Sec-WebSocket-Protocol` 同一行有不只一個值 —— 見 [Subprotocols](#subprotocols) | 是 |
 | `ErrHandshakeResponseSubprotocolNotOffered` | `Sec-WebSocket-Protocol` 不是你提出的值 —— 見 [Subprotocols](#subprotocols) | 是 |
+| `ErrHandshakeResponseExtensionNotOffered` | 接受了兩次 permessage-deflate，或接受的方式沒有任何提議允許 —— 見 [壓縮](#壓縮-permessage-deflate) | 是 |
+| `ErrHandshakeResponseDeflateParamsInvalid` | 有 RFC 7692 7 禁止的 permessage-deflate 參數 —— 見 [壓縮](#壓縮-permessage-deflate) | 是 |
 
 **誰來關閉連線。** RFC 6455 4.1 對某些不正確的回應要求「Fail the WebSocket
 Connection」，也就是關閉連線（7.1.7）。對這些情況，也就是上表中「是」的那幾列，
@@ -140,17 +171,8 @@ redirect 或 401。
 `net.ErrClosed`。
 
 `ClientMustFailConnection(err)` 能分辨這兩種：對上表中「是」的那幾列回傳 `true`。
-用它來判斷連線是否已經被關閉；或者，如果你用 `ValidateHandShakeResponse` 與
-`ValidateHandShakeResponseSubprotocol` 自己做檢查，用它來判斷什麼時候該關閉：
-
-```go
-if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil {
-	if wlgows.ClientMustFailConnection(err) {
-		netConn.Close() // RFC 6455 7.1.7
-	}
-	return err
-}
-```
+用它來判斷連線是否已經被關閉；或者，如果你[自己跑 handshake](#自己跑-handshake)，
+用它來判斷什麼時候該關閉。
 
 它只認得 handshake 的 error。`Listen` 的 error 請見
 [`StandardClosePayloadFor`](./LISTENER_README.zh-TW.md#errors)。
@@ -162,13 +184,15 @@ subprotocol 是你的 message 所遵循的應用層協定，例如 `graphql-tran
 
 ### 提出
 
-在 handshake 之前設定這個 header，最想用的放最前面。清單放在同一個 header 裡：
+放進 `config.Subprotocols`，最想用的放最前面。它們會放在同一個
+`Sec-WebSocket-Protocol` header 裡送出：
 
 ```go
-request.Header.Set("Sec-WebSocket-Protocol", "chat.v2, chat.v1")
+config := wlgows.ClientHandShakeConfig{Subprotocols: []string{"chat.v2", "chat.v1"}}
 ```
 
-順序只是建議，由 server 決定。
+順序只是建議，由 server 決定。你自己設定在 `request` 上的 `Sec-WebSocket-Protocol`
+也會送出，同樣算是提出的值。已經在裡面的值不會重複加上。
 
 ### 檢查回應
 
@@ -178,7 +202,8 @@ error 訊息中會寫出 server 送來的值：
 
 | server 回傳 | Error |
 |---|---|
-| 不只一個值，不論在同一行還是分成好幾行 | `ErrHandshakeResponseSubprotocolMultiple` |
+| header 出現不只一次（11.3.4） | `ErrHandshakeResponseSubprotocolRepeated` |
+| 同一行有不只一個值 | `ErrHandshakeResponseSubprotocolMultiple` |
 | 你沒有提出的值，或你什麼都沒提出時的任何值 | `ErrHandshakeResponseSubprotocolNotOffered` |
 
 沒有 `Sec-WebSocket-Protocol` header 表示 server 一個都沒選（4.2.2），會通過檢查。
@@ -189,9 +214,9 @@ error 訊息中會寫出 server 送來的值：
 `nil`。WebSocket 連線還沒建立，所以 7.1.7 不要求送 close frame。
 
 ```go
-request.Header.Set("Sec-WebSocket-Protocol", "chat.v2, chat.v1")
+config := wlgows.ClientHandShakeConfig{Subprotocols: []string{"chat.v2", "chat.v1"}}
 
-conn, resp, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)
+conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, config)
 if err != nil {
 	netConn.Close() // subprotocol 檢查失敗時連線已經關閉；第二次關閉不會有影響
 	return
@@ -199,8 +224,7 @@ if err != nil {
 subprotocol := resp.Header.Get("Sec-WebSocket-Protocol") // 你提出的其中一個，server 一個都沒選時是 ""
 ```
 
-如果要自己做同樣的檢查，例如搭配 `NewConn` 時，請呼叫
-`ValidateHandShakeResponseSubprotocol(resp, request)`。
+如果要自己做同樣的檢查，見 [自己跑 handshake](#自己跑-handshake)。
 
 ### 一定要有
 
@@ -224,19 +248,108 @@ if resp.Header.Get("Sec-WebSocket-Protocol") == "" {
 
 兩個 client 範例都有提出與檢查的程式，以註解的形式保留。
 
-## 自己建立 Conn
+## 壓縮 (permessage-deflate)
 
-**不建議這麼做。只有在你清楚自己在做什麼時才使用。**
-`ClientHandShake` 會替你建立 `Conn`，過程中也會依 RFC 6455 檢查 server 的回應。
-`NewConn` 什麼都不檢查。handshake 違反規則的連線，或 masking 旗標設錯，從第一個
-frame 起就會破壞協定。如果 handshake 是你自己跑的，要替那條連線建立 `Conn`：
+`config.PermessageDeflates` 的每一項就是一個提議，最想用的放最前面。每個欄位的意思見
+[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#permessagedeflateconfig)。
 
 ```go
-conn, err := wlgows.NewConn(netConn, reader, writer, true) // true：client 要做 mask（5.1）
+config := wlgows.ClientHandShakeConfig{
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		{ClientNoContextTakeover: true, ServerNoContextTakeover: true}, // 第一選擇
+		{}, // 退而求其次：一般的 permessage-deflate
+	},
+}
 ```
 
-`Conn` 帶有未匯出的相依，所以直接寫 struct literal 會在第一次使用時 panic。error 只會
-來自小於 14 byte 的 writer：它會先被 flush 再被替換，而這次 flush 可能失敗。
+不建議自己設定 `Sec-WebSocket-Extensions`。你自己寫的 header 會照原樣送出，打錯字也
+一樣。config 會在 request 送出之前檢查，所以用錯時會得到 error，而不是送上網路。
+`ClientHandShake` 會拒絕兩種設定，並讓 `netConn` 保持開啟：
+
+| 設定 | Error |
+|---|---|
+| `ClientMaxWindowBitsEnabled` 為 true | `ErrHandshakeRequestDeflateUnsupported` |
+| `ServerMaxWindowBits` 不是 0 或 8 到 15（RFC 7692 7.1.2.1） | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
+
+第一種是函式庫的選擇。`client_max_window_bits` 會讓 server 能把 client 的 window 設在
+15 bit 以下，而 wlgows 無法用那麼小的 window 送出（見
+[15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）。不送它，
+client 永遠可以使用 15 bit。
+
+server 會接受其中一個提議，或一個都不接受。回應中沒有 permessage-deflate 不是 error：
+連線會在不壓縮的情況下建立。沒有任何提議允許的回應，或帶有
+[不合法項目](./PERMESSAGE_DEFLATE.zh-TW.md#不合法的項目)的回應，會中斷連線
+（RFC 7692 5）：
+
+| server 回傳 | Error |
+|---|---|
+| 兩次 permessage-deflate | `ErrHandshakeResponseExtensionNotOffered` |
+| `client_max_window_bits`，wlgows 從不提出它 | `ErrHandshakeResponseExtensionNotOffered` |
+| 沒有任何一個提議允許的參數，例如比提議更大的 `server_max_window_bits`，或提議要求了 `server_no_context_takeover` 或 `server_max_window_bits` 卻沒有回傳（RFC 7692 7.1.1.1、7.1.2.1） | `ErrHandshakeResponseExtensionNotOffered` |
+| 不合法的項目 | `ErrHandshakeResponseDeflateParamsInvalid` |
+
+`ClientHandShake` 不會回傳雙方約定的內容。請用 `ValidateHandShakeResponseDeflate` 取得：
+
+```go
+agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request) // server 拒絕時 agreed 是 nil
+```
+
+`agreed` 是雙方都遵守的內容，不是回應的複本。如果某個允許這個回應的提議有
+`client_no_context_takeover`，就算回應沒有包含它，`agreed` 也會有。那個提議是 client
+自己的承諾（RFC 7692 7.1.1.2），而回應不會說它接受的是哪一個提議。
+
+## 自己跑 handshake
+
+**不建議這麼做。只有在你清楚自己在做什麼時才使用。**
+`ClientHandShake` 會照這個順序執行下列步驟，並在 RFC 6455 要求時關閉連線。自己執行
+時，漏掉或調換任何一步都會破壞協定，而且不會有任何警告。
+
+```go
+reader := bufio.NewReader(netConn)
+writer := bufio.NewWriter(netConn)
+
+// 1. 把 request 變成開場的 handshake，再加上 config 要求的內容。
+if err := wlgows.UpgradeRequest(request, config); err != nil {
+	return err
+}
+// 2. 送到 netConn。writer 是給 frame 用的。
+if err := wlgows.SendHandShakeRequest(netConn, request); err != nil {
+	return err
+}
+// 3. 從之後要讀 frame 的那個 reader 讀取回應。
+resp, err := wlgows.ReadHandShakeResponse(reader, request)
+if err != nil {
+	return err
+}
+// 4. 檢查回應：RFC 6455 4.1、subprotocol，再來是 permessage-deflate。
+if err := wlgows.ValidateHandShakeResponse(resp, request.Header.Get("Sec-WebSocket-Key")); err != nil {
+	if wlgows.ClientMustFailConnection(err) {
+		netConn.Close() // RFC 6455 7.1.7
+	}
+	return err
+}
+if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil {
+	if wlgows.ClientMustFailConnection(err) {
+		netConn.Close() // RFC 6455 7.1.7
+	}
+	return err
+}
+if _, err := wlgows.ValidateHandShakeResponseDeflate(resp, request); err != nil {
+	if wlgows.ClientMustFailConnection(err) {
+		netConn.Close() // RFC 7692 5
+	}
+	return err
+}
+// 5. 建立 Conn。true：client 送出的每個 frame 都要 mask（RFC 6455 5.1）。
+conn, err := wlgows.NewConn(netConn, reader, writer, true)
+```
+
+- **`NewConn` 什麼都不檢查。** handshake 違反規則的連線，或 masking 旗標設錯，從第一個
+  frame 起就會破壞協定。
+- **它的 error** 只會來自小於 14 byte 的 writer：它會先被 flush 再被替換，而這次
+  flush 可能失敗。
+- **直接寫 struct literal 會 panic。** `Conn` 帶有未匯出的相依，所以只能用 `NewConn`
+  建立。
 
 ## 下一步：讀取與傳送
 

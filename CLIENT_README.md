@@ -3,15 +3,16 @@
 # Client
 
 How a client goes from a URL to a ready `*wlgows.Conn`: dialing, TLS, the
-handshake, and subprotocols.
+handshake, subprotocols and compression.
 
 ## Contents
 
 - [Dialing](#dialing)
 - [TLS (wss://)](#tls-wss)
-- [The handshake](#the-handshake) — [adding headers](#adding-headers) · [what it returns](#what-it-returns)
+- [The handshake](#the-handshake) — [the config](#the-config) · [adding headers](#adding-headers) · [what it returns](#what-it-returns)
 - [Subprotocols](#subprotocols) — [offering](#offering) · [checking the answer](#checking-the-answer) · [requiring one](#requiring-one)
-- [Building a Conn yourself](#building-a-conn-yourself) — not recommended
+- [Compression (permessage-deflate)](#compression-permessage-deflate) — the config in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md)
+- [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
 
 Reading is in [LISTENER_README.md](./LISTENER_README.md), sending in
@@ -70,13 +71,14 @@ netConn, request, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer,
 
 ## The handshake
 
-`ClientHandShake(netConn, reader, writer, request)` adds the upgrade headers,
-sends the request, reads the answer, checks it against RFC 6455 4.1, and builds
-the `Conn`.
+`ClientHandShake(netConn, reader, writer, request, config)` adds the upgrade
+headers and what `config` asks for, sends the request, reads the answer, checks
+it against RFC 6455 4.1, and builds the `Conn`.
 
 ```go
 reader := bufio.NewReader(netConn)
-conn, resp, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)
+writer := bufio.NewWriter(netConn)
+conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})
 if err != nil {
 	netConn.Close() // recommended on every handshake error
 	return
@@ -88,8 +90,32 @@ if err != nil {
 - **`writer`** is what every frame is sent through. A client masks a copy of
   each payload in it, so its size decides how many socket writes a large
   message takes. See [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer).
+  The handshake request itself goes straight to `netConn`.
+- **`config`** is what the handshake offers. `ClientHandShakeConfig{}` offers
+  nothing and runs a plain handshake. See [The config](#the-config).
 
 The `Conn` comes back masking: a client masks every frame it sends (5.1).
+
+### The config
+
+`ClientHandShakeConfig` holds what the handshake adds to the request:
+
+| Field | Adds | See |
+|---|---|---|
+| `Subprotocols` | `Sec-WebSocket-Protocol`, most preferred first | [Subprotocols](#subprotocols) |
+| `PermessageDeflates` | `Sec-WebSocket-Extensions`, one permessage-deflate offer each | [Compression](#compression-permessage-deflate) |
+
+```go
+config := wlgows.ClientHandShakeConfig{
+	Subprotocols:       []string{"chat.v2", "chat.v1"},
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+}
+conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, config)
+```
+
+Each field is added on a line of its own, after the lines already in
+`request`, which are sent as they are. Setting the same header by hand and in
+the config is not recommended unless you know what you are doing.
 
 ### Adding headers
 
@@ -104,7 +130,7 @@ request.Header.Set("Authorization", "Bearer "+token)
 `ClientHandShake` sets only what RFC 6455 4.1 fixes: the method `GET`, the
 version `HTTP/1.1`, no body, and `Upgrade`, `Connection`, `Sec-WebSocket-Key` and
 `Sec-WebSocket-Version`. It also sets `Host` from the URL when you have not set
-one.
+one, and adds what `config` asks for.
 
 ### What it returns
 
@@ -112,6 +138,7 @@ one.
 |---|---|---|---|
 | Upgraded | the `Conn` | the 101 | `nil` |
 | The request URL has no host | `nil` | `nil` | `ErrUrlHostEmpty` |
+| `config` has an offer wlgows refuses — see [Compression](#compression-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateUnsupported` or `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 | The request could not be sent | `nil` | `nil` | why |
 | The answer could not be read | `nil` | `nil` | why |
 | The server refused, or answered wrong | `nil` | its answer | why |
@@ -129,8 +156,11 @@ say why. The other ways an answer can be wrong, each a sentinel for
 | `ErrHandshakeResponseUpgradeHeaderInvalid` | has no `websocket` token in `Upgrade` | yes |
 | `ErrHandshakeResponseAcceptHeaderMissing` | has no `Sec-WebSocket-Accept` | yes |
 | `ErrHandshakeResponseAcceptHeaderMismatch` | has a `Sec-WebSocket-Accept` that does not match the key sent | yes |
-| `ErrHandshakeResponseSubprotocolMultiple` | has more than one `Sec-WebSocket-Protocol` value — see [Subprotocols](#subprotocols) | yes |
+| `ErrHandshakeResponseSubprotocolRepeated` | has the `Sec-WebSocket-Protocol` header more than once — see [Subprotocols](#subprotocols) | yes |
+| `ErrHandshakeResponseSubprotocolMultiple` | has more than one `Sec-WebSocket-Protocol` value on one line — see [Subprotocols](#subprotocols) | yes |
 | `ErrHandshakeResponseSubprotocolNotOffered` | has a `Sec-WebSocket-Protocol` you did not offer — see [Subprotocols](#subprotocols) | yes |
+| `ErrHandshakeResponseExtensionNotOffered` | accepts permessage-deflate twice, or in a way no offer allows — see [Compression](#compression-permessage-deflate) | yes |
+| `ErrHandshakeResponseDeflateParamsInvalid` | has a permessage-deflate param RFC 7692 7 forbids — see [Compression](#compression-permessage-deflate) | yes |
 
 **Who closes the connection.** RFC 6455 4.1 answers some broken responses with
 "Fail the WebSocket Connection", which means close it (7.1.7). For those, the
@@ -147,18 +177,9 @@ covers every case. On a connection `ClientHandShake` already closed, the second
 close only returns `net.ErrClosed`.
 
 `ClientMustFailConnection(err)` tells the two apart: `true` for the "yes"
-rows. Use it to know whether the connection is already closed, or, if you run
-the checks yourself with `ValidateHandShakeResponse` and
-`ValidateHandShakeResponseSubprotocol`, to know when to close it:
-
-```go
-if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil {
-	if wlgows.ClientMustFailConnection(err) {
-		netConn.Close() // RFC 6455 7.1.7
-	}
-	return err
-}
-```
+rows. Use it to know whether the connection is already closed, or, if you
+[run the handshake yourself](#running-the-handshake-yourself), to know when to
+close it.
 
 It knows only handshake errors. For errors from `Listen`, see
 [`StandardClosePayloadFor`](./LISTENER_README.md#errors).
@@ -171,14 +192,16 @@ of them, or none (RFC 6455 4.2.2).
 
 ### Offering
 
-Set the header before the handshake, most preferred first. A list goes in one
-header:
+Put them in `config.Subprotocols`, most preferred first. They are sent in one
+`Sec-WebSocket-Protocol` header:
 
 ```go
-request.Header.Set("Sec-WebSocket-Protocol", "chat.v2, chat.v1")
+config := wlgows.ClientHandShakeConfig{Subprotocols: []string{"chat.v2", "chat.v1"}}
 ```
 
-The order is only a hint. The server decides.
+The order is only a hint. The server decides. A `Sec-WebSocket-Protocol` you
+set on `request` yourself is sent too, and counts as offered. A value already
+there is not added again.
 
 ### Checking the answer
 
@@ -189,7 +212,8 @@ the server sent:
 
 | The server answers with | Error |
 |---|---|
-| more than one value, on one line or several | `ErrHandshakeResponseSubprotocolMultiple` |
+| the header more than once (11.3.4) | `ErrHandshakeResponseSubprotocolRepeated` |
+| more than one value on one line | `ErrHandshakeResponseSubprotocolMultiple` |
 | a value you did not offer, or any value when you offered nothing | `ErrHandshakeResponseSubprotocolNotOffered` |
 
 No `Sec-WebSocket-Protocol` header means the server picked none (4.2.2), and
@@ -201,9 +225,9 @@ returns, and `conn` is `nil`. The WebSocket connection was never established, so
 7.1.7 asks for no close frame.
 
 ```go
-request.Header.Set("Sec-WebSocket-Protocol", "chat.v2, chat.v1")
+config := wlgows.ClientHandShakeConfig{Subprotocols: []string{"chat.v2", "chat.v1"}}
 
-conn, resp, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)
+conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, config)
 if err != nil {
 	netConn.Close() // already closed if the subprotocol check failed; a second close is harmless
 	return
@@ -211,8 +235,8 @@ if err != nil {
 subprotocol := resp.Header.Get("Sec-WebSocket-Protocol") // one you offered, or "" when the server picked none
 ```
 
-To run the same check yourself, for example around `NewConn`, call
-`ValidateHandShakeResponseSubprotocol(resp, request)`.
+To run the same check yourself, see
+[Running the handshake yourself](#running-the-handshake-yourself).
 
 ### Requiring one
 
@@ -238,21 +262,112 @@ with a 400 and a reason in `resp.Body`.
 
 Both client examples have the offer and the check, commented out.
 
-## Building a Conn yourself
+## Compression (permessage-deflate)
 
-**Not recommended. Only do this if you know what you are doing.**
-`ClientHandShake` builds the `Conn` for you, and checks the server's answer
-against RFC 6455 on the way. `NewConn` checks nothing. A connection whose
-handshake broke a rule, or the wrong masking flag, breaks the protocol from the
-first frame. To build one around a connection whose handshake you ran yourself:
+Each item in `config.PermessageDeflates` is one offer, most preferred first.
+What each field means is in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
 
 ```go
-conn, err := wlgows.NewConn(netConn, reader, writer, true) // true: a client masks (5.1)
+config := wlgows.ClientHandShakeConfig{
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		{ClientNoContextTakeover: true, ServerNoContextTakeover: true}, // first choice
+		{}, // fallback: plain permessage-deflate
+	},
+}
 ```
 
-A `Conn` carries unexported dependencies, so a struct literal panics on first
-use. The error comes only from a writer under 14 bytes: it is flushed before it
-is replaced, and that flush can fail.
+Setting `Sec-WebSocket-Extensions` by hand is not recommended. A header you
+write is sent as it is, typos and all. The config is checked before the request
+is sent, so a misuse comes back as an error instead of going on the wire.
+`ClientHandShake` refuses two configs, and leaves `netConn` open:
+
+| Config | Error |
+|---|---|
+| `ClientMaxWindowBitsEnabled` true | `ErrHandshakeRequestDeflateUnsupported` |
+| `ServerMaxWindowBits` not 0 or 8 to 15 (RFC 7692 7.1.2.1) | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
+
+The first is a library choice. `client_max_window_bits` would let the server
+set the client's window under 15 bits, which wlgows cannot send with (see
+[Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits)).
+Without it, the client may always use 15 bits.
+
+The server accepts one offer, or none. No permessage-deflate in the answer is
+not an error: the connection opens without compression. An answer no offer
+allows, or one with an [invalid entry](./PERMESSAGE_DEFLATE.md#invalid-entries),
+fails the connection (RFC 7692 5):
+
+| The server answers with | Error |
+|---|---|
+| permessage-deflate twice | `ErrHandshakeResponseExtensionNotOffered` |
+| `client_max_window_bits`, which wlgows never offers | `ErrHandshakeResponseExtensionNotOffered` |
+| params no single offer allows, such as a `server_max_window_bits` above the offer's, or no `server_no_context_takeover` or `server_max_window_bits` when the offer asked for it (RFC 7692 7.1.1.1, 7.1.2.1) | `ErrHandshakeResponseExtensionNotOffered` |
+| an invalid entry | `ErrHandshakeResponseDeflateParamsInvalid` |
+
+`ClientHandShake` does not return what was agreed. Get it with
+`ValidateHandShakeResponseDeflate`:
+
+```go
+agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request) // agreed is nil when the server declined
+```
+
+`agreed` is what both sides follow, not a copy of the answer. If an offer that
+allows the answer has `client_no_context_takeover`, `agreed` has it too, even
+when the answer leaves it out. That offer was the client's promise
+(RFC 7692 7.1.1.2), and the answer does not say which offer it took.
+
+## Running the handshake yourself
+
+**Not recommended. Only do this if you know what you are doing.**
+`ClientHandShake` runs these steps in this order, and closes the connection
+when RFC 6455 says to. When you run them yourself, a step you skip or reorder
+breaks the protocol, and nothing warns you.
+
+```go
+reader := bufio.NewReader(netConn)
+writer := bufio.NewWriter(netConn)
+
+// 1. Make the request an opening handshake, plus what config asks for.
+if err := wlgows.UpgradeRequest(request, config); err != nil {
+	return err
+}
+// 2. Send it to netConn. writer is for frames.
+if err := wlgows.SendHandShakeRequest(netConn, request); err != nil {
+	return err
+}
+// 3. Read the answer from the reader you will read frames from.
+resp, err := wlgows.ReadHandShakeResponse(reader, request)
+if err != nil {
+	return err
+}
+// 4. Check the answer: RFC 6455 4.1, the subprotocol, then permessage-deflate.
+if err := wlgows.ValidateHandShakeResponse(resp, request.Header.Get("Sec-WebSocket-Key")); err != nil {
+	if wlgows.ClientMustFailConnection(err) {
+		netConn.Close() // RFC 6455 7.1.7
+	}
+	return err
+}
+if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil {
+	if wlgows.ClientMustFailConnection(err) {
+		netConn.Close() // RFC 6455 7.1.7
+	}
+	return err
+}
+if _, err := wlgows.ValidateHandShakeResponseDeflate(resp, request); err != nil {
+	if wlgows.ClientMustFailConnection(err) {
+		netConn.Close() // RFC 7692 5
+	}
+	return err
+}
+// 5. Build the Conn. true: a client masks every frame it sends (RFC 6455 5.1).
+conn, err := wlgows.NewConn(netConn, reader, writer, true)
+```
+
+- **`NewConn` checks nothing.** A connection whose handshake broke a rule, or
+  the wrong masking flag, breaks the protocol from the first frame.
+- **Its error** comes only from a writer under 14 bytes: it is flushed before it
+  is replaced, and that flush can fail.
+- **A struct literal panics.** A `Conn` carries unexported dependencies, so
+  build one with `NewConn` only.
 
 ## Next: reading and sending
 

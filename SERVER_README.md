@@ -3,17 +3,19 @@
 # Server
 
 How a server goes from a TCP connection to a ready `*wlgows.Conn`: accepting,
-the handshake, hijacking from `net/http` or Gin, TLS, and subprotocols.
+the handshake, hijacking from `net/http` or Gin, TLS, subprotocols and
+compression.
 
 ## Contents
 
 - [Accepting a connection](#accepting-a-connection) — raw TCP, with the timeout and size limit left to you
-- [The handshake](#the-handshake) — [what it returns](#what-it-returns) · [refusals](#refusals)
+- [The handshake](#the-handshake) — [the config](#the-config) · [what it returns](#what-it-returns) · [refusals](#refusals)
 - [HTTP hijacking](#http-hijacking) — `net/http` and Gin
 - [TLS (wss://)](#tls-wss)
 - [Subprotocols](#subprotocols) — [picking one](#picking-one) · [requiring one](#requiring-one) · [what was sent](#what-was-sent)
+- [Compression (permessage-deflate)](#compression-permessage-deflate) — [which answer is picked](#which-answer-is-picked) · [picking by your own rule](#picking-by-your-own-rule) · [checking the config](#checking-the-config)
 - [Checking Origin](#checking-origin) — for a server browsers reach
-- [Building a Conn yourself](#building-a-conn-yourself) — not recommended
+- [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
 
 Reading is in [LISTENER_README.md](./LISTENER_README.md), sending in
@@ -61,7 +63,8 @@ func handle(netConn net.Conn) {
 		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ServerHandShakeConfig{})
+	writer := bufio.NewWriter(netConn)
+	conn, _, err := wlgows.ServerHandShake(netConn, reader, writer, request, wlgows.ServerHandShakeConfig{})
 	if err != nil {
 		return
 	}
@@ -85,9 +88,31 @@ the `Conn`. `Origin` and the other fields are not checked.
 | `reader` | The same `*bufio.Reader` you read the request from. It may already hold the start of the first frame, so a new one would lose it. |
 | `writer` | The `*bufio.Writer` every frame is sent through. Its size is yours: see [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer). |
 | `request` | The request, already parsed. |
-| `config` | `wlgows.ServerHandShakeConfig{}` for a plain handshake. See [Subprotocols](#subprotocols). |
+| `config` | What the server answers with. `wlgows.ServerHandShakeConfig{}` runs a plain handshake. See [The config](#the-config). |
 
 The `Conn` comes back unmasked: a server never masks what it sends (5.1).
+
+### The config
+
+`ServerHandShakeConfig` holds what the server answers with, if the client
+offered it:
+
+| Field | Answers with | See |
+|---|---|---|
+| `Subprotocol` | `Sec-WebSocket-Protocol`, one value | [Subprotocols](#subprotocols) |
+| `PermessageDeflates` | `Sec-WebSocket-Extensions`, the first of your answers an offer allows | [Compression](#compression-permessage-deflate) |
+
+```go
+config := wlgows.ServerHandShakeConfig{
+	Subprotocol:        "chat.v2",
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+}
+conn, resp, err := wlgows.ServerHandShake(netConn, reader, writer, request, config)
+```
+
+Neither one refuses a client that did not offer it: the connection just opens
+without it. You can check `PermessageDeflates` before any handshake, see
+[Compression](#compression-permessage-deflate).
 
 ### What it returns
 
@@ -98,9 +123,11 @@ The `Conn` comes back unmasked: a server never masks what it sends (5.1).
 | The answer could not be written | `nil` | the answer | the write error |
 | Upgraded, but the writer could not be flushed | `nil` | the 101 that went out | the write error |
 | `request` is `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
+| a config in `config.PermessageDeflates` is refused — see [Compression](#checking-the-config) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` or `ErrHandshakeServerDeflateConfigUnsupported` |
 
 `conn` is `nil` whenever `err` is not. `resp` is what reached the wire, so you
-can log it. Its body has already been read out.
+can log it. Its body has already been read out. A `nil` `resp` means nothing
+was sent.
 
 `ServerHandShake` never closes the connection. **Unless you have a better reason
 not to, we recommend closing it on every handshake error**: the connection can
@@ -125,7 +152,7 @@ that names it:
 Every error wraps its sentinel, so compare with `errors.Is`:
 
 ```go
-if _, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ServerHandShakeConfig{}); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
+if _, _, err := wlgows.ServerHandShake(netConn, reader, writer, request, wlgows.ServerHandShakeConfig{}); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
 	// ...
 }
 ```
@@ -290,6 +317,111 @@ After the check, set `Subprotocol: "chat.v2"` as above. The client will see
 `resp.Header.Get("Sec-WebSocket-Protocol")` is what went out: the subprotocol,
 or `""` when none was agreed.
 
+## Compression (permessage-deflate)
+
+List the answers the server wants in `config.PermessageDeflates`, most
+preferred first. An empty list turns compression off. What each field means is
+in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
+
+```go
+config := wlgows.ServerHandShakeConfig{
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10}, // first choice
+		{ClientNoContextTakeover: true},                             // fallback
+	},
+}
+```
+
+**You can check the configs before any handshake.** `ValidateServerDeflateConfig`
+tells you a config is right without a client, a connection or a handshake, so
+you do not wait for a handshake to fail to find out. Call it in a test, or once
+before the first handshake. `ServerHandShake` already runs it on every config at
+every handshake, so production code does not have to call it again:
+
+```go
+func TestDeflateConfigs(t *testing.T) {
+	for _, serverConfig := range config.PermessageDeflates {
+		if err := wlgows.ValidateServerDeflateConfig(serverConfig); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+```
+
+Without an early check, a bad config only shows up when the first client connects,
+and it fails every connection the same way. What is refused is in
+[Checking the config](#checking-the-config).
+
+How the server reads each field:
+
+| Field | Means |
+|---|---|
+| `ServerNoContextTakeover` true | The server resets its window after each message. It is also set when the offer asks for it (RFC 7692 7.1.1.1). |
+| `ClientNoContextTakeover` true | The server asks the client to reset its window after each message (RFC 7692 7.1.1.2). The server then need not keep inflate state between messages. It is also set when the offer has it. |
+| `ServerMaxWindowBits` | 0 or 15. 8 to 14 is refused, see [Checking the config](#checking-the-config). |
+| `ClientMaxWindowBitsEnabled` false | The server accepts any client window, up to 15 bits. `ClientMaxWindowBits` is ignored. |
+| `ClientMaxWindowBitsEnabled` true | The client's window is at most `ClientMaxWindowBits`, which must be 8 to 15. |
+
+### Which answer is picked
+
+Your order comes first (library choice: RFC 7692 5 lets the server accept any
+one offer). For each config in the list, the server tries the
+client's offers in the client's order, and answers the first offer that allows
+that config (RFC 7692 5). The first config that some offer allows wins. The
+answer is that config, plus what that offer requires:
+
+- an offered `server_no_context_takeover` is added (RFC 7692 7.1.1.1);
+- an offered `client_no_context_takeover` is sent back, so the client's hint is
+  agreed (RFC 7692 7.1.1.2);
+- either `max_window_bits` is lowered to the offer's value (RFC 7692 7.1.2).
+
+An offer does not allow a config when:
+
+- it has an [invalid entry](./PERMESSAGE_DEFLATE.md#invalid-entries). The
+  server declines it instead of failing the handshake (RFC 7692 7);
+- it asks the server for a window under 15 bits, which wlgows cannot send with
+  (library choice, see
+  [Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits));
+- the config limits the client under 15 bits, and the offer has no
+  `client_max_window_bits`. The server may send that param only when it was
+  offered (RFC 7692 7.1.2.2). A wlgows client never offers it, which is why the
+  example above has a fallback.
+
+When no config fits, the answer has no `Sec-WebSocket-Extensions`, and the
+connection opens without compression.
+`resp.Header.Get("Sec-WebSocket-Extensions")` is what went out.
+
+### Picking by your own rule
+
+`AcceptDeflateOffer(serverConfig, request)` is the check the list runs: it
+returns the answer for that config, or `nil` when no offer allows it. Use it
+before the handshake when your rule depends on what the answer would be. For
+example, under load, compress only for clients that already drop their context,
+so the server keeps no inflate window for them:
+
+```go
+config := wlgows.ServerHandShakeConfig{}
+answer := wlgows.AcceptDeflateOffer(wlgows.PermessageDeflateConfig{}, request)
+if answer != nil && (openConnections <= limit || answer.ClientNoContextTakeover) {
+	config.PermessageDeflates = []wlgows.PermessageDeflateConfig{{}}
+}
+```
+
+### Checking the config
+
+`ValidateServerDeflateConfig` refuses these. `ServerHandShake` checks every
+config in the list with it first, and a refused one returns before anything is
+sent, leaving the connection open:
+
+| Config | Error |
+|---|---|
+| `ServerMaxWindowBits` not 0 or 8 to 15, or `ClientMaxWindowBitsEnabled` with `ClientMaxWindowBits` not 8 to 15 (RFC 7692 7.1.2) | `ErrHandshakeServerDeflateConfigInvalid` |
+| `ServerMaxWindowBits` 8 to 14 (library choice) | `ErrHandshakeServerDeflateConfigUnsupported` |
+
+To catch these without a handshake, call `ValidateServerDeflateConfig` in a
+test or before the first handshake, as shown in
+[Compression](#compression-permessage-deflate).
+
 ## Checking Origin
 
 A browser always sends `Origin`. If your server should only serve certain sites,
@@ -297,21 +429,60 @@ check it before `ServerHandShake` and refuse with 403 Forbidden (RFC 6455 10.2,
 4.2.2), the same way as a required subprotocol. Clients that are not browsers
 may send any `Origin`, or none.
 
-## Building a Conn yourself
+## Running the handshake yourself
 
 **Not recommended. Only do this if you know what you are doing.**
-`ServerHandShake` builds the `Conn` for you, and checks the request against
-RFC 6455 on the way. `NewConn` checks nothing. A connection whose handshake broke
-a rule, or the wrong masking flag, breaks the protocol from the first frame. To
-build one around a connection whose handshake you ran yourself:
+`ServerHandShake` runs these steps in this order. When you run them yourself, a
+step you skip or reorder breaks the protocol, and nothing warns you. Every
+config in `config.PermessageDeflates` must pass `ValidateServerDeflateConfig`
+first, see [Compression](#compression-permessage-deflate).
 
 ```go
-conn, err := wlgows.NewConn(netConn, reader, writer, false) // false: a server does not mask (5.1)
+// 1. Check the request against RFC 6455 4.2.1.
+invalid := wlgows.ValidateHandShakeRequest(request)
+
+// 2. Build the answer: a refusal that names the rule, or the 101.
+respWriter := wlgows.NewResponseWriter()
+if invalid != nil {
+	respWriter.DeclineByError(invalid)
+} else {
+	respWriter.UpgradeForWebsocket(request.Header.Get("Sec-WebSocket-Key"))
+}
+resp := respWriter.GenerateResponse()
+
+// 3. On an upgrade, add a subprotocol only if the client offered it (RFC 6455 4.2.2).
+if invalid == nil && slices.Contains(wlgows.RequestSubprotocols(request), "chat.v2") {
+	resp.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
+}
+
+// 4. On an upgrade, answer the first config an offer allows (library choice: your order first).
+if invalid == nil {
+	for _, serverConfig := range config.PermessageDeflates {
+		if answer := wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
+			resp.Header.Set("Sec-WebSocket-Extensions", answer.Format())
+			break
+		}
+	}
+}
+
+// 5. Send it to netConn. writer is for frames.
+if err := wlgows.SendHandShakeResponse(netConn, resp); err != nil {
+	return err
+}
+if invalid != nil {
+	return invalid
+}
+
+// 6. Build the Conn. false: a server never masks what it sends (RFC 6455 5.1).
+conn, err := wlgows.NewConn(netConn, reader, writer, false)
 ```
 
-A `Conn` carries unexported dependencies, so a struct literal panics on first
-use. The error comes only from a writer under 14 bytes: it is flushed before it
-is replaced, and that flush can fail.
+- **`NewConn` checks nothing.** A connection whose handshake broke a rule, or
+  the wrong masking flag, breaks the protocol from the first frame.
+- **Its error** comes only from a writer under 14 bytes: it is flushed before it
+  is replaced, and that flush can fail.
+- **A struct literal panics.** A `Conn` carries unexported dependencies, so
+  build one with `NewConn` only.
 
 ## Next: reading and sending
 

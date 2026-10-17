@@ -215,6 +215,17 @@ var (
 	// ReadHandShakeResponse called with a nil *http.Request.
 	ErrHandshakeRequestNil = errors.New("handshake request is nil")
 
+	// ErrHandshakeRequestDeflateWindowBitsInvalid is a PermessageDeflateConfig
+	// whose ServerMaxWindowBits is not 0 or 8 to 15 (RFC 7692 7.1.2.1). A
+	// server must decline such an offer (RFC 7692 7).
+	ErrHandshakeRequestDeflateWindowBitsInvalid = errors.New("permessage-deflate window bits are not 0 or 8 to 15")
+
+	// ErrHandshakeRequestDeflateUnsupported is a PermessageDeflateConfig with
+	// ClientMaxWindowBitsEnabled (library choice). It would let the server set
+	// the client's window under 15 bits, and Go's compress/flate cannot send
+	// with a window that small.
+	ErrHandshakeRequestDeflateUnsupported = errors.New("permessage-deflate offer with client_max_window_bits is not supported")
+
 	// The following are ValidateHandShakeResponse rejecting the server's
 	// opening handshake response against RFC 6455 4.1.
 	ErrHandshakeResponseStatusCodeInvalid       = errors.New("handshake response status code is not 101")
@@ -226,10 +237,22 @@ var (
 
 	// The following are ValidateHandShakeResponseSubprotocol rejecting the
 	// server's Sec-WebSocket-Protocol. RFC 6455 4.1 has the client fail the
-	// connection on either. More than one value is checked first, on one line
-	// or several, since the server may answer with one only (4.2.2).
+	// connection on each. Repeated is the header sent more than once (11.3.4).
+	// Multiple is one header holding a list, where the response allows one
+	// token (4.3).
+	ErrHandshakeResponseSubprotocolRepeated   = errors.New("handshake response Sec-WebSocket-Protocol header must not appear more than once")
 	ErrHandshakeResponseSubprotocolMultiple   = errors.New("handshake response Sec-WebSocket-Protocol has more than one value")
 	ErrHandshakeResponseSubprotocolNotOffered = errors.New("handshake response Sec-WebSocket-Protocol is not a value the client offered")
+
+	// The following are ValidateHandShakeResponseDeflate rejecting the server's
+	// permessage-deflate answer. RFC 7692 5 has the client fail the connection
+	// on each. ExtensionNotOffered is an answer no single offer allows, or
+	// permessage-deflate accepted twice. DeflateParamsInvalid is a param RFC
+	// 7692 7 forbids. DeflateUnsupported is a valid answer wlgows cannot follow
+	// (library choice).
+	ErrHandshakeResponseExtensionNotOffered  = errors.New("handshake response Sec-WebSocket-Extensions is not what the client offered")
+	ErrHandshakeResponseDeflateParamsInvalid = errors.New("handshake response permessage-deflate params are invalid")
+	ErrHandshakeResponseDeflateUnsupported   = errors.New("handshake response permessage-deflate params are not supported")
 )
 
 // server handshake
@@ -237,6 +260,14 @@ var (
 	// ErrHandshakeResponseNil is SendHandShakeResponse called with a nil
 	// *http.Response.
 	ErrHandshakeResponseNil = errors.New("handshake response is nil")
+
+	// The following are ValidateServerDeflateConfig rejecting
+	// ServerHandShakeConfig.PermessageDeflates. DeflateConfigInvalid would put a
+	// param RFC 7692 7 forbids in the response. DeflateConfigUnsupported is a
+	// window under 15 bits for the server, which Go's compress/flate cannot
+	// send with (library choice).
+	ErrHandshakeServerDeflateConfigInvalid     = errors.New("server permessage-deflate config is invalid")
+	ErrHandshakeServerDeflateConfigUnsupported = errors.New("server permessage-deflate config is not supported")
 )
 
 /*

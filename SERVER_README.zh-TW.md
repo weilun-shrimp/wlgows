@@ -3,17 +3,18 @@
 # Server
 
 server 如何從一條 TCP 連線，變成一個可以使用的 `*wlgows.Conn`：接受連線、
-handshake、從 `net/http` 或 Gin hijack、TLS，以及 subprotocol。
+handshake、從 `net/http` 或 Gin hijack、TLS、subprotocol，以及壓縮。
 
 ## Contents
 
 - [接受連線](#接受連線) — 原始 TCP，逾時與大小上限由你處理
-- [Handshake](#handshake) — [回傳值](#回傳值) · [拒絕](#拒絕)
+- [Handshake](#handshake) — [設定](#設定) · [回傳值](#回傳值) · [拒絕](#拒絕)
 - [HTTP Hijacking](#http-hijacking) — `net/http` 與 Gin
 - [TLS (wss://)](#tls-wss)
 - [Subprotocols](#subprotocols) — [選一個](#選一個) · [一定要有](#一定要有) · [實際送出的值](#實際送出的值)
+- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — [選哪個回應](#選哪個回應) · [用自己的規則選](#用自己的規則選) · [檢查設定](#檢查設定)
 - [檢查 Origin](#檢查-origin) — 給瀏覽器會連上的 server
-- [自己建立 Conn](#自己建立-conn) — 不建議
+- [自己跑 handshake](#自己跑-handshake) — 不建議
 - [下一步：讀取與傳送](#下一步讀取與傳送)
 
 讀取見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)，傳送見
@@ -59,7 +60,8 @@ func handle(netConn net.Conn) {
 		wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
 		return
 	}
-	conn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ServerHandShakeConfig{})
+	writer := bufio.NewWriter(netConn)
+	conn, _, err := wlgows.ServerHandShake(netConn, reader, writer, request, wlgows.ServerHandShakeConfig{})
 	if err != nil {
 		return
 	}
@@ -81,9 +83,29 @@ request 的 method、HTTP 版本、`Host`、`Upgrade`、`Connection`、`Sec-WebS
 | `reader` | 你讀取 request 時用的同一個 `*bufio.Reader`。它可能已經讀進第一個 frame 的開頭，換一個新的就會遺失這些 byte。 |
 | `writer` | 每個 frame 都經由這個 `*bufio.Writer` 送出。大小由你決定：見 [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。 |
 | `request` | 已經解析好的 request。 |
-| `config` | 一般的 handshake 傳 `wlgows.ServerHandShakeConfig{}`。見 [Subprotocols](#subprotocols)。 |
+| `config` | server 要回應的內容。一般的 handshake 傳 `wlgows.ServerHandShakeConfig{}`。見 [設定](#設定)。 |
 
 回傳的 `Conn` 不做 mask：server 送出的 frame 一律不 mask（5.1）。
+
+### 設定
+
+`ServerHandShakeConfig` 放的是 server 要回應的內容，前提是 client 有提出：
+
+| 欄位 | 回應 | 見 |
+|---|---|---|
+| `Subprotocol` | `Sec-WebSocket-Protocol`，一個值 | [Subprotocols](#subprotocols) |
+| `PermessageDeflates` | `Sec-WebSocket-Extensions`，你的回應中第一個被提議允許的 | [壓縮](#壓縮-permessage-deflate) |
+
+```go
+config := wlgows.ServerHandShakeConfig{
+	Subprotocol:        "chat.v2",
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+}
+conn, resp, err := wlgows.ServerHandShake(netConn, reader, writer, request, config)
+```
+
+兩者都不會拒絕沒有提出的 client：連線只是在沒有它的情況下建立。你可以在任何
+handshake 之前檢查 `PermessageDeflates`，見 [壓縮](#壓縮-permessage-deflate)。
 
 ### 回傳值
 
@@ -94,8 +116,9 @@ request 的 method、HTTP 版本、`Host`、`Upgrade`、`Connection`、`Sec-WebS
 | 回應寫不出去 | `nil` | 那個回應 | 寫入的 error |
 | 升級成功，但 writer 無法 flush | `nil` | 送出的 101 | 寫入的 error |
 | `request` 是 `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
+| `config.PermessageDeflates` 中有設定被拒絕 —— 見 [壓縮](#檢查設定) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` 或 `ErrHandshakeServerDeflateConfigUnsupported` |
 
-只要 `err` 不是 `nil`，`conn` 就是 `nil`。`resp` 是實際送上線路的內容，可以拿來記錄。它的 body 已經被讀完。
+只要 `err` 不是 `nil`，`conn` 就是 `nil`。`resp` 是實際送上線路的內容，可以拿來記錄。它的 body 已經被讀完。`resp` 是 `nil` 表示什麼都沒送出。
 
 `ServerHandShake` 不會關閉連線。**除非你有更好的理由，否則我們建議在每一種 handshake error 之後都關閉它**：
 這條連線不可能再變成 WebSocket。接受連線或 hijack 之後馬上寫
@@ -118,7 +141,7 @@ request 的 method、HTTP 版本、`Host`、`Upgrade`、`Connection`、`Sec-WebS
 每個 error 都包著對應的 sentinel，所以請用 `errors.Is` 比較：
 
 ```go
-if _, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ServerHandShakeConfig{}); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
+if _, _, err := wlgows.ServerHandShake(netConn, reader, writer, request, wlgows.ServerHandShakeConfig{}); errors.Is(err, wlgows.ErrHttpMethodNotAllowed) {
 	// ...
 }
 ```
@@ -276,25 +299,159 @@ if !slices.Contains(wlgows.RequestSubprotocols(request), "chat.v2") {
 `resp.Header.Get("Sec-WebSocket-Protocol")` 就是實際送出的內容：選定的
 subprotocol，沒有協議出任何一個時則是 `""`。
 
+## 壓縮 (permessage-deflate)
+
+在 `config.PermessageDeflates` 列出 server 想要的回應，最想用的放最前面。空的清單表示不
+壓縮。每個欄位的意思見
+[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#permessagedeflateconfig)。
+
+```go
+config := wlgows.ServerHandShakeConfig{
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10}, // 第一選擇
+		{ClientNoContextTakeover: true},                             // 退而求其次
+	},
+}
+```
+
+**你可以在任何 handshake 之前檢查這些設定。** `ValidateServerDeflateConfig` 不需要
+client、連線或 handshake，就能告訴你設定是否正確，所以你不必等到 handshake 失敗才知道。
+在測試中呼叫它，或在第一次 handshake 之前呼叫一次。`ServerHandShake` 每次 handshake
+都已經會對每份設定執行它，所以正式的程式不必再呼叫一次：
+
+```go
+func TestDeflateConfigs(t *testing.T) {
+	for _, serverConfig := range config.PermessageDeflates {
+		if err := wlgows.ValidateServerDeflateConfig(serverConfig); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+```
+
+沒有提早檢查，錯誤的設定要等到第一個 client 連上時才會出現，而且每條連線都會以同樣的方式
+失敗。哪些設定會被拒絕，見 [檢查設定](#檢查設定)。
+
+server 如何解讀每個欄位：
+
+| 欄位 | 意思 |
+|---|---|
+| `ServerNoContextTakeover` 為 true | server 每送完一個 message 就重設自己的 window。提議要求時也會設上（RFC 7692 7.1.1.1）。 |
+| `ClientNoContextTakeover` 為 true | server 要求 client 每送完一個 message 就重設 window（RFC 7692 7.1.1.2）。這樣 server 在 message 之間不需要保留解壓的狀態。提議中有它時也會設上。 |
+| `ServerMaxWindowBits` | 0 或 15。8 到 14 會被拒絕，見 [檢查設定](#檢查設定)。 |
+| `ClientMaxWindowBitsEnabled` 為 false | server 接受 client 使用任何 window，最多 15 bit。`ClientMaxWindowBits` 會被忽略。 |
+| `ClientMaxWindowBitsEnabled` 為 true | client 的 window 不超過 `ClientMaxWindowBits`，它必須是 8 到 15。 |
+
+### 選哪個回應
+
+你的順序優先（函式庫的選擇：RFC 7692 5 允許 server 接受任何一個提議）。對清單中的每份設定，server 依 client 的順序逐一嘗試提議，回應第一個允許
+這份設定的提議（RFC 7692 5）。第一份有提議允許的設定勝出。回應的內容是那份設定，再加上
+那個提議要求的部分：
+
+- 提議中有 `server_no_context_takeover` 就加上（RFC 7692 7.1.1.1）；
+- 提議中有 `client_no_context_takeover` 就送回去，讓 client 的提示成為雙方的約定
+  （RFC 7692 7.1.1.2）；
+- 兩個 `max_window_bits` 都會降到提議的值（RFC 7692 7.1.2）。
+
+下列情況，提議不允許這份設定：
+
+- 帶有[不合法項目](./PERMESSAGE_DEFLATE.zh-TW.md#不合法的項目)的提議。server 會拒絕
+  它，而不是讓 handshake 失敗（RFC 7692 7）；
+- 要求 server 使用 15 bit 以下 window 的提議，wlgows 無法用那麼小的 window 送出（函式庫
+  的選擇，見 [15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）；
+- 設定把 client 限制在 15 bit 以下，而提議沒有 `client_max_window_bits`。server 只有在
+  提議包含這個參數時才能送出它（RFC 7692 7.1.2.2）。wlgows 的 client 從不提出它，這就是
+  上面的範例有退而求其次那一項的原因。
+
+沒有任何設定符合時，回應沒有 `Sec-WebSocket-Extensions`，連線會在不壓縮的情況下建立。
+`resp.Header.Get("Sec-WebSocket-Extensions")` 就是送出的內容。
+
+### 用自己的規則選
+
+`AcceptDeflateOffer(serverConfig, request)` 就是清單所做的檢查：回傳那份設定的回應，沒有
+提議允許時回傳 `nil`。你的規則需要看回應會是什麼時，在 handshake 之前用它。例如負載高時，
+只替已經不使用 context 的 client 壓縮，這樣 server 不必替它們保留解壓的 window：
+
+```go
+config := wlgows.ServerHandShakeConfig{}
+answer := wlgows.AcceptDeflateOffer(wlgows.PermessageDeflateConfig{}, request)
+if answer != nil && (openConnections <= limit || answer.ClientNoContextTakeover) {
+	config.PermessageDeflates = []wlgows.PermessageDeflateConfig{{}}
+}
+```
+
+### 檢查設定
+
+`ValidateServerDeflateConfig` 會拒絕下列設定。`ServerHandShake` 會先用它檢查清單中的
+每份設定，被拒絕時會在送出任何東西之前回傳，並讓連線保持開啟：
+
+| 設定 | Error |
+|---|---|
+| `ServerMaxWindowBits` 不是 0 或 8 到 15，或 `ClientMaxWindowBitsEnabled` 時 `ClientMaxWindowBits` 不是 8 到 15（RFC 7692 7.1.2） | `ErrHandshakeServerDeflateConfigInvalid` |
+| `ServerMaxWindowBits` 為 8 到 14（函式庫的選擇） | `ErrHandshakeServerDeflateConfigUnsupported` |
+
+要在不經過 handshake 的情況下抓到這些，請在測試中或第一次 handshake 之前呼叫
+`ValidateServerDeflateConfig`，作法見 [壓縮](#壓縮-permessage-deflate)。
+
 ## 檢查 Origin
 
 瀏覽器一定會送出 `Origin`。如果你的 server 只服務特定網站，請在 `ServerHandShake`
 之前檢查，並以 403 Forbidden 拒絕（RFC 6455 10.2、4.2.2），作法與必要的
 subprotocol 相同。不是瀏覽器的 client 可能送任何 `Origin`，或根本不送。
 
-## 自己建立 Conn
+## 自己跑 handshake
 
 **不建議這麼做。只有在你清楚自己在做什麼時才使用。**
-`ServerHandShake` 會替你建立 `Conn`，過程中也會依 RFC 6455 檢查 request。`NewConn`
-什麼都不檢查。handshake 違反規則的連線，或 masking 旗標設錯，從第一個 frame 起就會
-破壞協定。如果 handshake 是你自己跑的，要替那條連線建立 `Conn`：
+`ServerHandShake` 會照這個順序執行下列步驟。自己執行時，漏掉或調換任何一步都會破壞
+協定，而且不會有任何警告。`config.PermessageDeflates` 中的每份設定都必須先通過
+`ValidateServerDeflateConfig`，見 [壓縮](#壓縮-permessage-deflate)。
 
 ```go
-conn, err := wlgows.NewConn(netConn, reader, writer, false) // false：server 不做 mask（5.1）
+// 1. 依 RFC 6455 4.2.1 檢查 request。
+invalid := wlgows.ValidateHandShakeRequest(request)
+
+// 2. 建立回應：指出違反規則的拒絕回應，或 101。
+respWriter := wlgows.NewResponseWriter()
+if invalid != nil {
+	respWriter.DeclineByError(invalid)
+} else {
+	respWriter.UpgradeForWebsocket(request.Header.Get("Sec-WebSocket-Key"))
+}
+resp := respWriter.GenerateResponse()
+
+// 3. 升級時，只有 client 提出過的 subprotocol 才加上（RFC 6455 4.2.2）。
+if invalid == nil && slices.Contains(wlgows.RequestSubprotocols(request), "chat.v2") {
+	resp.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
+}
+
+// 4. 升級時，回應第一份有提議允許的設定（函式庫的選擇：你的順序優先）。
+if invalid == nil {
+	for _, serverConfig := range config.PermessageDeflates {
+		if answer := wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
+			resp.Header.Set("Sec-WebSocket-Extensions", answer.Format())
+			break
+		}
+	}
+}
+
+// 5. 送到 netConn。writer 是給 frame 用的。
+if err := wlgows.SendHandShakeResponse(netConn, resp); err != nil {
+	return err
+}
+if invalid != nil {
+	return invalid
+}
+
+// 6. 建立 Conn。false：server 送出的 frame 一律不 mask（RFC 6455 5.1）。
+conn, err := wlgows.NewConn(netConn, reader, writer, false)
 ```
 
-`Conn` 帶有未匯出的相依，所以直接寫 struct literal 會在第一次使用時 panic。error 只會
-來自小於 14 byte 的 writer：它會先被 flush 再被替換，而這次 flush 可能失敗。
+- **`NewConn` 什麼都不檢查。** handshake 違反規則的連線，或 masking 旗標設錯，從第一個
+  frame 起就會破壞協定。
+- **它的 error** 只會來自小於 14 byte 的 writer：它會先被 flush 再被替換，而這次
+  flush 可能失敗。
+- **直接寫 struct literal 會 panic。** `Conn` 帶有未匯出的相依，所以只能用 `NewConn`
+  建立。
 
 ## 下一步：讀取與傳送
 

@@ -15,51 +15,68 @@ import (
 )
 
 /*
-ClientHandShake runs the RFC 6455 4.1 client opening handshake over c/r: it
-decorates req with the upgrade headers, sends it, reads back the server's
-response, and validates that response against req's Sec-WebSocket-Key. On
-success it wraps c in a ready-to-use *Conn — masked, since 5.1 requires every
-frame a client sends to be. conn is nil whenever err is non-nil; the response
-is still returned so a caller can inspect what the server actually said.
+ClientHandShake runs the RFC 6455 4.1 client handshake over c: it adds the
+upgrade headers to req, sends it, and checks the response. On success it
+returns a *Conn that masks what it sends (RFC 6455 5.1). conn is nil whenever
+err is non-nil, but the response is still returned.
 
-r must be the same *bufio.Reader you go on to read frames from. http.ReadResponse
-can only consume complete lines, so it may pull bytes past the header block —
-the start of the first frame — into r's internal buffer; handing back a fresh
-reader here would strand them. That's also why the returned *Conn reuses r
-rather than wrapping c again.
+r must be the reader you go on to read frames from, since it may already hold
+the start of the first frame. w is the Conn's writer, see NewConn.
 
-w is the returned *Conn's writer, such as bufio.NewWriter(c) — see NewConn.
+config adds subprotocols and the permessage-deflate offer to req, see
+ClientHandShakeConfig.
 
-A response that breaks a rule RFC 6455 4.1 answers with "Fail the WebSocket
-Connection" closes c before the error returns (7.1.7): a 101 that is not
-HTTP/1.1, or a wrong Upgrade, Connection, Sec-WebSocket-Accept or
-Sec-WebSocket-Protocol. Every other error leaves c open, and closing it is
-yours. A status other than 101 is one of them, since 4.1 has it handled as
-plain HTTP, such as a redirect or a 401.
-ClientMustFailConnection(err) tells the two apart.
+A response RFC 6455 4.1 says to fail closes c before the error returns (7.1.7).
+Any other error, such as a status other than 101, leaves c open for you to
+close. ClientMustFailConnection(err) tells the two apart.
 */
-func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request) (*Conn, *http.Response, error) {
-	return clientHandShake(c, r, w, req, clientHandShakeDI{
-		upgradeRequest:            UpgradeRequest,
-		sendHandShakeRequest:      SendHandShakeRequest,
-		readHandShakeResponse:     ReadHandShakeResponse,
-		validateHandShakeResponse: ValidateHandShakeResponse,
-		validateSubprotocol:       ValidateHandShakeResponseSubprotocol,
-		newConn:                   NewConn,
+func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ClientHandShakeConfig) (*Conn, *http.Response, error) {
+	return clientHandShake(c, r, w, req, config, clientHandShakeDI{
+		upgradeRequest:                       UpgradeRequest,
+		sendHandShakeRequest:                 SendHandShakeRequest,
+		readHandShakeResponse:                ReadHandShakeResponse,
+		validateHandShakeResponse:            ValidateHandShakeResponse,
+		validateHandShakeResponseSubprotocol: ValidateHandShakeResponseSubprotocol,
+		validateHandShakeResponseDeflate:     ValidateHandShakeResponseDeflate,
+		newConn:                              NewConn,
 	})
 }
 
-type clientHandShakeDI struct {
-	upgradeRequest            func(req *http.Request) error
-	sendHandShakeRequest      func(w io.Writer, req *http.Request) error
-	readHandShakeResponse     func(r *bufio.Reader, req *http.Request) (*http.Response, error)
-	validateHandShakeResponse func(res *http.Response, sec_websocket_key string) error
-	validateSubprotocol       func(res *http.Response, req *http.Request) error
-	newConn                   func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
+/*
+ClientHandShakeConfig is what ClientHandShake adds to the request. The zero
+value adds nothing.
+
+Each item is appended after the request's own lines, which are sent as they
+are. Setting a header by hand and here at the same time is not recommended
+unless you know what you are doing.
+*/
+type ClientHandShakeConfig struct {
+	// Subprotocols are offered in Sec-WebSocket-Protocol, in order of
+	// preference (RFC 6455 4.1). One already in the request is not added again.
+	Subprotocols []string
+
+	// PermessageDeflates are permessage-deflate offers, in order of preference
+	// (RFC 7692 5). Each one is sent as one offer.
+	//
+	// ClientMaxWindowBitsEnabled returns ErrHandshakeRequestDeflateUnsupported
+	// (library choice). It would let the server set the client's window under
+	// 15 bits, and Go's compress/flate cannot send with a window that small.
+	// Without it the client may always use 15 bits.
+	PermessageDeflates []PermessageDeflateConfig
 }
 
-func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, di clientHandShakeDI) (*Conn, *http.Response, error) {
-	if err := di.upgradeRequest(req); err != nil {
+type clientHandShakeDI struct {
+	upgradeRequest                       func(req *http.Request, config ClientHandShakeConfig) error
+	sendHandShakeRequest                 func(w io.Writer, req *http.Request) error
+	readHandShakeResponse                func(r *bufio.Reader, req *http.Request) (*http.Response, error)
+	validateHandShakeResponse            func(res *http.Response, sec_websocket_key string) error
+	validateHandShakeResponseSubprotocol func(res *http.Response, req *http.Request) error
+	validateHandShakeResponseDeflate     func(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error)
+	newConn                              func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
+}
+
+func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ClientHandShakeConfig, di clientHandShakeDI) (*Conn, *http.Response, error) {
+	if err := di.upgradeRequest(req, config); err != nil {
 		return nil, nil, err
 	}
 	if err := di.sendHandShakeRequest(c, req); err != nil {
@@ -75,7 +92,13 @@ func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 		}
 		return nil, res, err
 	}
-	if err := di.validateSubprotocol(res, req); err != nil {
+	if err := di.validateHandShakeResponseSubprotocol(res, req); err != nil {
+		if ClientMustFailConnection(err) {
+			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
+		}
+		return nil, res, err
+	}
+	if _, err := di.validateHandShakeResponseDeflate(res, req); err != nil {
 		if ClientMustFailConnection(err) {
 			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
 		}
@@ -90,21 +113,26 @@ func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 
 /*
 UpgradeRequest makes req a valid opening handshake (RFC 6455 4.1): GET, HTTP/1.1,
-no body and the four upgrade headers, whatever req had before. Anything else you set is
-sent as it is. A url with no host has no Host to send, so it returns
+no body and the four upgrade headers, whatever req had before. Then it appends
+what config asks for (see ClientHandShakeConfig). Anything else you set is sent
+as it is. A url with no host has no Host to send, so it returns
 ErrUrlHostEmpty.
 */
-func UpgradeRequest(req *http.Request) error {
-	return upgradeRequest(req, upgradeRequestDI{
+func UpgradeRequest(req *http.Request, config ClientHandShakeConfig) error {
+	return upgradeRequest(req, config, upgradeRequestDI{
 		generateWebSocketKey: GenerateWebSocketKey,
+		addSubprotocols:      addSubprotocols,
+		addReqDeflateOffers:  addReqDeflateOffers,
 	})
 }
 
 type upgradeRequestDI struct {
 	generateWebSocketKey func() string
+	addSubprotocols      func(req *http.Request, subprotocols []string)
+	addReqDeflateOffers  func(req *http.Request, premsg_configs []PermessageDeflateConfig) error
 }
 
-func upgradeRequest(req *http.Request, di upgradeRequestDI) error {
+func upgradeRequest(req *http.Request, config ClientHandShakeConfig, di upgradeRequestDI) error {
 	if req == nil {
 		return fmt.Errorf("UpgradeRequest: %w", ErrHandshakeRequestNil)
 	}
@@ -121,6 +149,47 @@ func upgradeRequest(req *http.Request, di upgradeRequestDI) error {
 		"Sec-WebSocket-Version": "13",
 	} {
 		req.Header.Set(k, v)
+	}
+
+	di.addSubprotocols(req, config.Subprotocols)
+	return di.addReqDeflateOffers(req, config.PermessageDeflates)
+}
+
+// addSubprotocols appends the subprotocols that req does not have yet, on a
+// line of their own after req's lines (RFC 6455 4.1).
+func addSubprotocols(req *http.Request, subprotocols []string) {
+	var added []string
+	for _, subprotocol := range subprotocols {
+		if !slices.Contains(RequestSubprotocols(req), subprotocol) && !slices.Contains(added, subprotocol) {
+			added = append(added, subprotocol)
+		}
+	}
+	if len(added) > 0 {
+		req.Header.Add("Sec-WebSocket-Protocol", strings.Join(added, ", "))
+	}
+}
+
+// addReqDeflateOffers appends the offers in order, on a line of their own after
+// req's lines (RFC 7692 5). If any offer is refused below, it adds nothing and
+// returns the error.
+func addReqDeflateOffers(req *http.Request, premsg_configs []PermessageDeflateConfig) error {
+	var offers []string
+	for _, premsg_config := range premsg_configs {
+		// Library choice: client_max_window_bits, with or without a value, lets
+		// the server answer 8 to 14 (RFC 7692 7.1.2.2). Go's compress/flate
+		// cannot keep a window under 15 bits, so the client would have to fail
+		// the connection. Without the param the client may always use 15.
+		if premsg_config.ClientMaxWindowBitsEnabled {
+			return fmt.Errorf("UpgradeRequest: ClientMaxWindowBitsEnabled: %w", ErrHandshakeRequestDeflateUnsupported)
+		}
+		// RFC 7692 7.1.2.1: window bits are 8 to 15. 0 is not sent.
+		if bits := premsg_config.ServerMaxWindowBits; bits != 0 && (bits < 8 || bits > 15) {
+			return fmt.Errorf("UpgradeRequest: window bits %d: %w", bits, ErrHandshakeRequestDeflateWindowBitsInvalid)
+		}
+		offers = append(offers, premsg_config.Format())
+	}
+	if len(offers) > 0 {
+		req.Header.Add("Sec-WebSocket-Extensions", strings.Join(offers, ", "))
 	}
 	return nil
 }
@@ -227,15 +296,20 @@ func ClientMustFailConnection(err error) bool {
 		errors.Is(err, ErrHandshakeResponseConnectionHeaderInvalid) ||
 		errors.Is(err, ErrHandshakeResponseAcceptHeaderMissing) ||
 		errors.Is(err, ErrHandshakeResponseAcceptHeaderMismatch) ||
+		errors.Is(err, ErrHandshakeResponseSubprotocolRepeated) ||
 		errors.Is(err, ErrHandshakeResponseSubprotocolMultiple) ||
-		errors.Is(err, ErrHandshakeResponseSubprotocolNotOffered)
+		errors.Is(err, ErrHandshakeResponseSubprotocolNotOffered) ||
+		errors.Is(err, ErrHandshakeResponseExtensionNotOffered) ||
+		errors.Is(err, ErrHandshakeResponseDeflateParamsInvalid) ||
+		errors.Is(err, ErrHandshakeResponseDeflateUnsupported)
 }
 
 /*
 ValidateHandShakeResponseSubprotocol checks the server's Sec-WebSocket-Protocol
 against what req offered (RFC 6455 4.1). No header passes: the server picked
-none. One value the client offered passes. More than one value, on one line or
-several, returns ErrHandshakeResponseSubprotocolMultiple. One value never
+none. One value the client offered passes. The header on more than one line
+returns ErrHandshakeResponseSubprotocolRepeated. More than one value on one
+line returns ErrHandshakeResponseSubprotocolMultiple. One value never
 offered, including any value when nothing was offered, returns
 ErrHandshakeResponseSubprotocolNotOffered.
 
@@ -249,21 +323,151 @@ func ValidateHandShakeResponseSubprotocol(res *http.Response, req *http.Request)
 	if len(lines) == 0 {
 		return nil
 	}
-	var chosen []string
-	for _, line := range lines {
-		for _, value := range strings.Split(line, ",") {
-			chosen = append(chosen, strings.TrimSpace(value))
-		}
-	}
-	if len(chosen) > 1 {
+	// RFC 6455 11.3.4: the header appears once in a response.
+	if len(lines) > 1 {
 		return fmt.Errorf("invalid handshake response header Sec-WebSocket-Protocol %q: %w",
-			strings.Join(lines, ", "), ErrHandshakeResponseSubprotocolMultiple)
+			lines, ErrHandshakeResponseSubprotocolRepeated)
 	}
-	if offered := RequestSubprotocols(req); !slices.Contains(offered, chosen[0]) {
+	// RFC 6455 4.3: the response is one token, not a list.
+	values := strings.Split(lines[0], ",")
+	if len(values) > 1 {
+		return fmt.Errorf("invalid handshake response header Sec-WebSocket-Protocol %q: %w",
+			lines[0], ErrHandshakeResponseSubprotocolMultiple)
+	}
+	chosen := strings.TrimSpace(values[0])
+	if offered := RequestSubprotocols(req); !slices.Contains(offered, chosen) {
 		return fmt.Errorf("invalid handshake response header Sec-WebSocket-Protocol %q, offered %q: %w",
-			chosen[0], offered, ErrHandshakeResponseSubprotocolNotOffered)
+			chosen, offered, ErrHandshakeResponseSubprotocolNotOffered)
 	}
 	return nil
+}
+
+/*
+ValidateHandShakeResponseDeflate checks the server's permessage-deflate answer
+in Sec-WebSocket-Extensions, and that one offer in req allows it (RFC 7692 5,
+7.1). It returns what both sides follow: the answer, plus the client's own
+promises from the offers. It returns nil when the server declined deflate.
+*/
+func ValidateHandShakeResponseDeflate(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error) {
+	return validateHandShakeResponseDeflate(res, req, validateHandShakeResponseDeflateDI{
+		validateRespDeflateExt:        validateRespDeflateExt,
+		validateRespDeflateExtWithReq: validateRespDeflateExtWithReq,
+	})
+}
+
+type validateHandShakeResponseDeflateDI struct {
+	validateRespDeflateExt        func(res *http.Response) (server_config *PermessageDeflateConfig, err error)
+	validateRespDeflateExtWithReq func(server_config PermessageDeflateConfig, req *http.Request) (agreed_config PermessageDeflateConfig, err error)
+}
+
+// validateHandShakeResponseDeflate returns nil when the server declined
+// deflate.
+func validateHandShakeResponseDeflate(res *http.Response, req *http.Request, di validateHandShakeResponseDeflateDI) (agreed_config *PermessageDeflateConfig, err error) {
+	server_config, err := di.validateRespDeflateExt(res)
+	if err != nil || server_config == nil {
+		return nil, err
+	}
+	agreed, err := di.validateRespDeflateExtWithReq(*server_config, req)
+	if err != nil {
+		return nil, err
+	}
+	return &agreed, nil
+}
+
+// validateRespDeflateExt reads the permessage-deflate entry of res. It returns
+// nil and no error when the server did not accept deflate.
+func validateRespDeflateExt(res *http.Response) (server_config *PermessageDeflateConfig, err error) {
+	var deflate *extension
+	for _, extension := range parseExtensions(res.Header) {
+		if extension.name != permessageDeflateName {
+			continue
+		}
+		// RFC 7692 5: the server accepts one offer at most.
+		if deflate != nil {
+			return nil, fmt.Errorf("permessage-deflate accepted twice: %w", ErrHandshakeResponseExtensionNotOffered)
+		}
+		deflate = &extension
+	}
+	if deflate == nil { // Server don't offer the deflate. It is ok.
+		return nil, nil
+	}
+
+	params, err := parseDeflateParams(deflate.params)
+	if err != nil {
+		return nil, fmt.Errorf("%v: %w", err, ErrHandshakeResponseDeflateParamsInvalid)
+	}
+	// RFC 7692 7.1.2.2: a response must give client_max_window_bits a value.
+	if params.ClientMaxWindowBitsEnabled && params.ClientMaxWindowBits == 0 {
+		return nil, fmt.Errorf("client_max_window_bits has no value: %w", ErrHandshakeResponseDeflateParamsInvalid)
+	}
+	return &params, nil
+}
+
+/*
+validateRespDeflateExtWithReq checks that one deflate offer in req allows the
+response params. The server accepts a single offer (RFC 7692 5), so the params
+are matched against each offer alone, not against all of them together.
+
+An offer allows the response when:
+
+  - client_max_window_bits is in the response only if the offer had it, and
+    is not over the offer's value when it had one (RFC 7692 7.1.2.2).
+  - server_no_context_takeover is in the response if the offer had it
+    (RFC 7692 7.1.1.1).
+  - server_max_window_bits is in the response if the offer had it, and is not
+    over the offer's value (RFC 7692 7.1.2.1).
+
+server_no_context_takeover, client_no_context_takeover and
+server_max_window_bits may be added without an offer (RFC 7692 7.1.1.1,
+7.1.1.2, 7.1.2.1).
+
+It returns server_config with the client's own promises added: a
+client_no_context_takeover from any offer that allows the response binds the
+client, even when the response leaves it out (RFC 7692 7.1.1.2).
+*/
+func validateRespDeflateExtWithReq(server_config PermessageDeflateConfig, req *http.Request) (agreed_config PermessageDeflateConfig, err error) {
+	agreed_config = server_config
+	allowed := false
+	for _, extension := range parseExtensions(req.Header) {
+		if extension.name != permessageDeflateName {
+			continue
+		}
+		// An offer that does not parse must be declined (RFC 7692 7), so it
+		// does not count as offered.
+		offer, err := parseDeflateParams(extension.params)
+		if err != nil {
+			continue
+		}
+		if server_config.ClientMaxWindowBitsEnabled && !offer.ClientMaxWindowBitsEnabled {
+			continue
+		}
+		if offer.ClientMaxWindowBits != 0 && server_config.ClientMaxWindowBits > offer.ClientMaxWindowBits {
+			continue
+		}
+		// RFC 7692 7.1.1.1: a server that accepts this offer must send it back.
+		if offer.ServerNoContextTakeover && !server_config.ServerNoContextTakeover {
+			continue
+		}
+		// RFC 7692 7.1.2.1: a server that accepts this offer must send it back,
+		// with the offer's value or less.
+		if offer.ServerMaxWindowBits != 0 && (server_config.ServerMaxWindowBits == 0 || server_config.ServerMaxWindowBits > offer.ServerMaxWindowBits) {
+			continue
+		}
+		allowed = true
+		// The response does not say which offer it accepted, so the client
+		// downgrades for safety: if any offer that allows it had
+		// client_no_context_takeover, the client drops context. Dropping
+		// context is always safe for a sender. Keeping it could break a server
+		// that relied on the hint. Nothing later can change the result.
+		if offer.ClientNoContextTakeover {
+			agreed_config.ClientNoContextTakeover = true
+			return agreed_config, nil
+		}
+	}
+	if !allowed {
+		return PermessageDeflateConfig{}, fmt.Errorf("permessage-deflate response matches no offer: %w", ErrHandshakeResponseExtensionNotOffered)
+	}
+	return agreed_config, nil
 }
 
 func GenerateWebSocketKey() string {
