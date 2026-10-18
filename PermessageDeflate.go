@@ -26,8 +26,8 @@ The window is 2^N bytes, N from 8 to 15, and 15 (32 KB) when not given. It
 limits references in both modes. server_max_window_bits and
 client_max_window_bits lower it for each sender (RFC 7692 7.1.2).
 
-wlgows supports no context only, in both directions (library choice). Go's
-compressor always uses a 32 KB window, so a smaller one is declined.
+wlgows sends with a 32 KB window only (library choice): Go's compress/flate
+cannot send with a smaller one, so a smaller one is declined.
 */
 
 import (

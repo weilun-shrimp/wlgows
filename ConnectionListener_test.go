@@ -13,7 +13,7 @@ import (
 // is what sets closeSent.
 func hookConn() (*Conn, *[]NewControlFrameConfig) {
 	var sent []NewControlFrameConfig
-	conn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), false)
+	conn, _ := NewConn(newFakeConn(nil), bufio.NewReader(newFakeConn(nil)), bufio.NewWriter(newFakeConn(nil)), NewConnConfig{PeerIsClient: true})
 	conn.di.newControlFrame = func(config NewControlFrameConfig) (*Frame, error) {
 		sent = append(sent, config)
 		return NewControlFrame(config)

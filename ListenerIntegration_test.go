@@ -27,7 +27,7 @@ func TestListenerIntegration(t *testing.T) {
 	go func() {
 		defer peer.Close()
 
-		peerConn, _ := NewConn(peer, bufio.NewReader(peer), bufio.NewWriter(peer), true)
+		peerConn, _ := NewConn(peer, bufio.NewReader(peer), bufio.NewWriter(peer), NewConnConfig{})
 		write := func(config NewFrameConfig) {
 			peerConn.SendFrame(NewFrame(config))
 		}
@@ -45,7 +45,7 @@ func TestListenerIntegration(t *testing.T) {
 		})
 	}()
 
-	conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+	conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 	defer conn.Close()
 
 	listener := NewListener(conn)

@@ -252,6 +252,8 @@ if resp.Header.Get("Sec-WebSocket-Protocol") == "" {
 
 `config.PermessageDeflates` 的每一項就是一個提議，最想用的放最前面。每個欄位的意思見
 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#permessagedeflateconfig)。
+協議之後如何 deflate 後傳送，見
+[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#壓縮-permessage-deflate)。
 
 ```go
 config := wlgows.ClientHandShakeConfig{
@@ -334,17 +336,19 @@ if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil
 	}
 	return err
 }
-if _, err := wlgows.ValidateHandShakeResponseDeflate(resp, request); err != nil {
+agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request)
+if err != nil {
 	if wlgows.ClientMustFailConnection(err) {
 		netConn.Close() // RFC 7692 5
 	}
 	return err
 }
-// 5. 建立 Conn。true：client 送出的每個 frame 都要 mask（RFC 6455 5.1）。
-conn, err := wlgows.NewConn(netConn, reader, writer, true)
+// 5. 建立 Conn。對方是 server，所以這個 Conn 送出的每個 frame 都要 mask
+// （RFC 6455 5.1）。沒有談成 deflate 時 agreed 為 nil。
+conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIsClient: false, PermessageDeflate: agreed})
 ```
 
-- **`NewConn` 什麼都不檢查。** handshake 違反規則的連線，或 masking 旗標設錯，從第一個
+- **`NewConn` 什麼都不檢查。** handshake 違反規則的連線，或 `PeerIsClient`、談成的設定給錯，從第一個
   frame 起就會破壞協定。
 - **它的 error** 只會來自小於 14 byte 的 writer：它會先被 flush 再被替換，而這次
   flush 可能失敗。
@@ -360,7 +364,7 @@ listener := conn.NewStandardListener() // ping、pong、close 與保留的 opcod
 
 config := listener.GetConfig()
 config.Text = func(frames wlgows.DataFrames) {
-	conn.SendText(frames.Bytes(), 0) // echo
+	conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
 }
 listener.SetConfig(config)
 

@@ -441,7 +441,7 @@ func TestConnSendFrame(t *testing.T) {
 	var steps []string
 	netConn := newFakeConn(nil)
 	netConn.onWrite = func() { steps = append(steps, "write") }
-	wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+	wsConn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 	wsConn.di.writeLocker = fakeFuncLocker{
 		lock:   func() { steps = append(steps, "write lock") },
 		unlock: func() { steps = append(steps, "write unlock") },
@@ -460,7 +460,7 @@ func TestSendFrame(t *testing.T) {
 	// case overrides what it looks at.
 	base_di := func() sendFrameDI {
 		netConn := newFakeConn(nil)
-		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 		return sendFrameDI{
 			conn:               conn,
 			bufferedWriteFrame: func(f *Frame) error { return nil },
@@ -565,7 +565,7 @@ func TestRenewWriter(t *testing.T) {
 		netConn = newFakeConn(nil)
 		netConn.onWrite = func() { steps = append(steps, "write") }
 		newWriter = bufio.NewWriterSize(newFakeConn(nil), 100)
-		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 		conn.di.writeLocker = fakeFuncLocker{
 			lock: func() { steps = append(steps, "write lock") },
 			unlock: func() {

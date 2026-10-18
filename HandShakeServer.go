@@ -91,7 +91,7 @@ type serverHandShakeDI struct {
 	newResponseWriter           func() ServerHandShakeRespWriter
 	acceptDeflateOffer          func(server_config PermessageDeflateConfig, req *http.Request) *PermessageDeflateConfig
 	sendHandShakeResponse       func(w io.Writer, res *http.Response) error
-	newConn                     func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
+	newConn                     func(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig) (*Conn, error)
 }
 
 func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ServerHandShakeConfig, di serverHandShakeDI) (*Conn, *http.Response, error) {
@@ -117,11 +117,12 @@ func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 	if invalid == nil && config.Subprotocol != "" && slices.Contains(RequestSubprotocols(req), config.Subprotocol) {
 		res.Header.Set("Sec-WebSocket-Protocol", config.Subprotocol)
 	}
+	var answer_deflate_config *PermessageDeflateConfig
 	if invalid == nil {
 		// Library choice: the server's order first. Within one config, the
 		// client's order picks the offer (RFC 7692 5).
 		for _, server_config := range config.PermessageDeflates {
-			if answer_deflate_config := di.acceptDeflateOffer(server_config, req); answer_deflate_config != nil {
+			if answer_deflate_config = di.acceptDeflateOffer(server_config, req); answer_deflate_config != nil {
 				res.Header.Set("Sec-WebSocket-Extensions", answer_deflate_config.Format())
 				break
 			}
@@ -136,7 +137,7 @@ func serverHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 	if invalid != nil {
 		return nil, res, invalid
 	}
-	conn, err := di.newConn(c, r, w, false)
+	conn, err := di.newConn(c, r, w, NewConnConfig{PeerIsClient: true, PermessageDeflate: answer_deflate_config})
 	if err != nil {
 		return nil, res, err
 	}

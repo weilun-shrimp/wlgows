@@ -5,7 +5,8 @@
 What each field of `PermessageDeflateConfig` means, and how a config is written
 in `Sec-WebSocket-Extensions` (RFC 7692). How each side uses it is in
 [CLIENT_README.md](./CLIENT_README.md#compression-permessage-deflate) and
-[SERVER_README.md](./SERVER_README.md#compression-permessage-deflate).
+[SERVER_README.md](./SERVER_README.md#compression-permessage-deflate), and
+sending deflated in [SENDING_README.md](./SENDING_README.md#compression-permessage-deflate).
 
 ## Contents
 

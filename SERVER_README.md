@@ -322,6 +322,8 @@ or `""` when none was agreed.
 List the answers the server wants in `config.PermessageDeflates`, most
 preferred first. An empty list turns compression off. What each field means is
 in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
+Sending deflated once it is agreed is in
+[SENDING_README.md](./SENDING_README.md#compression-permessage-deflate).
 
 ```go
 config := wlgows.ServerHandShakeConfig{
@@ -456,9 +458,10 @@ if invalid == nil && slices.Contains(wlgows.RequestSubprotocols(request), "chat.
 }
 
 // 4. On an upgrade, answer the first config an offer allows (library choice: your order first).
+var answer *wlgows.PermessageDeflateConfig
 if invalid == nil {
 	for _, serverConfig := range config.PermessageDeflates {
-		if answer := wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
+		if answer = wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
 			resp.Header.Set("Sec-WebSocket-Extensions", answer.Format())
 			break
 		}
@@ -473,12 +476,13 @@ if invalid != nil {
 	return invalid
 }
 
-// 6. Build the Conn. false: a server never masks what it sends (RFC 6455 5.1).
-conn, err := wlgows.NewConn(netConn, reader, writer, false)
+// 6. Build the Conn. The peer is a client, so this Conn never masks what it
+// sends (RFC 6455 5.1). answer is nil when no deflate was agreed.
+conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIsClient: true, PermessageDeflate: answer})
 ```
 
 - **`NewConn` checks nothing.** A connection whose handshake broke a rule, or
-  the wrong masking flag, breaks the protocol from the first frame.
+  the wrong `PeerIsClient` or agreement, breaks the protocol from the first frame.
 - **Its error** comes only from a writer under 14 bytes: it is flushed before it
   is replaced, and that flush can fail.
 - **A struct literal panics.** A `Conn` carries unexported dependencies, so
@@ -493,7 +497,7 @@ listener := conn.NewStandardListener() // ping, pong, close and reserved opcodes
 
 config := listener.GetConfig()
 config.Text = func(frames wlgows.DataFrames) {
-	conn.SendText(frames.Bytes(), 0) // echo
+	conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
 }
 listener.SetConfig(config)
 

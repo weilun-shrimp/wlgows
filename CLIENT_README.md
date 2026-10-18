@@ -266,6 +266,7 @@ Both client examples have the offer and the check, commented out.
 
 Each item in `config.PermessageDeflates` is one offer, most preferred first.
 What each field means is in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
+Sending deflated once it is agreed is in [SENDING_README.md](./SENDING_README.md#compression-permessage-deflate).
 
 ```go
 config := wlgows.ClientHandShakeConfig{
@@ -352,18 +353,20 @@ if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil
 	}
 	return err
 }
-if _, err := wlgows.ValidateHandShakeResponseDeflate(resp, request); err != nil {
+agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request)
+if err != nil {
 	if wlgows.ClientMustFailConnection(err) {
 		netConn.Close() // RFC 7692 5
 	}
 	return err
 }
-// 5. Build the Conn. true: a client masks every frame it sends (RFC 6455 5.1).
-conn, err := wlgows.NewConn(netConn, reader, writer, true)
+// 5. Build the Conn. The peer is a server, so this Conn masks every frame it
+// sends (RFC 6455 5.1). agreed is nil when no deflate was agreed.
+conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIsClient: false, PermessageDeflate: agreed})
 ```
 
 - **`NewConn` checks nothing.** A connection whose handshake broke a rule, or
-  the wrong masking flag, breaks the protocol from the first frame.
+  the wrong `PeerIsClient` or agreement, breaks the protocol from the first frame.
 - **Its error** comes only from a writer under 14 bytes: it is flushed before it
   is replaced, and that flush can fail.
 - **A struct literal panics.** A `Conn` carries unexported dependencies, so
@@ -378,7 +381,7 @@ listener := conn.NewStandardListener() // ping, pong, close and reserved opcodes
 
 config := listener.GetConfig()
 config.Text = func(frames wlgows.DataFrames) {
-	conn.SendText(frames.Bytes(), 0) // echo
+	conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
 }
 listener.SetConfig(config)
 

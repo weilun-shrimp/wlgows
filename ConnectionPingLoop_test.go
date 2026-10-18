@@ -20,7 +20,7 @@ func TestStartPingLoop(t *testing.T) {
 	// each case overrides what it looks at, and has to stop the loop.
 	base_di := func(t *testing.T) startPingLoopDI {
 		netConn := newFakeConn(nil)
-		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), false)
+		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 		conn.di.loop = func(trigger func(stop_signal chan<- struct{}), interval time.Duration) {
 			stop_signal := make(chan struct{}, 1)
 			for range 10 {

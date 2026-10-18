@@ -18,12 +18,16 @@ type Conn struct {
 	// ClientHandShake doc comment.
 	reader *bufio.Reader
 
-	// Whether the frames this Conn builds are masked. RFC 6455 5.1 leaves no
-	// choice — a client masks every frame it sends, a server masks none, and a
-	// peer must fail the connection on the wrong one — so it is settled once at
-	// construction rather than at each send. ClientHandShake passes true,
-	// ServerHandShake false.
-	maskSendFrame bool
+	// Frame writes go through this, so small frames share a Write. It writes to
+	// the embedded net.Conn, and is at least minWriterSize. Guarded by
+	// writeLocker. Replaced only by RenewWriter.
+	writer *bufio.Writer
+
+	// Whether the peer is a client, settled once at construction. RFC 6455 5.1
+	// leaves no choice — a client masks every frame it sends, a server masks
+	// none, and a peer must fail the connection on the wrong one — so the frames
+	// this Conn builds are masked when this is false.
+	peerIsClient bool
 
 	// The opcode of the message being sent by a long data transmission. Zero
 	// means no message is open: a message never starts with
@@ -34,6 +38,11 @@ type Conn struct {
 	// frame carries the message's opcode; every frame after it is
 	// OpcodeContinuation.
 	currentTransmitDataMsgOpened bool
+
+	// Whether the message is deflated and its stream is not yet ended: set by
+	// Start, cleared once End has deflated the last piece. Release drops the
+	// context while it is set.
+	currentTransmitDataMsgDeflating bool
 
 	// Whether a close has been written. The closing handshake is one close each
 	// way (RFC 6455 1.4, 7.1.5), so this is what says the answer is already
@@ -47,10 +56,15 @@ type Conn struct {
 	// is written, SendFrame's included, and only once the write succeeds.
 	closeSent bool
 
-	// Frame writes go through this, so small frames share a Write. It writes to
-	// the embedded net.Conn, and is at least minWriterSize. Guarded by
-	// writeLocker. Replaced only by RenewWriter.
-	writer *bufio.Writer
+	// The permessage-deflate agreement from the handshake. nil means none was
+	// agreed, so nothing is compressed (RFC 7692 5).
+	permessageDeflateAgreedConfig *PermessageDeflateConfig
+	// The deflaters for data messages sent deflated. A message without context
+	// takeover goes through noContextDeflater, any other through
+	// contextDeflater (RFC 7692 7.1.1). Each guards itself; deflate runs under
+	// dataFramesWriteLocker.
+	contextDeflater   connContextDeflater
+	noContextDeflater connNoContextDeflater
 
 	di connDI
 }
@@ -66,6 +80,17 @@ type connDI struct {
 	dataFramesWriteLocker sync.Locker // Protect writing data frames to TCP conn.
 }
 
+// NewConnConfig is what NewConn needs to know about the handshake it follows.
+type NewConnConfig struct {
+	// PeerIsClient is true when the peer is a client: false from a client,
+	// true from a server. It decides masking (RFC 6455 5.1).
+	PeerIsClient bool
+
+	// PermessageDeflate is the agreed config the handshake returned. nil means
+	// permessage-deflate was not agreed.
+	PermessageDeflate *PermessageDeflateConfig
+}
+
 /*
 NewConn wraps an already handshaken connection.
 
@@ -77,20 +102,24 @@ connection's bufRW.Writer works, and so does bufio.NewWriterSize(c, size). One
 smaller than 14 bytes, the longest header, is flushed and replaced by a new
 14 byte writer on c. If that flush fails, no Conn is returned.
 
-maskSendFrame is RFC 6455 5.1 and follows from which side this is: pass true
-from a client, false from a server. ClientHandShake and ServerHandShake fill it
-in, so it is only yours to answer when you build a Conn directly.
+config follows from the handshake, see NewConnConfig. ClientHandShake and
+ServerHandShake fill it in, so it is only yours to answer when you build a Conn
+directly.
 */
-func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error) {
+func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig) (*Conn, error) {
 	w, err := fitWriter(c, w)
 	if err != nil {
 		return nil, err
 	}
 	return &Conn{
-		Conn:          c,
-		reader:        r,
-		maskSendFrame: maskSendFrame,
-		writer:        w,
+		Conn:                          c,
+		reader:                        r,
+		writer:                        w,
+		peerIsClient:                  config.PeerIsClient,
+		permessageDeflateAgreedConfig: config.PermessageDeflate,
+		contextDeflater:               &contextDeflater{locker: &sync.Mutex{}},
+		noContextDeflater:             &noContextDeflater{locker: &sync.Mutex{}},
+
 		di: connDI{
 			getFrameHeader:        GetFrameHeaderFromReader,
 			fillFramePayload:      (*Frame).FillFramePayloadFromReader,

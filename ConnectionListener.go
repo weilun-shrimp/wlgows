@@ -49,7 +49,7 @@ func (c *Conn) NewStandardListener() *Listener {
 	l := NewListener(c)
 
 	l.SetConfig(ListenerConfig{
-		PeerIsClient:      !c.maskSendFrame, // 5.1: the peer is the side this one is not
+		PeerIsClient:      c.peerIsClient,
 		MaxDataFramesSize: StandardMaxDataFramesSize,
 		MaxFrameSize:      StandardMaxFrameSize,
 		MaxDataFrameCount: StandardMaxDataFrameCount,

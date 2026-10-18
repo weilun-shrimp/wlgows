@@ -64,7 +64,7 @@ func TestServerHandShake(t *testing.T) {
 				t.Fatal("must not run for a nil request")
 				return nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
 				t.Fatal("must not run for a nil request")
 				return nil, nil
 			},
@@ -83,7 +83,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return errors.New("invalid") },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return wantSendErr },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if !errors.Is(err, wantSendErr) {
 			t.Errorf("err = %v, want %v", err, wantSendErr)
@@ -96,7 +96,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -118,7 +118,7 @@ func TestServerHandShake(t *testing.T) {
 				return &fakeResponseWriter{}
 			},
 			sendHandShakeResponse: func(io.Writer, *http.Response) error { return nil },
-			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -135,7 +135,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return fw },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -158,7 +158,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return wantErr },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return fw },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
@@ -185,7 +185,7 @@ func TestServerHandShake(t *testing.T) {
 				gotRes = r
 				return nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -210,7 +210,7 @@ func TestServerHandShake(t *testing.T) {
 				sentSubprotocol = slices.Clone(givenResp.Header.Values("Sec-WebSocket-Protocol"))
 				return nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -228,7 +228,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -246,7 +246,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -267,7 +267,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return errors.New("invalid") },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return respWriter },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if _, ok := resp.Header["Sec-Websocket-Protocol"]; ok {
 			t.Errorf("Sec-WebSocket-Protocol = %q, want no header", resp.Header.Values("Sec-WebSocket-Protocol"))
@@ -306,7 +306,7 @@ func TestServerHandShake(t *testing.T) {
 				t.Fatal("must not run after validateServerDeflateConfig fails")
 				return nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
 				t.Fatal("must not run after validateServerDeflateConfig fails")
 				return nil, nil
 			},
@@ -335,6 +335,8 @@ func TestServerHandShake(t *testing.T) {
 		var gotServerConfigs []PermessageDeflateConfig
 		var gotRequests []*http.Request
 		var sentExtensions []string // what the header held when the resp went out
+		answer := &PermessageDeflateConfig{ServerNoContextTakeover: true, ServerMaxWindowBits: 15}
+		var gotConnConfig NewConnConfig
 		_, _, err := serverHandShake(newFakeConn(nil), nil, nil, request, config, serverHandShakeDI{
 			validateServerDeflateConfig: func(PermessageDeflateConfig) error { return nil },
 			validateHandShakeRequest:    func(*http.Request) error { return nil },
@@ -343,7 +345,7 @@ func TestServerHandShake(t *testing.T) {
 				gotServerConfigs = append(gotServerConfigs, givenServerConfig)
 				gotRequests = append(gotRequests, givenRequest)
 				if givenServerConfig == config.PermessageDeflates[1] {
-					return &PermessageDeflateConfig{ServerNoContextTakeover: true, ServerMaxWindowBits: 15}
+					return answer
 				}
 				return nil
 			},
@@ -351,7 +353,10 @@ func TestServerHandShake(t *testing.T) {
 				sentExtensions = slices.Clone(givenResp.Header.Values("Sec-WebSocket-Extensions"))
 				return nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn: func(_ net.Conn, _ *bufio.Reader, _ *bufio.Writer, givenConfig NewConnConfig) (*Conn, error) {
+				gotConnConfig = givenConfig
+				return &Conn{}, nil
+			},
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -365,6 +370,9 @@ func TestServerHandShake(t *testing.T) {
 		want := []string{"permessage-deflate; server_no_context_takeover; server_max_window_bits=15"}
 		if !slices.Equal(sentExtensions, want) {
 			t.Errorf("Sec-WebSocket-Extensions sent = %q, want %q", sentExtensions, want)
+		}
+		if gotConnConfig.PermessageDeflate != answer {
+			t.Errorf("newConn PermessageDeflate = %+v, want the accepted answer %+v", gotConnConfig.PermessageDeflate, answer)
 		}
 	})
 
@@ -384,7 +392,7 @@ func TestServerHandShake(t *testing.T) {
 				return nil
 			},
 			sendHandShakeResponse: func(io.Writer, *http.Response) error { return nil },
-			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -398,6 +406,7 @@ func TestServerHandShake(t *testing.T) {
 		respWriter := &fakeResponseWriter{response: &http.Response{Header: http.Header{}}}
 		config := ServerHandShakeConfig{PermessageDeflates: []PermessageDeflateConfig{{}, {ServerNoContextTakeover: true}}}
 		var gotServerConfigs []PermessageDeflateConfig
+		gotConnConfig := NewConnConfig{PermessageDeflate: &PermessageDeflateConfig{}}
 		conn, resp, err := serverHandShake(newFakeConn(nil), nil, nil, validClientHandShakeRequest(t), config, serverHandShakeDI{
 			validateServerDeflateConfig: func(PermessageDeflateConfig) error { return nil },
 			validateHandShakeRequest:    func(*http.Request) error { return nil },
@@ -407,10 +416,16 @@ func TestServerHandShake(t *testing.T) {
 				return nil
 			},
 			sendHandShakeResponse: func(io.Writer, *http.Response) error { return nil },
-			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn: func(_ net.Conn, _ *bufio.Reader, _ *bufio.Writer, givenConfig NewConnConfig) (*Conn, error) {
+				gotConnConfig = givenConfig
+				return &Conn{}, nil
+			},
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
+		}
+		if gotConnConfig.PermessageDeflate != nil {
+			t.Errorf("newConn PermessageDeflate = %+v, want nil: nothing was agreed", gotConnConfig.PermessageDeflate)
 		}
 		if !slices.Equal(gotServerConfigs, config.PermessageDeflates) {
 			t.Errorf("acceptDeflateOffer got %+v, want each of %+v", gotServerConfigs, config.PermessageDeflates)
@@ -435,7 +450,7 @@ func TestServerHandShake(t *testing.T) {
 				return nil
 			},
 			sendHandShakeResponse: func(io.Writer, *http.Response) error { return nil },
-			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn:               func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if _, ok := resp.Header["Sec-Websocket-Extensions"]; ok {
 			t.Errorf("Sec-WebSocket-Extensions = %q, want no header", resp.Header.Values("Sec-WebSocket-Extensions"))
@@ -452,7 +467,7 @@ func TestServerHandShake(t *testing.T) {
 				gotWriter = givenWriter
 				return nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return &Conn{}, nil },
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return &Conn{}, nil },
 		})
 		if err != nil {
 			t.Fatalf("serverHandShake: %v", err)
@@ -470,13 +485,13 @@ func TestServerHandShake(t *testing.T) {
 		var gotNetConn net.Conn
 		var gotReader *bufio.Reader
 		var gotWriter *bufio.Writer
-		gotMaskSendFrame := true
+		var gotConfig NewConnConfig
 		conn, _, err := serverHandShake(netConn, reader, writer, validClientHandShakeRequest(t), ServerHandShakeConfig{}, serverHandShakeDI{
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn: func(givenNetConn net.Conn, givenReader *bufio.Reader, givenWriter *bufio.Writer, maskSendFrame bool) (*Conn, error) {
-				gotNetConn, gotReader, gotWriter, gotMaskSendFrame = givenNetConn, givenReader, givenWriter, maskSendFrame
+			newConn: func(givenNetConn net.Conn, givenReader *bufio.Reader, givenWriter *bufio.Writer, config NewConnConfig) (*Conn, error) {
+				gotNetConn, gotReader, gotWriter, gotConfig = givenNetConn, givenReader, givenWriter, config
 				return want, nil
 			},
 		})
@@ -486,8 +501,13 @@ func TestServerHandShake(t *testing.T) {
 		if conn != want {
 			t.Error("serverHandShake did not return newConn's Conn")
 		}
-		if gotNetConn != net.Conn(netConn) || gotReader != reader || gotWriter != writer || gotMaskSendFrame {
-			t.Errorf("newConn(%v, %v, %v, %v), want (the net.Conn, the bufio.Reader, the bufio.Writer, false): a server must not mask what it sends", gotNetConn, gotReader, gotWriter, gotMaskSendFrame)
+		if gotNetConn != net.Conn(netConn) || gotReader != reader || gotWriter != writer {
+			t.Errorf("newConn(%v, %v, %v, _), want (the net.Conn, the bufio.Reader, the bufio.Writer, _)", gotNetConn, gotReader, gotWriter)
+		}
+		// A server's peer is a client, so this Conn does not mask (RFC 6455
+		// 5.1). No config was given, so no deflate was agreed.
+		if wantConfig := (NewConnConfig{PeerIsClient: true}); gotConfig != wantConfig {
+			t.Errorf("newConn config = %+v, want %+v", gotConfig, wantConfig)
 		}
 	})
 
@@ -496,7 +516,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return errors.New("invalid") },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
 				t.Fatal("must not run on a decline")
 				return nil, nil
 			},
@@ -512,7 +532,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return wantErr },
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
 				t.Fatal("must not run when the send fails")
 				return nil, nil
 			},
@@ -532,7 +552,7 @@ func TestServerHandShake(t *testing.T) {
 			validateHandShakeRequest: func(*http.Request) error { return nil },
 			newResponseWriter:        func() ServerHandShakeRespWriter { return &fakeResponseWriter{response: wantResp} },
 			sendHandShakeResponse:    func(io.Writer, *http.Response) error { return nil },
-			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return nil, wantErr },
+			newConn:                  func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return nil, wantErr },
 		})
 		if !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)

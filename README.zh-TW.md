@@ -103,7 +103,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	config.MaxFrameSize = 10 * 1024 * 1024
 	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 	config.Text = func(frames wlgows.DataFrames) {
-		conn.SendText(frames.Bytes(), 0) // echo
+		conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
 	}
 	listener.SetConfig(config)
 
@@ -155,7 +155,7 @@ func main() {
 	defer netConn.Close()
 
 	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 LISTENER_README.zh-TW.md
-	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request) // 每條連線 4096 byte；見 SENDING_README.zh-TW.md
+	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 每條連線 4096 byte；見 SENDING_README.zh-TW.md
 	if err != nil {
 		panic(err)
 	}
@@ -173,7 +173,7 @@ func main() {
 
 	go conn.StartPingLoop(30*time.Second, nil) // 心跳；會自動停止
 
-	conn.SendText([]byte("Hello, WebSocket!"), 0)
+	conn.SendText([]byte("Hello, WebSocket!"), wlgows.SendDataConfig{})
 
 	if err := listener.Listen(); err != nil {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
@@ -194,7 +194,7 @@ func main() {
 | **[SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md)** | 接受連線、handshake 與它的拒絕回應、從 `net/http` 或 Gin hijack、TLS、subprotocol |
 | **[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)** | 建立連線、TLS、handshake、加上 header、subprotocol |
 | **[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)** | 讀取：hook、上限、error、偵測已斷線的對方、一次讀一個 frame、read buffer |
-| **[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)** | 傳送：完整 message、streaming、control frame、定期送出 ping、write buffer、lock |
+| **[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)** | 傳送：完整 message、streaming、壓縮、control frame、定期送出 ping、write buffer、lock |
 | **[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)** | 與 gorilla/websocket、gobwas/ws 比較：每個數字，以及每一項落後為何保留 |
 
 ## Examples

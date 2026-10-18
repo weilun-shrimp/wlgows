@@ -304,6 +304,8 @@ subprotocol，沒有協議出任何一個時則是 `""`。
 在 `config.PermessageDeflates` 列出 server 想要的回應，最想用的放最前面。空的清單表示不
 壓縮。每個欄位的意思見
 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#permessagedeflateconfig)。
+協議之後如何 deflate 後傳送，見
+[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#壓縮-permessage-deflate)。
 
 ```go
 config := wlgows.ServerHandShakeConfig{
@@ -425,9 +427,10 @@ if invalid == nil && slices.Contains(wlgows.RequestSubprotocols(request), "chat.
 }
 
 // 4. 升級時，回應第一份有提議允許的設定（函式庫的選擇：你的順序優先）。
+var answer *wlgows.PermessageDeflateConfig
 if invalid == nil {
 	for _, serverConfig := range config.PermessageDeflates {
-		if answer := wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
+		if answer = wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
 			resp.Header.Set("Sec-WebSocket-Extensions", answer.Format())
 			break
 		}
@@ -442,11 +445,12 @@ if invalid != nil {
 	return invalid
 }
 
-// 6. 建立 Conn。false：server 送出的 frame 一律不 mask（RFC 6455 5.1）。
-conn, err := wlgows.NewConn(netConn, reader, writer, false)
+// 6. 建立 Conn。對方是 client，所以這個 Conn 送出的 frame 一律不 mask
+// （RFC 6455 5.1）。沒有談成 deflate 時 answer 為 nil。
+conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIsClient: true, PermessageDeflate: answer})
 ```
 
-- **`NewConn` 什麼都不檢查。** handshake 違反規則的連線，或 masking 旗標設錯，從第一個
+- **`NewConn` 什麼都不檢查。** handshake 違反規則的連線，或 `PeerIsClient`、談成的設定給錯，從第一個
   frame 起就會破壞協定。
 - **它的 error** 只會來自小於 14 byte 的 writer：它會先被 flush 再被替換，而這次
   flush 可能失敗。
@@ -462,7 +466,7 @@ listener := conn.NewStandardListener() // ping、pong、close 與保留的 opcod
 
 config := listener.GetConfig()
 config.Text = func(frames wlgows.DataFrames) {
-	conn.SendText(frames.Bytes(), 0) // echo
+	conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
 }
 listener.SetConfig(config)
 

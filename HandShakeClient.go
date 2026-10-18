@@ -72,7 +72,7 @@ type clientHandShakeDI struct {
 	validateHandShakeResponse            func(res *http.Response, sec_websocket_key string) error
 	validateHandShakeResponseSubprotocol func(res *http.Response, req *http.Request) error
 	validateHandShakeResponseDeflate     func(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error)
-	newConn                              func(c net.Conn, r *bufio.Reader, w *bufio.Writer, maskSendFrame bool) (*Conn, error)
+	newConn                              func(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig) (*Conn, error)
 }
 
 func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ClientHandShakeConfig, di clientHandShakeDI) (*Conn, *http.Response, error) {
@@ -98,13 +98,14 @@ func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 		}
 		return nil, res, err
 	}
-	if _, err := di.validateHandShakeResponseDeflate(res, req); err != nil {
+	agreed_deflate_config, err := di.validateHandShakeResponseDeflate(res, req)
+	if err != nil {
 		if ClientMustFailConnection(err) {
 			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
 		}
 		return nil, res, err
 	}
-	conn, err := di.newConn(c, r, w, true)
+	conn, err := di.newConn(c, r, w, NewConnConfig{PeerIsClient: false, PermessageDeflate: agreed_deflate_config})
 	if err != nil {
 		return nil, res, err
 	}

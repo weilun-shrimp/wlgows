@@ -79,7 +79,7 @@ func main() {
 	// req.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
 
 	r := bufio.NewReader(netConn)
-	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req)
+	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req, wlgows.ClientHandShakeConfig{})
 	if err != nil {
 		fmt.Println("handshake:", err)
 		return
@@ -173,7 +173,7 @@ func main() {
 				fmt.Println("Client reader bye. Waiting for the server to close.")
 				return
 			}
-			if err := conn.SendText([]byte(input), 0); err != nil {
+			if err := conn.SendText([]byte(input), wlgows.SendDataConfig{}); err != nil {
 				fmt.Println("send:", err)
 				stop()
 				return

@@ -42,7 +42,7 @@ func TestClientHandShake(t *testing.T) {
 				*order = append(*order, "validateDeflate")
 				return nil, nil
 			},
-			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+			newConn: func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
 				*order = append(*order, "newConn")
 				return &Conn{}, nil
 			},
@@ -157,12 +157,16 @@ func TestClientHandShake(t *testing.T) {
 		reader := bufio.NewReader(netConn)
 		writer := bufio.NewWriter(netConn)
 		want := &Conn{}
+		agreed := &PermessageDeflateConfig{ServerNoContextTakeover: true}
+		di.validateHandShakeResponseDeflate = func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
+			return agreed, nil
+		}
 		var gotNetConn net.Conn
 		var gotReader *bufio.Reader
 		var gotWriter *bufio.Writer
-		var gotMaskSendFrame bool
-		di.newConn = func(givenNetConn net.Conn, givenReader *bufio.Reader, givenWriter *bufio.Writer, maskSendFrame bool) (*Conn, error) {
-			gotNetConn, gotReader, gotWriter, gotMaskSendFrame = givenNetConn, givenReader, givenWriter, maskSendFrame
+		var gotConfig NewConnConfig
+		di.newConn = func(givenNetConn net.Conn, givenReader *bufio.Reader, givenWriter *bufio.Writer, config NewConnConfig) (*Conn, error) {
+			gotNetConn, gotReader, gotWriter, gotConfig = givenNetConn, givenReader, givenWriter, config
 			return want, nil
 		}
 		conn, _, err := clientHandShake(netConn, reader, writer, httptestRequest(t), ClientHandShakeConfig{}, di)
@@ -172,8 +176,13 @@ func TestClientHandShake(t *testing.T) {
 		if conn != want {
 			t.Error("clientHandShake did not return newConn's Conn")
 		}
-		if gotNetConn != net.Conn(netConn) || gotReader != reader || gotWriter != writer || !gotMaskSendFrame {
-			t.Errorf("newConn(%v, %v, %v, %v), want (the net.Conn, the bufio.Reader, the bufio.Writer, true): a client masks every frame it sends", gotNetConn, gotReader, gotWriter, gotMaskSendFrame)
+		if gotNetConn != net.Conn(netConn) || gotReader != reader || gotWriter != writer {
+			t.Errorf("newConn(%v, %v, %v, _), want (the net.Conn, the bufio.Reader, the bufio.Writer, _)", gotNetConn, gotReader, gotWriter)
+		}
+		// A client's peer is a server, so this Conn masks (RFC 6455 5.1), and it
+		// follows the deflate agreement validateHandShakeResponseDeflate returned.
+		if wantConfig := (NewConnConfig{PeerIsClient: false, PermessageDeflate: agreed}); gotConfig != wantConfig {
+			t.Errorf("newConn config = %+v, want %+v", gotConfig, wantConfig)
 		}
 	})
 
@@ -181,7 +190,7 @@ func TestClientHandShake(t *testing.T) {
 		var order []string
 		di := newOrderTrackingDI(&order)
 		wantErr := errors.New("socket gone")
-		di.newConn = func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return nil, wantErr }
+		di.newConn = func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) { return nil, wantErr }
 		conn, resp, err := clientHandShake(nil, nil, nil, httptestRequest(t), ClientHandShakeConfig{}, di)
 		if !errors.Is(err, wantErr) {
 			t.Errorf("err = %v, want %v", err, wantErr)
@@ -295,7 +304,9 @@ func TestClientHandShake(t *testing.T) {
 				di.validateHandShakeResponseSubprotocol = func(*http.Response, *http.Request) error { return testCase.subprotocolErr }
 			}
 			if testCase.newConnErr != nil {
-				di.newConn = func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) { return nil, testCase.newConnErr }
+				di.newConn = func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
+					return nil, testCase.newConnErr
+				}
 			}
 			conn := newFakeConn(nil)
 
@@ -352,7 +363,7 @@ func TestClientHandShake(t *testing.T) {
 					return want
 				}
 			case "newConn":
-				di.newConn = func(net.Conn, *bufio.Reader, *bufio.Writer, bool) (*Conn, error) {
+				di.newConn = func(net.Conn, *bufio.Reader, *bufio.Writer, NewConnConfig) (*Conn, error) {
 					order = append(order, "newConn")
 					return nil, want
 				}

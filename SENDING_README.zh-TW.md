@@ -10,9 +10,10 @@ frame。
 大多數 WebSocket package 會替你固定 frame 大小與 buffer 大小。wlgows 讓你兩者都能選：
 
 - **write buffer**，每條連線一個：你交給 `Conn` 的 `*bufio.Writer`。`RenewWriter`
-  隨時可以更換。它是傳送唯一用到的記憶體，而且不會變大。見
-  [記憶體與 write buffer](#記憶體與-write-buffer)。
-- **frame 大小**，每次傳送時決定：`chunkSize`。它決定 message 在哪裡切成 frame，
+  隨時可以更換。不使用 deflate 時，它是傳送唯一用到的記憶體，而且不會變大。見
+  [記憶體與 write buffer](#記憶體與-write-buffer)。deflate 過的 message 還會持有一個
+  result buffer，直到 `ReleaseDeflaterResultBuffer`。
+- **frame 大小**，每次傳送時決定：`ChunkSize`。它決定 message 在哪裡切成 frame，
   不影響記憶體。見 [選擇 chunk size](#選擇-chunk-size)。
 
 buffer 越大，記憶體越多、寫入次數越少。server 可以低到每條連線 14 byte。見
@@ -24,6 +25,7 @@ buffer 越大，記憶體越多、寫入次數越少。server 可以低到每條
 - [選擇要用哪個呼叫](#選擇要用哪個呼叫)
 - [完整的 message](#完整的-message) — `SendText`、`SendBinary`、`SendData`
 - [Streaming](#streaming) — `Start`、`TransmitData`、`End`、`Release`
+- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — [streaming 時 deflate](#streaming-時-deflate) · [context takeover](#context-takeover) · [result buffer](#記憶體result-buffer)
 - [記憶體與 write buffer](#記憶體與-write-buffer) — [更換：`RenewWriter`](#更換renewwriter) · [最低記憶體的設定方式](#最低記憶體的設定方式) · [最小的連線](#最小的連線)
 - [選擇 chunk size](#選擇-chunk-size)
 - [更快、更省記憶體：用 `unsafe` 送出 string](#更快更省記憶體用-unsafe-送出-string) — 只限清楚自己在做什麼時
@@ -40,9 +42,9 @@ buffer 越大，記憶體越多、寫入次數越少。server 可以低到每條
 
 | 你手上有的是 | 呼叫 |
 |---|---|
-| 一則已在記憶體中的文字 message | `SendText(text, chunkSize)` |
-| 一則已在記憶體中的二進位 message | `SendBinary(data, chunkSize)` |
-| 一則執行時才決定 opcode 的 message，例如 echo | `SendData(opcode, payload, chunkSize)` |
+| 一則已在記憶體中的文字 message | `SendText(text, config)` |
+| 一則已在記憶體中的二進位 message | `SendBinary(data, config)` |
+| 一則執行時才決定 opcode 的 message，例如 echo | `SendData(opcode, payload, config)` |
 | 一則大到放不進記憶體的 message | `StartLongDataTransmission` → `TransmitData` → `EndLongDataTransmission`，並 defer `ReleaseLongDataTransmission` |
 | 一個 close、ping 或 pong | `SendClose(payload)`、`SendPing(payloadData)`、`SendPong(payloadData)` |
 | 一個你自行組出的 frame | `SendFrame(frame)` |
@@ -53,20 +55,21 @@ masking 永遠不需要你設定。client 會為每個 frame 加上 mask，serve
 ## 完整的 message
 
 ```go
-conn.SendText([]byte("hello"), 0)                  // 一個 frame
-conn.SendBinary(data, 4*1024)                      // 每個 frame 4 KB
-conn.SendData(wlgows.OpcodeText, []byte("abc"), 0) // 和 SendText 一樣，但不檢查 UTF-8
-conn.SendData(frames[0].Opcode, frames.Bytes(), 0) // 把收到的內容原樣 echo 回去
+conn.SendText([]byte("hello"), wlgows.SendDataConfig{})                  // 一個 frame
+conn.SendBinary(data, wlgows.SendDataConfig{ChunkSize: 4 * 1024})        // 每個 frame 4 KB
+conn.SendData(wlgows.OpcodeText, []byte("abc"), wlgows.SendDataConfig{}) // 和 SendText 一樣，但不檢查 UTF-8
+conn.SendData(frames[0].Opcode, frames.Bytes(), wlgows.SendDataConfig{}) // 把收到的內容原樣 echo 回去
 ```
 
-`chunkSize` 是每個 frame 的 payload 大小，單位是 byte：
+`ChunkSize` 是每個 frame 的 payload 大小，單位是 byte：
 
 - **0 或以下**：整則 message 以一個 frame 送出。
 - **正數**：把 message 切成每個 payload 為該 byte 數的 frame。只有最後一個 frame 可能
   比較短，也只有最後一個 frame 帶有 FIN。
-- frame header（2 到 14 byte）不算在內。所以同一個 `chunkSize` 在 client 與 server
+- frame header（2 到 14 byte）不算在內。所以同一個 `ChunkSize` 在 client 與 server
   上代表的意思完全相同。
-- 空的 message 會以一個空的 frame 送出，RFC 6455 允許這麼做。
+- 空的 message 會以一個空的 frame 送出，RFC 6455 允許這麼做。deflate 過的話，它是
+  一個只有單一 byte `00` 的 frame（RFC 7692 7.2.3.6）。
 
 `SendText` 會在送出任何東西之前，先檢查整則 message 是否為有效的 UTF-8；若不是，
 就以 `ErrInvalidUTF8` 拒絕。對方收到無效的文字會關閉連線（8.1）。檢查的對象是整則
@@ -89,7 +92,7 @@ RFC 6455 10.3 規定 client 的 frame 開始送出後，payload 就不能再被�
 `TransmitData` 就送出一個 frame。
 
 ```go
-if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary); err != nil {
+if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary, wlgows.StartLongDataTransmissionConfig{}); err != nil {
 	return err
 }
 defer conn.ReleaseLongDataTransmission()
@@ -98,12 +101,12 @@ buffer := make([]byte, 4*1024)
 for {
 	length, err := file.Read(buffer)
 	if length > 0 {
-		if err := conn.TransmitData(buffer[:length]); err != nil {
+		if err := conn.TransmitData(buffer[:length], wlgows.TransmitDataConfig{}); err != nil {
 			return err // 沒有 FIN：message 停在未結束的狀態
 		}
 	}
 	if err == io.EOF {
-		return conn.EndLongDataTransmission(nil)
+		return conn.EndLongDataTransmission(nil, wlgows.TransmitDataConfig{})
 	}
 	if err != nil {
 		return err
@@ -115,9 +118,9 @@ for {
 
 | 呼叫 | 做什麼 |
 |---|---|
-| `StartLongDataTransmission(opcode)` | 開啟一則文字或二進位 message，並為它佔用連線。 |
-| `TransmitData(chunk)` | 把一個 chunk 當作一個 frame 送出。空的 chunk 會以空的 frame 送出。 |
-| `EndLongDataTransmission(last)` | 把 `last` 當作最後一個 frame 送出，帶有 FIN。 |
+| `StartLongDataTransmission(opcode, config)` | 開啟一則文字或二進位 message，並為它佔用連線。 |
+| `TransmitData(chunk, config)` | 把一個 chunk 當作一個 frame 送出。空的 chunk 會以空的 frame 送出；deflate 過的話，則是 flush 的 bytes。 |
+| `EndLongDataTransmission(last, config)` | 把 `last` 當作最後一個 frame 送出，帶有 FIN。 |
 | `ReleaseLongDataTransmission()` | 釋放連線，不送出任何東西。 |
 
 規則：
@@ -137,6 +140,99 @@ for {
 [`stream_client`](./example/stream_client/main.go) 就是這樣串流傳送檔案，而
 [`stream_server`](./example/stream_server/main.go) 則一個 frame 一個 frame 地接收。
 
+## 壓縮 (permessage-deflate)
+
+只有在兩個條件都成立時，message 才會 deflate 後送出：
+
+- **handshake 時協議了 permessage-deflate。** 見
+  [CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md#壓縮-permessage-deflate) 與
+  [SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md#壓縮-permessage-deflate)。沒有
+  協議時，要求 deflate 不是錯誤：message 會照原樣送出（RFC 7692 5）。
+- **你要求了**，每則 message 用 `DeflateIfAgreed` 決定。
+
+```go
+import "compress/flate"
+
+config := wlgows.SendDataConfig{DeflateIfAgreed: true, DeflateLevel: flate.BestSpeed}
+conn.SendText([]byte("hello"), config)
+
+config.ChunkSize = 4 * 1024
+conn.SendBinary(data, config) // 每個 frame 是 4 KB 的 deflate 結果
+```
+
+- **一定要設定 `DeflateLevel`。** 它是 `compress/flate` 的 level，從
+  `flate.HuffmanOnly`（-2）到 `flate.BestCompression`（9）。零值是
+  `flate.NoCompression`：message 會標記為 deflate 過，但內容照原樣存放，還會大幾個
+  byte。`flate.BestSpeed` 是不錯的預設。超出範圍的 level 會在送出任何東西之前以
+  `ErrDeflateLevelInvalid` 拒絕，即使什麼都不會 deflate 也一樣。
+- **`ChunkSize` 切的是 deflate 後的 bytes**，不是你的 message。整則 message 會先
+  deflate，再切成 frame。
+- **只在划算時要求。** deflate 本身會多出幾個 byte，所以短的 message 可能反而變長，
+  而且會花 CPU。每則 message 由你決定。
+- **control frame 永遠不會 deflate**（RFC 7692 6），`SendFrame` 也從不 deflate。
+
+### Streaming 時 deflate
+
+Start 為整則 message 決定一次。level 則是每個 chunk 各自決定：
+
+```go
+start_config := wlgows.StartLongDataTransmissionConfig{DeflateIfAgreed: true}
+if err := conn.StartLongDataTransmission(wlgows.OpcodeBinary, start_config); err != nil {
+	return err
+}
+defer conn.ReleaseLongDataTransmission()
+
+config := wlgows.TransmitDataConfig{DeflateLevel: flate.BestSpeed}
+buffer := make([]byte, 4*1024)
+for {
+	length, err := file.Read(buffer)
+	if length > 0 {
+		if err := conn.TransmitData(buffer[:length], config); err != nil {
+			return err // 關閉連線
+		}
+	}
+	if err == io.EOF {
+		return conn.EndLongDataTransmission(nil, config)
+	}
+	if err != nil {
+		return err
+	}
+}
+```
+
+- **每個 chunk 各自 flush**，所以 `TransmitData` 返回時它已經送出，和不 deflate 時
+  一樣。它的 frame 裝的是 chunk deflate 後的結果，不是 chunk 本身。
+- **所有 chunk 是同一個 stream。** 一個 chunk 可以回頭參照同一則 message 裡較早的
+  chunk，所以跨 chunk 的大段重複也能壓縮。
+- **失敗之後，請關閉連線。** 對方的 inflater 少了失敗的那部分，所以 End 無法把剩下
+  的內容當作一則 message 送達。
+
+### Context takeover
+
+由 handshake 決定，wlgows 照著做（RFC 7692 7.1.1）。傳送時你什麼都不用設定。它對
+一個 `Conn` 的成本：
+
+| 這一端傳送時 | message 之間保留的 |
+|---|---|
+| 有 context | 一個 `compress/flate` writer，約 1 MB，以及最後送出的 32 到 64 KB |
+| 沒有 context | 什麼都不留。完整的 message 借用所有連線共用的 writer；stream 用自己的一個，在 End 時釋放 |
+
+有 context 時，請保持 level 不變：換一個新的 level 就會建一個新的 writer，約 1 MB。
+
+### 記憶體：result buffer
+
+deflate 後的 bytes 存在 `Conn` 的 result buffer 裡。它會保持上次釋放以來最大一次
+deflate 結果的大小，直到連線結束，而且不會自動釋放：
+
+```go
+if conn.DeflaterResultBufferCap() > 1024*1024 { // 1 MB
+	conn.ReleaseDeflaterResultBuffer()
+}
+```
+
+`ReleaseDeflaterResultBuffer` 會等正在送出的 data message，所以絕對不要在你自己的
+Start 與 Release 之間呼叫它。`DeflaterResultBufferCap` 只等正在進行的 deflate。
+
 ## 記憶體與 write buffer
 
 `Conn` 送出的每一個 frame，都會經過同一塊 write buffer：也就是建立 `Conn` 時你交給
@@ -144,7 +240,7 @@ for {
 
 ```go
 serverConn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriterSize(netConn, 16*1024), request, wlgows.ServerHandShakeConfig{}) // 16 KB
-clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request)        // bufio 的 4096
+clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{})              // bufio 的 4096
 ```
 
 - **它必須寫到同一條連線。** 請建立在 `netConn` 上。
@@ -153,7 +249,7 @@ clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(ne
   flush 失敗，你會拿到 error，而沒有 `Conn`。
 - 從 `net/http` hijack 而來？傳入 `bufRW.Writer`，沿用 net/http 的 writer。
 
-**它是固定的。** 不管你送什麼，它都不會自己變大，也不會自己變小。`Conn` 從第一個
+**它是固定的。** 不管你送什麼，它都不會自己變大，也不會自己變小。不使用 deflate 時，`Conn` 從第一個
 frame 到最後一個 frame，都剛好持有 writer 那麼大的記憶體用來傳送，所以每條連線的
 記憶體在送出任何 message 之前就已確定：
 
@@ -176,7 +272,7 @@ socket 寫入次數：
 | 傳送 | 14，server | 14，client | 4096 | 64 KB |
 |---|---|---|---|---|
 | 一則 10 B 的 message | 1 | 2 | 1 | 1 |
-| 1000 B，每個 frame 10 B（`chunkSize` 10） | 86 | 134 | 1 | 1 |
+| 1000 B，每個 frame 10 B（`ChunkSize` 10） | 86 | 134 | 1 | 1 |
 | 一則 1 MB 的 message，server | 2 | | 2 | 2 |
 | 一則 1 MB 的 message，client | | 87,383 | 257 | 17 |
 
@@ -263,7 +359,7 @@ goroutine 的 stack：`Listen` 約 4 KB，每個 `StartPingLoop` 再多約 3 KB�
 
 ## 選擇 chunk size
 
-`chunkSize` 決定 message 在哪裡被切成 frame。它不會改變記憶體用量：write buffer 是
+`ChunkSize` 決定 message 在哪裡被切成 frame。它不會改變記憶體用量：write buffer 是
 固定的，而交給 `SendData` 的整則 message 本來就已經在記憶體裡。它改變的是：
 
 - **control frame 多快能送出去。** ping、pong 或 close 只能插在一則 message 的兩個
@@ -273,7 +369,7 @@ goroutine 的 stack：`Listen` 約 4 KB，每個 `StartPingLoop` 再多約 3 KB�
   限制。太小，大型 message 會變成很多個 frame，而對方可能會限制一則 message 的
   frame 數量。wlgows 自己的 `Listener` 就可以用 `MaxDataFrameCount` 設定這個上限
   （`NewStandardListener` 設為 16，單純的 `ListenerConfig` 則沒有限制），超過時會以 `ErrDataFrameCountExceeded` 拒絕這則 message。請讓
-  message 大小 ÷ `chunkSize` 保持在這個上限以下。例如 16 MB 以 4 KB 為一個 chunk
+  message 大小 ÷ `ChunkSize` 保持在這個上限以下。例如 16 MB 以 4 KB 為一個 chunk
   是 4,096 個 frame，比 [Listener 說明文件](./LISTENER_README.zh-TW.md#configuration)
   範例中使用的 4,000 還多。
 
@@ -291,16 +387,16 @@ string 本身的記憶體，只要**你的**程式也從不寫入它。
 
 ```go
 payload := unsafe.Slice(unsafe.StringData(text), len(text))
-err := conn.SendText(payload, 0)
+err := conn.SendText(payload, wlgows.SendDataConfig{})
 ```
 
 以一則 1 MB 的 text message 實測：
 
 | | 時間 | 配置的記憶體 |
 |---|---|---|
-| `conn.SendText([]byte(text), 0)` | 約 80–110 µs | 1 MB |
-| `conn.SendText(payload, 0)`，透過 `unsafe` | 約 23 µs | 0.3 KB |
-| `conn.SendBinary(payload, 0)`，透過 `unsafe` | 約 1.3 µs | 0.3 KB |
+| `conn.SendText([]byte(text), wlgows.SendDataConfig{})` | 約 80–110 µs | 1 MB |
+| `conn.SendText(payload, wlgows.SendDataConfig{})`，透過 `unsafe` | 約 23 µs | 0.3 KB |
+| `conn.SendBinary(payload, wlgows.SendDataConfig{})`，透過 `unsafe` | 約 1.3 µs | 0.3 KB |
 
 `[]byte(text)` 會複製 string。剩下的 23 µs 裡，約 20 µs 是 `SendText` 的 UTF-8 檢查。
 
@@ -327,6 +423,7 @@ err := conn.SendText(payload, 0)
 | `ErrInvalidCloseStatusCode` | `SendClose` 收到不能送出的 status code，例如 1005、1006 或 1015（7.4.1）、保留的 1004，或不在已註冊範圍與 3000-4999 之內的 code（7.4.2）。什麼都沒有送出。 |
 | `ErrNotDataFrameOpcode`、`ErrContinuationFrameWithoutMsg` | `Start` 或 `SendData` 收到一個無法開啟 message 的 opcode。沒有取得任何 lock。 |
 | `ErrLongDataTransmissionNotStarted` | 在沒有開啟 transmission 時呼叫了 `TransmitData` 或 `End`。 |
+| `ErrDeflateLevelInvalid` | `DeflateLevel` 不是 `compress/flate` 的 level。什麼都沒有送出。 |
 | 其他 | socket 寫入失敗。 |
 
 **socket 寫入失敗是無法挽回的。** write buffer 會記住它的第一個 error，所以之後的
@@ -349,7 +446,9 @@ message，對方會看到 protocol error。
 - **緩慢的串流會擋住其他 data 傳送。** 串流開啟期間，這條連線上的每一個
   `SendText`、`SendBinary` 與 `SendData` 都會等它結束。
 - **不要在自己的串流裡送出 data message。** 在你的 `Start` 與 `Release` 之間呼叫
-  `SendText`，會永遠等著你自己持有的那個 lock。
+  `SendText`，會永遠等著你自己持有的那個 lock。`ReleaseDeflaterResultBuffer` 也一樣。
+- **deflate 不會擋住 control frame。** message 在它的 frame 取得 write lock 之前就
+  deflate 完了。
 
 這是靠兩個 lock 做到的，預設都是 `*sync.Mutex`：
 

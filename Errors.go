@@ -157,6 +157,11 @@ var (
 	// same message may have, leaving it unterminated. A ping or pong is never
 	// refused: 5.5.2 still allows both.
 	ErrCloseAlreadySent = errors.New("a close frame has already been sent")
+
+	// ErrDeflateLevelInvalid is a DeflateLevel compress/flate has no level
+	// for: below flate.HuffmanOnly (-2) or above flate.BestCompression (9).
+	// Nothing is sent.
+	ErrDeflateLevelInvalid = errors.New("deflate level is not a compress/flate level")
 )
 
 // dial
