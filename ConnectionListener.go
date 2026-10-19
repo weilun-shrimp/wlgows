@@ -24,8 +24,8 @@ const (
 /*
 NewStandardListener builds a Listener with every obligation RFC 6455 puts on a
 receiver already answered — ping (5.5.2), pong (5.5.3), close (5.5.1) and
-reserved opcodes (5.2) — PeerIsClient settled from which side this Conn is, and
-the limits at
+reserved opcodes (5.2) — PeerIsClient settled from which side this Conn is, the
+permessage-deflate agreement from its handshake, and the limits at
 StandardMaxDataFramesSize, StandardMaxFrameSize,
 StandardMaxDataFrameCount and StandardFrameReadTimeout.
 
@@ -46,10 +46,12 @@ what is here and add to it, since SetConfig replaces all of it at once:
 Every hook it sets can be replaced, so this is a starting point, not a fixture.
 */
 func (c *Conn) NewStandardListener() *Listener {
-	l := NewListener(c)
+	l := NewListener(c, NewListenerConfig{
+		PeerIsClient:                  c.peerIsClient,
+		PermessageDeflateAgreedConfig: c.permessageDeflateAgreedConfig,
+	})
 
 	l.SetConfig(ListenerConfig{
-		PeerIsClient:      c.peerIsClient,
 		MaxDataFramesSize: StandardMaxDataFramesSize,
 		MaxFrameSize:      StandardMaxFrameSize,
 		MaxDataFrameCount: StandardMaxDataFrameCount,

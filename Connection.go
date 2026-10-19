@@ -65,6 +65,12 @@ type Conn struct {
 	// dataFramesWriteLocker.
 	contextDeflater   connContextDeflater
 	noContextDeflater connNoContextDeflater
+	// The inflaters for data messages received deflated. A whole message from
+	// a peer without context takeover goes through noContextInflater; one
+	// from any other peer, and every message inflated frame by frame, through
+	// contextInflater (RFC 7692 7.1.1). Each guards itself.
+	contextInflater   connContextInflater
+	noContextInflater connNoContextInflater
 
 	di connDI
 }
@@ -119,6 +125,8 @@ func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig)
 		permessageDeflateAgreedConfig: config.PermessageDeflate,
 		contextDeflater:               &contextDeflater{locker: &sync.Mutex{}},
 		noContextDeflater:             &noContextDeflater{locker: &sync.Mutex{}},
+		contextInflater:               &contextInflater{framesLocker: &sync.Mutex{}, putPullLocker: &sync.Mutex{}},
+		noContextInflater:             &noContextInflater{},
 
 		di: connDI{
 			getFrameHeader:        GetFrameHeaderFromReader,
@@ -174,4 +182,15 @@ func (c *Conn) GetNextFrameHeader() (*Frame, error) {
 // judge that length first. Call it with the read lock still held.
 func (c *Conn) ReadFramePayload(f *Frame) error {
 	return c.di.fillFramePayload(f, c.reader)
+}
+
+// GetPermessageDeflateAgreedConfig is the permessage-deflate config the
+// handshake agreed, nil if none was. It is a copy, so changing it changes
+// nothing here. Pass it to NewListenerConfig.
+func (c *Conn) GetPermessageDeflateAgreedConfig() *PermessageDeflateConfig {
+	if c.permessageDeflateAgreedConfig == nil {
+		return nil
+	}
+	agreed := *c.permessageDeflateAgreedConfig
+	return &agreed
 }

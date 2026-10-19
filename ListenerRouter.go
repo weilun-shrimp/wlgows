@@ -63,6 +63,7 @@ func (l *Listener) routeFrame(f *Frame) error {
 	// continuation with no message open.
 	if f.Opcode != OpcodeContinuation {
 		l.currentDataFrameOpcode = f.Opcode
+		l.currentDataFramesDeflated = f.RSV1
 	}
 
 	// A Data hook takes the frame here, where the message would otherwise be
@@ -86,7 +87,8 @@ func (l *Listener) routeFrame(f *Frame) error {
 	l.resetCurrentDataFrames()
 	switch opcode {
 	case OpcodeText:
-		if !validTextUTF8(frames) {
+		// Deflated text is checked once inflated, by DataFramesBytes (RFC 6455 5.6).
+		if !frames[0].RSV1 && !validTextUTF8(frames) {
 			return ErrInvalidUTF8
 		}
 		if config.Text != nil {
@@ -112,6 +114,7 @@ func (l *Listener) resetCurrentDataFrames() {
 	l.currentDataFrameCount = 0
 	l.currentDataFramesSize = 0
 	l.currentDataFrameOpcode = OpcodeContinuation // 0: no message open
+	l.currentDataFramesDeflated = false
 }
 
 /*

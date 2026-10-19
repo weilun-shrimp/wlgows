@@ -48,11 +48,10 @@ func TestListenerIntegration(t *testing.T) {
 	conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 	defer conn.Close()
 
-	listener := NewListener(conn)
+	listener := NewListener(conn, NewListenerConfig{PeerIsClient: true})
 	var got []string
 
 	listener.SetConfig(ListenerConfig{
-		PeerIsClient:      true,
 		MaxDataFramesSize: 1024,
 		FrameReadTimeout:  5 * time.Second,
 

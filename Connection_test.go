@@ -147,6 +147,37 @@ func TestConnReadFramePayload(t *testing.T) {
 	}
 }
 
+func TestConnGetPermessageDeflateAgreedConfig(t *testing.T) {
+	t.Run("nil when none was agreed", func(t *testing.T) {
+		c := &Conn{}
+
+		if got := c.GetPermessageDeflateAgreedConfig(); got != nil {
+			t.Errorf("got %+v, want nil", got)
+		}
+	})
+
+	t.Run("a copy of the agreed config", func(t *testing.T) {
+		agreed := &PermessageDeflateConfig{
+			ClientNoContextTakeover:    true,
+			ServerNoContextTakeover:    true,
+			ClientMaxWindowBitsEnabled: true,
+			ClientMaxWindowBits:        15,
+			ServerMaxWindowBits:        15,
+		}
+		c := &Conn{permessageDeflateAgreedConfig: agreed}
+
+		got := c.GetPermessageDeflateAgreedConfig()
+		if got == nil || *got != *agreed {
+			t.Fatalf("got %+v, want %+v", got, *agreed)
+		}
+		// Changing the copy leaves the Conn's agreement as it was.
+		got.ClientNoContextTakeover = false
+		if !c.permessageDeflateAgreedConfig.ClientNoContextTakeover {
+			t.Error("changing the result changed the Conn's agreed config")
+		}
+	})
+}
+
 func TestConnClose(t *testing.T) {
 	t.Run("closes the socket", func(t *testing.T) {
 		netConn := newFakeConn(nil)

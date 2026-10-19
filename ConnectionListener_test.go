@@ -22,17 +22,23 @@ func hookConn() (*Conn, *[]NewControlFrameConfig) {
 }
 
 /*
-NewStandardListener wires the four hooks and the masking direction. A ping is
-routed through to catch the mistake nil checks cannot: a hook on the wrong slot.
+NewStandardListener wires the four hooks, the masking direction and the
+permessage-deflate agreement. A ping is routed through to catch the mistake nil
+checks cannot: a hook on the wrong slot.
 */
 func TestConnNewStandardListener(t *testing.T) {
 	conn, sent := hookConn()
+	agreed := &PermessageDeflateConfig{}
+	conn.permessageDeflateAgreedConfig = agreed
 
 	l := conn.NewStandardListener()
 
 	// 5.1: this Conn does not mask, so it is a server and the peer is a client.
-	if !l.config.PeerIsClient {
+	if !l.peerIsClient {
 		t.Error("PeerIsClient = false, want true for a server Conn")
+	}
+	if l.permessageDeflateAgreedConfig != agreed {
+		t.Error("permessageDeflateAgreedConfig was not passed from the Conn")
 	}
 	if l.config.MaxDataFramesSize != 4096 {
 		t.Errorf("MaxDataFramesSize = %d, want 4096", l.config.MaxDataFramesSize)
@@ -92,7 +98,7 @@ func TestConnRFC6455PongHook(t *testing.T) {
 // 5.5.1: answer with a close echoing the status code.
 func TestConnRFC6455CloseHook(t *testing.T) {
 	conn, sent := hookConn()
-	l := NewListener(conn)
+	l := NewListener(conn, NewListenerConfig{})
 	l.pauseChan = make(chan error, 1) // a run to release
 	body := (&ClosePayload{StatusCode: CloseNormalClosure, Reason: "bye"}).Bytes()
 
@@ -124,7 +130,7 @@ func TestConnRFC6455CloseHook(t *testing.T) {
 // 5.2 reserves the opcode, which 7.4.1 makes a protocol error: 1002.
 func TestConnRFC6455UnknownHook(t *testing.T) {
 	conn, sent := hookConn()
-	l := NewListener(conn)
+	l := NewListener(conn, NewListenerConfig{})
 	pauseChan := make(chan error, 1)
 	l.pauseChan = pauseChan
 

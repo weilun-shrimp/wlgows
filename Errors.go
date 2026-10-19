@@ -113,10 +113,12 @@ var (
 	// MaxDataFrameCount allows — answer with close code 1009.
 	ErrDataFrameCountExceeded = errors.New("message arrived in more frames than allowed")
 
-	// ErrReservedBitsSet is a frame with RSV1, RSV2 or RSV3 set. RFC 6455 5.2
-	// requires them clear unless an extension defining them was negotiated in
-	// the handshake, and none is — answer with close code 1002.
-	ErrReservedBitsSet = errors.New("frame has a reserved bit set with no extension negotiated")
+	// ErrReservedBitsSet is a frame with RSV1, RSV2 or RSV3 set where no
+	// negotiated extension allows it. RFC 6455 5.2 requires them clear unless
+	// an extension defining them was negotiated in the handshake. The only one
+	// is permessage-deflate, which allows RSV1 on the first frame of a text or
+	// binary message (RFC 7692 6, 6.1) — answer with close code 1002.
+	ErrReservedBitsSet = errors.New("frame has a reserved bit set that no negotiated extension allows")
 
 	// ErrControlFrameFragmented is a control frame with FIN clear. RFC 6455 5.5
 	// forbids fragmenting one — answer with close code 1002.
@@ -162,6 +164,25 @@ var (
 	// for: below flate.HuffmanOnly (-2) or above flate.BestCompression (9).
 	// Nothing is sent.
 	ErrDeflateLevelInvalid = errors.New("deflate level is not a compress/flate level")
+
+	// ErrInflateDataInvalid is a compressed message that does not inflate:
+	// the peer sent a corrupt or truncated deflate stream (RFC 7692 7.2.2).
+	// It wraps compress/flate's error — answer with close code 1007.
+	ErrInflateDataInvalid = errors.New("compressed message does not inflate")
+
+	// ErrInflatedSizeExceeded is data that inflates past the room given for it,
+	// cap(buf) — answer with close code 1009.
+	ErrInflatedSizeExceeded = errors.New("inflated data exceeds the size allowed")
+
+	// ErrDataFramesBytesSizeExceeded is a message DataFramesBytes does not
+	// inflate whose payloads go past the room given for them, cap(buf) —
+	// answer with close code 1009.
+	ErrDataFramesBytesSizeExceeded = errors.New("data frames' payload exceeds the size allowed")
+
+	// ErrDataFramesNotEnded is data frames given to DataFramesBytes whose last
+	// frame has FIN clear, so they are not one whole message (RFC 6455 5.4).
+	// Nothing is written.
+	ErrDataFramesNotEnded = errors.New("data frames do not end with a FIN frame")
 )
 
 // dial
@@ -282,9 +303,12 @@ nil when a close frame is not the answer.
 RFC 6455 7.1.7 fails the connection on a protocol violation and 7.4.1 defines
 the codes an endpoint may use to name each one. This is that table:
 
-	ErrInvalidUTF8                                -> 1007 CloseInvalidFramePayloadData
+	ErrInvalidUTF8,
+	ErrInflateDataInvalid                         -> 1007 CloseInvalidFramePayloadData
 	ErrFrameByteLengthExceeded,
-	ErrDataFrameCountExceeded                     -> 1009 CloseMessageTooBig
+	ErrDataFrameCountExceeded,
+	ErrInflatedSizeExceeded,
+	ErrDataFramesBytesSizeExceeded                -> 1009 CloseMessageTooBig
 	every other violation a frame can commit      -> 1002 CloseProtocolError
 
 Reason is left empty. What to tell the peer about your own internals is a policy
@@ -320,11 +344,14 @@ section of LISTENER_README.md works through the whole shape.
 */
 func StandardClosePayloadFor(err error) *ClosePayload {
 	switch {
-	case errors.Is(err, ErrInvalidUTF8):
+	case errors.Is(err, ErrInvalidUTF8),
+		errors.Is(err, ErrInflateDataInvalid):
 		return &ClosePayload{StatusCode: CloseInvalidFramePayloadData}
 
 	case errors.Is(err, ErrFrameByteLengthExceeded),
-		errors.Is(err, ErrDataFrameCountExceeded):
+		errors.Is(err, ErrDataFrameCountExceeded),
+		errors.Is(err, ErrInflatedSizeExceeded),
+		errors.Is(err, ErrDataFramesBytesSizeExceeded):
 		return &ClosePayload{StatusCode: CloseMessageTooBig}
 
 	case errors.Is(err, ErrReservedBitsSet),

@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -169,6 +170,50 @@ func TestListenerRouteFrame(t *testing.T) {
 			t.Errorf("the first message became %q after the second arrived", first.String())
 		}
 	})
+
+	// RFC 7692 6: the first frame's RSV1 marks the whole message, and its
+	// continuations carry RSV1 clear. A ping in between changes nothing.
+	t.Run("the first frame's RSV1 marks the message", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			firstRSV1 bool
+			want      []bool
+		}{
+			{
+				name:      "compressed",
+				firstRSV1: true,
+				want:      []bool{true, true, true, false},
+			},
+			{
+				name:      "not compressed",
+				firstRSV1: false,
+				want:      []bool{false, false, false, false},
+			},
+		}
+		for _, testCase := range tests {
+			t.Run(testCase.name, func(t *testing.T) {
+				l := &Listener{configLocker: &sync.Mutex{}}
+				var got []bool
+
+				for _, frame := range []*Frame{
+					{Opcode: OpcodeBinary, RSV1: testCase.firstRSV1, PayloadData: []byte{0x00}},
+					{Opcode: OpcodePing, FIN: true},
+					{Opcode: OpcodeContinuation, PayloadData: []byte{0x01}},
+					{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte{0x02}},
+				} {
+					if err := l.routeFrame(frame); err != nil {
+						t.Fatalf("routeFrame: %v", err)
+					}
+					got = append(got, l.currentDataFramesDeflated)
+				}
+
+				// Cleared on FIN, so the next message starts uncompressed.
+				if !slices.Equal(got, testCase.want) {
+					t.Errorf("currentDataFramesDeflated after each frame = %v, want %v", got, testCase.want)
+				}
+			})
+		}
+	})
 }
 
 /*
@@ -296,6 +341,25 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 			t.Errorf("Ping called %d times and Data %d, want 1 and 0", pingCalled, dataCalled)
 		}
 	})
+
+	// The reset comes after the hook, so the FIN frame's hook still sees the
+	// message as compressed (RFC 7692 6).
+	t.Run("currentDataFramesDeflated through the message", func(t *testing.T) {
+		var got []bool
+		l := &Listener{configLocker: &sync.Mutex{}}
+		l.config.Data = func(*Frame) { got = append(got, l.currentDataFramesDeflated) }
+
+		l.routeFrame(&Frame{Opcode: OpcodeText, RSV1: true, PayloadData: []byte{0x00}})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte{0x01}})
+		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte{0x02}})
+
+		if want := []bool{true, true, true}; !slices.Equal(got, want) {
+			t.Errorf("Data saw currentDataFramesDeflated %v, want %v", got, want)
+		}
+		if l.currentDataFramesDeflated {
+			t.Error("currentDataFramesDeflated = true after FIN, want false")
+		}
+	})
 }
 
 /*
@@ -330,6 +394,23 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 		}
 		if called != 0 {
 			t.Error("a message that is not UTF-8 must not reach Text")
+		}
+	})
+
+	// RFC 7692 6: RSV1 marks a deflated message. Its bytes are deflate output,
+	// so it is checked once inflated, by DataFramesBytes.
+	t.Run("deflated text skips the UTF-8 check", func(t *testing.T) {
+		called := 0
+		l := &Listener{configLocker: &sync.Mutex{}}
+		l.config.Text = func(DataFrames) { called++ }
+
+		err := l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, RSV1: true, PayloadData: []byte{0xFF, 0xFE}})
+
+		if err != nil {
+			t.Errorf("err = %v, want nil", err)
+		}
+		if called != 1 {
+			t.Errorf("Text called %d times, want 1", called)
 		}
 	})
 
@@ -589,6 +670,8 @@ func TestListenerResetCurrentDataFrames(t *testing.T) {
 			currentDataFrameCount:  1,
 			currentDataFramesSize:  2,
 			currentDataFrameOpcode: OpcodeText,
+
+			currentDataFramesDeflated: true,
 		}
 
 		l.resetCurrentDataFrames()
@@ -609,6 +692,10 @@ func TestListenerResetCurrentDataFrames(t *testing.T) {
 		}
 		if l.currentDataFramesSize != 0 {
 			t.Errorf("currentDataFramesSize = %d, want 0", l.currentDataFramesSize)
+		}
+		// Left set, the next message would read as compressed (RFC 7692 6).
+		if l.currentDataFramesDeflated {
+			t.Error("currentDataFramesDeflated = true, want false")
 		}
 		// Empty, not nil: everything else reads emptiness as "no message open"
 		// and appends without checking.
