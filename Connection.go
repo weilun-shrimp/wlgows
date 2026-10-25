@@ -125,7 +125,7 @@ func NewConn(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig)
 		permessageDeflateAgreedConfig: config.PermessageDeflate,
 		contextDeflater:               &contextDeflater{locker: &sync.Mutex{}},
 		noContextDeflater:             &noContextDeflater{locker: &sync.Mutex{}},
-		contextInflater:               &contextInflater{framesLocker: &sync.Mutex{}, putPullLocker: &sync.Mutex{}},
+		contextInflater:               &contextInflater{framesLocker: &sync.Mutex{}, pipeSourceLocker: &sync.Mutex{}},
 		noContextInflater:             &noContextInflater{},
 
 		di: connDI{

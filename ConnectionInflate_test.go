@@ -507,7 +507,7 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 			closeFunc: func(err error) { steps = append(steps, fmt.Sprintf("close %v", err)) },
 		}
 		return &contextInflater{
-			putPullLocker: fakeFuncLocker{
+			pipeSourceLocker: fakeFuncLocker{
 				lock:   func() { steps = append(steps, "lock") },
 				unlock: func() { steps = append(steps, "unlock") },
 			},
@@ -642,7 +642,7 @@ func TestContextInflaterEndInflateFrames(t *testing.T) {
 				lock:   func() { steps = append(steps, "frames lock") },
 				unlock: func() { steps = append(steps, "frames unlock") },
 			},
-			putPullLocker: fakeFuncLocker{
+			pipeSourceLocker: fakeFuncLocker{
 				lock:   func() { steps = append(steps, "put lock") },
 				unlock: func() { steps = append(steps, "put unlock") },
 			},

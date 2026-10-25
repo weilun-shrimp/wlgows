@@ -173,7 +173,7 @@ type contextInflater struct {
 	framesLocker sync.Locker
 	// Held by each put and by endInflateFrames, so the two do not cross. A
 	// pull does not hold it: it may wait in pipeSource for the next put.
-	putPullLocker sync.Locker
+	pipeSourceLocker sync.Locker
 	// Reads pipeSource. Its errors are sticky: one ends the message.
 	flateReader io.ReadCloser
 	// The open message's frames, nil between messages.
@@ -262,8 +262,8 @@ func startInflateFrames(di startInflateFramesDI) {
 // putDeflatedFrame puts f's payload into the open message, then inflateTail
 // and the close after the FIN frame.
 func (c *contextInflater) putDeflatedFrame(f *Frame) error {
-	c.putPullLocker.Lock()
-	defer c.putPullLocker.Unlock()
+	c.pipeSourceLocker.Lock()
+	defer c.pipeSourceLocker.Unlock()
 
 	if len(f.PayloadData) != 0 {
 		if err := c.pipeSource.put(f.PayloadData); err != nil {
@@ -297,10 +297,10 @@ func (c *contextInflater) pullInflatedBytes(buf []byte) (int, error) {
 // endInflateFrames closes the open message, drops its pipeSource and lets the
 // next message start. Call it once no pull is running.
 func (c *contextInflater) endInflateFrames() {
-	c.putPullLocker.Lock()
+	c.pipeSourceLocker.Lock()
 	c.pipeSource.drop() // flateReader still points at it until the next start
 	c.pipeSource = nil
-	c.putPullLocker.Unlock()
+	c.pipeSourceLocker.Unlock()
 	c.framesLocker.Unlock()
 }
 
