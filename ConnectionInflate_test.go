@@ -356,16 +356,19 @@ func TestContextInflateDataFrames(t *testing.T) {
 	base_di := func() contextInflateDataFramesDI {
 		steps = nil
 		return contextInflateDataFramesDI{
-			startInflateFrames: func() { steps = append(steps, "start") },
-			putDeflatedFrame: func(f *Frame) error {
-				steps = append(steps, fmt.Sprintf("put %s", f.PayloadData))
+			startInflateFrames: func() int64 {
+				steps = append(steps, "start")
+				return 7
+			},
+			putDeflatedFrame: func(token int64, f *Frame) error {
+				steps = append(steps, fmt.Sprintf("put %s token %d", f.PayloadData, token))
 				return nil
 			},
-			pullInflatedBytes: func(buf []byte) (int, error) {
-				steps = append(steps, fmt.Sprintf("pull %d", cap(buf)))
+			pullInflatedBytes: func(token int64, buf []byte) (int, error) {
+				steps = append(steps, fmt.Sprintf("pull %d token %d", cap(buf), token))
 				return 0, nil
 			},
-			endInflateFrames: func() { steps = append(steps, "end") },
+			endInflateFrames: func(token int64) { steps = append(steps, fmt.Sprintf("end %d", token)) },
 			readInflated: func(inflate_read func(buf []byte) (int, error), buf []byte) (int, error) {
 				steps = append(steps, fmt.Sprintf("read inflated %d", cap(buf)))
 				inflate_read(buf)
@@ -375,13 +378,13 @@ func TestContextInflateDataFrames(t *testing.T) {
 	}
 	frames := DataFrames{{PayloadData: []byte("a")}, {PayloadData: []byte("b"), FIN: true}}
 
-	t.Run("starts, puts every frame, reads them with pull, ends", func(t *testing.T) {
+	t.Run("starts, puts every frame, reads them with pull, ends, all with start's token", func(t *testing.T) {
 		di := base_di()
 		n, err := contextInflateDataFrames(frames, make([]byte, 0, 8), di)
 		if n != 3 || err != err_read {
 			t.Errorf("contextInflateDataFrames = %d, %v, want readInflated's 3, %v", n, err, err_read)
 		}
-		want := []string{"start", "put a", "put b", "read inflated 8", "pull 8", "end"}
+		want := []string{"start", "put a token 7", "put b token 7", "read inflated 8", "pull 8 token 7", "end 7"}
 		if !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
@@ -389,15 +392,15 @@ func TestContextInflateDataFrames(t *testing.T) {
 
 	t.Run("a put error stops there, ends, and returns it", func(t *testing.T) {
 		di := base_di()
-		di.putDeflatedFrame = func(f *Frame) error {
-			steps = append(steps, fmt.Sprintf("put %s", f.PayloadData))
+		di.putDeflatedFrame = func(token int64, f *Frame) error {
+			steps = append(steps, fmt.Sprintf("put %s token %d", f.PayloadData, token))
 			return err_put
 		}
 		n, err := contextInflateDataFrames(frames, make([]byte, 0, 8), di)
 		if n != 0 || err != err_put {
 			t.Errorf("contextInflateDataFrames = %d, %v, want 0, %v", n, err, err_put)
 		}
-		if want := []string{"start", "put a", "end"}; !slices.Equal(steps, want) {
+		if want := []string{"start", "put a token 7", "end 7"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
@@ -427,7 +430,12 @@ func TestStartInflateFrames(t *testing.T) {
 					lock:   func() { steps = append(steps, "frames lock") },
 					unlock: func() { steps = append(steps, "frames unlock") },
 				},
-				history: []byte("abc"),
+				pipeSourceLocker: fakeFuncLocker{
+					lock:   func() { steps = append(steps, "source lock") },
+					unlock: func() { steps = append(steps, "source unlock") },
+				},
+				currentFramesToken: 6,
+				history:            []byte("abc"),
 			},
 			newPipeSource: func() inflaterPipeSource {
 				steps = append(steps, "new source")
@@ -444,10 +452,13 @@ func TestStartInflateFrames(t *testing.T) {
 		}
 	}
 
-	t.Run("locks, then builds the reader on a new source from history", func(t *testing.T) {
+	t.Run("locks, builds the reader on a new source from history, opens it with the next token", func(t *testing.T) {
 		di := base_di()
-		startInflateFrames(di)
-		if want := []string{"frames lock", "new source", "new reader"}; !slices.Equal(steps, want) {
+		if token := startInflateFrames(di); token != 7 || di.inflater.currentFramesToken != 7 {
+			t.Errorf("token %d, currentFramesToken %d, want both 7", token, di.inflater.currentFramesToken)
+		}
+		want := []string{"frames lock", "source lock", "new source", "new reader", "source unlock"}
+		if !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 		if string(new_dict) != "abc" {
@@ -481,7 +492,8 @@ func TestStartInflateFrames(t *testing.T) {
 		}}
 		di.inflater.flateReader = reader_it_had
 		startInflateFrames(di)
-		if want := []string{"frames lock", "new source", "reset reader"}; !slices.Equal(steps, want) {
+		want := []string{"frames lock", "source lock", "new source", "reset reader", "source unlock"}
+		if !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 		if reset_source != io.Reader(source) || string(reset_dict) != "abc" {
@@ -511,13 +523,33 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 				lock:   func() { steps = append(steps, "lock") },
 				unlock: func() { steps = append(steps, "unlock") },
 			},
-			pipeSource: source,
+			currentFramesToken: 7,
+			pipeSource:         source,
 		}
 	}
 	tail_put_step := fmt.Sprintf("put % x", inflateTail)
 
+	t.Run("another message's token puts nothing", func(t *testing.T) {
+		err := base_inflater().putDeflatedFrame(6, &Frame{FIN: true, PayloadData: []byte{0x01}})
+		if err != ErrInflateFramesTokenStale {
+			t.Errorf("putDeflatedFrame = %v, want ErrInflateFramesTokenStale", err)
+		}
+		if want := []string{"lock", "unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	t.Run("the token of a message that ended puts nothing", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.pipeSource = nil
+		err := inflater.putDeflatedFrame(7, &Frame{FIN: true, PayloadData: []byte{0x01}})
+		if err != ErrInflateFramesTokenStale {
+			t.Errorf("putDeflatedFrame = %v, want ErrInflateFramesTokenStale", err)
+		}
+	})
+
 	t.Run("puts the payload under the lock", func(t *testing.T) {
-		err := base_inflater().putDeflatedFrame(&Frame{PayloadData: []byte{0x01}})
+		err := base_inflater().putDeflatedFrame(7, &Frame{PayloadData: []byte{0x01}})
 		if err != nil {
 			t.Errorf("putDeflatedFrame = %v, want nil", err)
 		}
@@ -527,7 +559,7 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 	})
 
 	t.Run("puts nothing for an empty payload", func(t *testing.T) {
-		err := base_inflater().putDeflatedFrame(&Frame{PayloadData: []byte{}})
+		err := base_inflater().putDeflatedFrame(7, &Frame{PayloadData: []byte{}})
 		if err != nil {
 			t.Errorf("putDeflatedFrame = %v, want nil", err)
 		}
@@ -538,7 +570,7 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 
 	// RFC 7692 7.2.2: the tail goes after the last payload.
 	t.Run("after the FIN frame's payload, puts the tail and closes with io.EOF", func(t *testing.T) {
-		err := base_inflater().putDeflatedFrame(&Frame{FIN: true, PayloadData: []byte{0x01}})
+		err := base_inflater().putDeflatedFrame(7, &Frame{FIN: true, PayloadData: []byte{0x01}})
 		if err != nil {
 			t.Errorf("putDeflatedFrame = %v, want nil", err)
 		}
@@ -548,7 +580,7 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 	})
 
 	t.Run("a FIN frame with an empty payload puts only the tail", func(t *testing.T) {
-		err := base_inflater().putDeflatedFrame(&Frame{FIN: true, PayloadData: []byte{}})
+		err := base_inflater().putDeflatedFrame(7, &Frame{FIN: true, PayloadData: []byte{}})
 		if err != nil {
 			t.Errorf("putDeflatedFrame = %v, want nil", err)
 		}
@@ -563,7 +595,7 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 			steps = append(steps, fmt.Sprintf("put % x", data))
 			return err_put
 		}
-		err := inflater.putDeflatedFrame(&Frame{FIN: true, PayloadData: []byte{0x01}})
+		err := inflater.putDeflatedFrame(7, &Frame{FIN: true, PayloadData: []byte{0x01}})
 		if err != err_put {
 			t.Errorf("putDeflatedFrame = %v, want %v", err, err_put)
 		}
@@ -581,7 +613,7 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 			}
 			return nil
 		}
-		err := inflater.putDeflatedFrame(&Frame{FIN: true, PayloadData: []byte{0x01}})
+		err := inflater.putDeflatedFrame(7, &Frame{FIN: true, PayloadData: []byte{0x01}})
 		if err != err_put {
 			t.Errorf("putDeflatedFrame = %v, want %v", err, err_put)
 		}
@@ -593,20 +625,35 @@ func TestContextInflaterPutDeflatedFrame(t *testing.T) {
 
 func TestContextInflaterPullInflatedBytes(t *testing.T) {
 	err_read := errors.New("read failed")
-
-	t.Run("reads into buf from its start and adds it to history", func(t *testing.T) {
-		var read_len int
-		inflater := &contextInflater{
-			history: []byte("ab"),
-			flateReader: &fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
-				read_len = len(p)
-				return copy(p, "cd"), err_read
-			}},
+	var steps []string
+	base_inflater := func() *contextInflater {
+		steps = nil
+		return &contextInflater{
+			pipeSourceLocker: fakeFuncLocker{
+				lock:   func() { steps = append(steps, "lock") },
+				unlock: func() { steps = append(steps, "unlock") },
+			},
+			currentFramesToken: 7,
+			pipeSource:         &fakeFuncPipeSource{},
+			history:            []byte("ab"),
 		}
+	}
+
+	t.Run("checks the token under the lock, then reads into buf from its start and adds it to history", func(t *testing.T) {
+		var read_len int
+		inflater := base_inflater()
+		inflater.flateReader = &fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
+			steps = append(steps, "read")
+			read_len = len(p)
+			return copy(p, "cd"), err_read
+		}}
 		buf := make([]byte, 0, 8)
-		n, err := inflater.pullInflatedBytes(buf)
+		n, err := inflater.pullInflatedBytes(7, buf)
 		if n != 2 || err != err_read || string(buf[:n]) != "cd" {
 			t.Errorf("pullInflatedBytes = %d, %v, %q, want 2, %v, \"cd\"", n, err, buf[:n], err_read)
+		}
+		if want := []string{"lock", "unlock", "read"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
 		}
 		if read_len != 8 {
 			t.Errorf("read %d bytes of room, want buf[:cap(buf)], 8", read_len)
@@ -617,14 +664,12 @@ func TestContextInflaterPullInflatedBytes(t *testing.T) {
 	})
 
 	t.Run("no room reads nothing", func(t *testing.T) {
-		inflater := &contextInflater{
-			history: []byte("ab"),
-			flateReader: &fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
-				t.Errorf("read, want no read")
-				return 0, nil
-			}},
-		}
-		n, err := inflater.pullInflatedBytes(nil)
+		inflater := base_inflater()
+		inflater.flateReader = &fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
+			t.Errorf("read, want no read")
+			return 0, nil
+		}}
+		n, err := inflater.pullInflatedBytes(7, nil)
 		if n != 0 || err != nil {
 			t.Errorf("pullInflatedBytes = %d, %v, want 0, nil", n, err)
 		}
@@ -632,38 +677,118 @@ func TestContextInflaterPullInflatedBytes(t *testing.T) {
 			t.Errorf("history %q, want it unchanged, \"ab\"", inflater.history)
 		}
 	})
+
+	for _, tc := range []struct {
+		name  string
+		token int64
+		open  bool
+	}{
+		{"another message's token", 6, true},
+		{"the token of a message that ended", 7, false},
+	} {
+		t.Run(tc.name+" reads nothing", func(t *testing.T) {
+			inflater := base_inflater()
+			if !tc.open {
+				inflater.pipeSource = nil
+			}
+			inflater.flateReader = &fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
+				t.Errorf("read, want no read")
+				return 0, nil
+			}}
+			n, err := inflater.pullInflatedBytes(tc.token, make([]byte, 0, 8))
+			if n != 0 || err != ErrInflateFramesTokenStale {
+				t.Errorf("pullInflatedBytes = %d, %v, want 0, ErrInflateFramesTokenStale", n, err)
+			}
+			if string(inflater.history) != "ab" {
+				t.Errorf("history %q, want it unchanged, \"ab\"", inflater.history)
+			}
+		})
+	}
 }
 
 func TestContextInflaterEndInflateFrames(t *testing.T) {
-	t.Run("drops the source under the lock, then lets the next message start", func(t *testing.T) {
-		var steps []string
-		inflater := &contextInflater{
+	var steps []string
+	base_inflater := func() *contextInflater {
+		steps = nil
+		return &contextInflater{
 			framesLocker: fakeFuncLocker{
 				lock:   func() { steps = append(steps, "frames lock") },
 				unlock: func() { steps = append(steps, "frames unlock") },
 			},
 			pipeSourceLocker: fakeFuncLocker{
-				lock:   func() { steps = append(steps, "put lock") },
-				unlock: func() { steps = append(steps, "put unlock") },
+				lock:   func() { steps = append(steps, "source lock") },
+				unlock: func() { steps = append(steps, "source unlock") },
 			},
-			pipeSource: &fakeFuncPipeSource{dropFunc: func() { steps = append(steps, "drop") }},
+			currentFramesToken: 7,
+			pipeSource:         &fakeFuncPipeSource{dropFunc: func() { steps = append(steps, "drop") }},
 		}
-		inflater.endInflateFrames()
-		if want := []string{"put lock", "drop", "put unlock", "frames unlock"}; !slices.Equal(steps, want) {
+	}
+
+	t.Run("drops the source under the lock, then lets the next message start", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.endInflateFrames(7)
+		if want := []string{"source lock", "drop", "source unlock", "frames unlock"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 		if inflater.pipeSource != nil {
 			t.Errorf("pipeSource = %v, want nil", inflater.pipeSource)
 		}
 	})
+
+	t.Run("another message's token does nothing", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.endInflateFrames(6)
+		if want := []string{"source lock", "source unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+		if inflater.pipeSource == nil {
+			t.Errorf("pipeSource = nil, want the open message's")
+		}
+	})
+
+	t.Run("a second end does nothing", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.endInflateFrames(7)
+		steps = nil
+		inflater.endInflateFrames(7)
+		if want := []string{"source lock", "source unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
 }
 
 func TestContextInflaterDropContext(t *testing.T) {
+	base_inflater := func() *contextInflater {
+		return &contextInflater{
+			pipeSourceLocker:   &sync.Mutex{},
+			currentFramesToken: 7,
+			pipeSource:         &fakeFuncPipeSource{},
+			history:            []byte("abc"),
+		}
+	}
+
 	t.Run("frees the history", func(t *testing.T) {
-		inflater := &contextInflater{history: []byte("abc")}
-		inflater.dropContext()
+		inflater := base_inflater()
+		inflater.dropContext(7)
 		if inflater.history != nil {
 			t.Errorf("history %q, want nil", inflater.history)
+		}
+	})
+
+	t.Run("another message's token keeps the history", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.dropContext(6)
+		if string(inflater.history) != "abc" {
+			t.Errorf("history %q, want it kept, \"abc\"", inflater.history)
+		}
+	})
+
+	t.Run("the token of a message that ended keeps the history", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.pipeSource = nil
+		inflater.dropContext(7)
+		if string(inflater.history) != "abc" {
+			t.Errorf("history %q, want it kept, \"abc\"", inflater.history)
 		}
 	})
 }

@@ -108,23 +108,25 @@ func dataFramesBytes(data_frames DataFrames, buf []byte, config DataFramesBytesC
 
 /*
 StartInflateDataFrames opens a deflated message inflated frame by frame, as in
-a Data hook, and puts first_frame, the message's first, into it. Pull the bytes
-out with PullInflatedBytes, put each frame after with PutDeflatedDataFrame.
+a Data hook. It returns the message's token: pass it to PutDeflatedDataFrame,
+PullInflatedBytes and EndInflateDataFrames.
 
-Call it only when permessage-deflate was agreed and first_frame has RSV1 set
-(RFC 7692 6). It holds the inflater until EndInflateDataFrames, which must
-follow once, even on an error. The frames' payloads are read in place, so
-leave them unchanged until they are pulled.
+Call it only when permessage-deflate was agreed and the message's first frame
+has RSV1 set (RFC 7692 6), then put that frame first. It holds the inflater
+until EndInflateDataFrames, which must follow, even on an error. The frames'
+payloads are read in place, so leave them unchanged until they are pulled.
 */
-func (c *Conn) StartInflateDataFrames(first_frame *Frame) error {
-	c.contextInflater.startInflateFrames()
-	return c.contextInflater.putDeflatedFrame(first_frame)
+func (c *Conn) StartInflateDataFrames() int64 {
+	return c.contextInflater.startInflateFrames()
 }
 
-// PutDeflatedDataFrame puts the next frame of the message StartInflateDataFrames
-// opened. After the FIN frame, nothing more goes in.
-func (c *Conn) PutDeflatedDataFrame(f *Frame) error {
-	return c.contextInflater.putDeflatedFrame(f)
+/*
+PutDeflatedDataFrame puts the next frame of token's message. After the FIN
+frame, nothing more goes in. A token whose message ended returns
+ErrInflateFramesTokenStale.
+*/
+func (c *Conn) PutDeflatedDataFrame(token int64, f *Frame) error {
+	return c.contextInflater.putDeflatedFrame(token, f)
 }
 
 /*
@@ -135,11 +137,11 @@ Before the FIN frame, it waits for the next PutDeflatedDataFrame when the
 frames put run out, so put from another goroutine, or pull only after the FIN
 frame. One pull at a time, and EndInflateDataFrames only once it returned.
 
-The message is lost on any other error: ErrInflateDataInvalid when it does
-not inflate.
+A token whose message ended returns ErrInflateFramesTokenStale. The message is
+lost on any other error: ErrInflateDataInvalid when it does not inflate.
 */
-func (c *Conn) PullInflatedBytes(buf []byte) (int, error) {
-	n, err := c.contextInflater.pullInflatedBytes(buf)
+func (c *Conn) PullInflatedBytes(token int64, buf []byte) (int, error) {
+	n, err := c.contextInflater.pullInflatedBytes(token, buf)
 	if err == io.EOF {
 		return n, err
 	}
@@ -147,17 +149,17 @@ func (c *Conn) PullInflatedBytes(buf []byte) (int, error) {
 }
 
 /*
-EndInflateDataFrames ends the message StartInflateDataFrames opened and frees
-the inflater. For a peer that agreed to no context takeover, the next message
-starts from an empty window (RFC 7692 7.1.1). Ended before io.EOF for a peer
-that keeps its context, close the connection: the next message may inflate to
-wrong bytes with no error.
+EndInflateDataFrames ends token's message and frees the inflater. For a peer
+that agreed to no context takeover, the next message starts from an empty
+window (RFC 7692 7.1.1). Ended before io.EOF for a peer that keeps its context,
+close the connection: the next message may inflate to wrong bytes with no
+error. A token whose message ended does nothing.
 */
-func (c *Conn) EndInflateDataFrames() {
+func (c *Conn) EndInflateDataFrames(token int64) {
 	if peerNoContextTakeover(c.peerIsClient, c.permessageDeflateAgreedConfig) {
-		c.contextInflater.dropContext()
+		c.contextInflater.dropContext(token)
 	}
-	c.contextInflater.endInflateFrames()
+	c.contextInflater.endInflateFrames(token)
 }
 
 /*
@@ -176,9 +178,9 @@ func peerNoContextTakeover(peer_is_client bool, agreed *PermessageDeflateConfig)
 }
 
 // inflateError is err as the Conn returns it: compress/flate's errors wrapped
-// in ErrInflateDataInvalid, the size limit as it is.
+// in ErrInflateDataInvalid, the size limit and a stale token as they are.
 func inflateError(err error) error {
-	if err == nil || err == ErrInflatedSizeExceeded {
+	if err == nil || err == ErrInflatedSizeExceeded || err == ErrInflateFramesTokenStale {
 		return err
 	}
 	return fmt.Errorf("%w: %w", ErrInflateDataInvalid, err)

@@ -36,11 +36,11 @@ type connNoContextInflater interface {
 type connContextInflater interface {
 	connNoContextInflater
 
-	startInflateFrames()
-	putDeflatedFrame(f *Frame) error
-	pullInflatedBytes(buf []byte) (int, error)
-	endInflateFrames()
-	dropContext()
+	startInflateFrames() int64
+	putDeflatedFrame(token int64, f *Frame) error
+	pullInflatedBytes(token int64, buf []byte) (int, error)
+	endInflateFrames(token int64)
+	dropContext(token int64)
 }
 
 /*
@@ -171,8 +171,14 @@ message.
 type contextInflater struct {
 	// Held from startInflateFrames to endInflateFrames: one message at a time.
 	framesLocker sync.Locker
-	// Held by each put and by endInflateFrames, so the two do not cross. A
-	// pull does not hold it: it may wait in pipeSource for the next put.
+
+	// The open message's token, from startInflateFrames. A call with another
+	// token, or after the message ended, is stale. On pipeSourceLocker.
+	currentFramesToken int64
+
+	// Held by each put, end and dropContext, and by a pull's token check, so
+	// they do not cross. A pull does not hold it while it reads: it may wait in
+	// pipeSource for the next put.
 	pipeSourceLocker sync.Locker
 	// Reads pipeSource. Its errors are sticky: one ends the message.
 	flateReader io.ReadCloser
@@ -204,23 +210,24 @@ func (c *contextInflater) inflateDataFrames(frames DataFrames, buf []byte) (int,
 
 // contextInflateDataFramesDI is what contextInflateDataFrames calls.
 type contextInflateDataFramesDI struct {
-	startInflateFrames func()
-	putDeflatedFrame   func(f *Frame) error
-	pullInflatedBytes  func(buf []byte) (int, error)
-	endInflateFrames   func()
+	startInflateFrames func() int64
+	putDeflatedFrame   func(token int64, f *Frame) error
+	pullInflatedBytes  func(token int64, buf []byte) (int, error)
+	endInflateFrames   func(token int64)
 	readInflated       func(inflate_read func(buf []byte) (int, error), buf []byte) (int, error)
 }
 
 // contextInflateDataFrames is contextInflater.inflateDataFrames.
 func contextInflateDataFrames(frames DataFrames, buf []byte, di contextInflateDataFramesDI) (int, error) {
-	di.startInflateFrames()
-	defer di.endInflateFrames()
+	token := di.startInflateFrames()
+	defer di.endInflateFrames(token)
 	for _, f := range frames {
-		if err := di.putDeflatedFrame(f); err != nil {
+		if err := di.putDeflatedFrame(token, f); err != nil {
 			return 0, err
 		}
 	}
-	n, err := di.readInflated(di.pullInflatedBytes, buf)
+	pull := func(buf []byte) (int, error) { return di.pullInflatedBytes(token, buf) }
+	n, err := di.readInflated(pull, buf)
 	if err == io.EOF { // the message ended
 		return n, nil
 	}
@@ -228,9 +235,10 @@ func contextInflateDataFrames(frames DataFrames, buf []byte, di contextInflateDa
 }
 
 // startInflateFrames opens a message: an empty pipeSource, read by flateReader
-// from the last 32 KB of history. endInflateFrames must follow.
-func (c *contextInflater) startInflateFrames() {
-	startInflateFrames(startInflateFramesDI{
+// from the last 32 KB of history. It returns the message's token, for every
+// call after. endInflateFrames must follow.
+func (c *contextInflater) startInflateFrames() int64 {
+	return startInflateFrames(startInflateFramesDI{
 		inflater:       c,
 		newPipeSource:  newPipeSource,
 		newFlateReader: flate.NewReaderDict,
@@ -246,24 +254,33 @@ type startInflateFramesDI struct {
 }
 
 // startInflateFrames is contextInflater.startInflateFrames.
-func startInflateFrames(di startInflateFramesDI) {
+func startInflateFrames(di startInflateFramesDI) int64 {
 	inflater := di.inflater
 	inflater.framesLocker.Lock()
+	inflater.pipeSourceLocker.Lock()
+	defer inflater.pipeSourceLocker.Unlock()
+
+	inflater.currentFramesToken++
 	inflater.pipeSource = di.newPipeSource()
 
 	dict := inflater.history[max(len(inflater.history)-deflateWindowSize, 0):] // the last 32 KB
 	if inflater.flateReader == nil {
 		inflater.flateReader = di.newFlateReader(inflater.pipeSource, dict)
-		return
+		return inflater.currentFramesToken
 	}
 	inflater.flateReader.(flate.Resetter).Reset(inflater.pipeSource, dict)
+	return inflater.currentFramesToken
 }
 
 // putDeflatedFrame puts f's payload into the open message, then inflateTail
-// and the close after the FIN frame.
-func (c *contextInflater) putDeflatedFrame(f *Frame) error {
+// and the close after the FIN frame. A stale token returns
+// ErrInflateFramesTokenStale.
+func (c *contextInflater) putDeflatedFrame(token int64, f *Frame) error {
 	c.pipeSourceLocker.Lock()
 	defer c.pipeSourceLocker.Unlock()
+	if c.isStaleToken(token) {
+		return ErrInflateFramesTokenStale
+	}
 
 	if len(f.PayloadData) != 0 {
 		if err := c.pipeSource.put(f.PayloadData); err != nil {
@@ -284,8 +301,15 @@ func (c *contextInflater) putDeflatedFrame(f *Frame) error {
 pullInflatedBytes inflates into buf[:cap(buf)] and adds it to history; io.EOF,
 the message ended. Before the FIN frame, it waits in pipeSource for the next
 put when flate runs out, so put from another goroutine. One pull at a time.
+A stale token returns ErrInflateFramesTokenStale.
 */
-func (c *contextInflater) pullInflatedBytes(buf []byte) (int, error) {
+func (c *contextInflater) pullInflatedBytes(token int64, buf []byte) (int, error) {
+	c.pipeSourceLocker.Lock()
+	stale := c.isStaleToken(token)
+	c.pipeSourceLocker.Unlock()
+	if stale {
+		return 0, ErrInflateFramesTokenStale
+	}
 	if cap(buf) == 0 { // no room: flate would step into the pipe for nothing
 		return 0, nil
 	}
@@ -295,9 +319,14 @@ func (c *contextInflater) pullInflatedBytes(buf []byte) (int, error) {
 }
 
 // endInflateFrames closes the open message, drops its pipeSource and lets the
-// next message start. Call it once no pull is running.
-func (c *contextInflater) endInflateFrames() {
+// next message start. Call it once no pull is running. A stale token does
+// nothing, so a second end cannot end the next message.
+func (c *contextInflater) endInflateFrames(token int64) {
 	c.pipeSourceLocker.Lock()
+	if c.isStaleToken(token) {
+		c.pipeSourceLocker.Unlock()
+		return
+	}
 	c.pipeSource.drop() // flateReader still points at it until the next start
 	c.pipeSource = nil
 	c.pipeSourceLocker.Unlock()
@@ -308,10 +337,21 @@ func (c *contextInflater) endInflateFrames() {
 dropContext starts the next message from an empty window, as for a peer that
 agreed to no context takeover (RFC 7692 7.1.1), and frees the history. Call it
 while a message is open, after its last pull and before endInflateFrames, so no
-other message starts in between.
+other message starts in between. A stale token does nothing.
 */
-func (c *contextInflater) dropContext() {
+func (c *contextInflater) dropContext(token int64) {
+	c.pipeSourceLocker.Lock()
+	defer c.pipeSourceLocker.Unlock()
+	if c.isStaleToken(token) {
+		return
+	}
 	c.history = nil
+}
+
+// isStaleToken is whether token is not the open message's: it ended, or
+// another started. Hold pipeSourceLocker.
+func (c *contextInflater) isStaleToken(token int64) bool {
+	return c.pipeSource == nil || token != c.currentFramesToken
 }
 
 /*

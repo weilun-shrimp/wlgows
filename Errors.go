@@ -174,6 +174,10 @@ var (
 	// cap(buf) — answer with close code 1009.
 	ErrInflatedSizeExceeded = errors.New("inflated data exceeds the size allowed")
 
+	// ErrInflateFramesTokenStale is a token from StartInflateDataFrames whose
+	// message ended, or another message's token.
+	ErrInflateFramesTokenStale = errors.New("token is not the open inflated message's")
+
 	// ErrDataFramesBytesSizeExceeded is a message DataFramesBytes does not
 	// inflate whose payloads go past the room given for them, cap(buf) —
 	// answer with close code 1009.

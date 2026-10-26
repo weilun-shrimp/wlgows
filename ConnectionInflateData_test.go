@@ -13,23 +13,25 @@ import (
 // code under test calls.
 type fakeFuncInflater struct {
 	inflateDataFramesFunc  func(frames DataFrames, buf []byte) (int, error)
-	startInflateFramesFunc func()
-	putDeflatedFrameFunc   func(f *Frame) error
-	pullInflatedBytesFunc  func(buf []byte) (int, error)
-	endInflateFramesFunc   func()
-	dropContextFunc        func()
+	startInflateFramesFunc func() int64
+	putDeflatedFrameFunc   func(token int64, f *Frame) error
+	pullInflatedBytesFunc  func(token int64, buf []byte) (int, error)
+	endInflateFramesFunc   func(token int64)
+	dropContextFunc        func(token int64)
 }
 
 func (i fakeFuncInflater) inflateDataFrames(frames DataFrames, buf []byte) (int, error) {
 	return i.inflateDataFramesFunc(frames, buf)
 }
-func (i fakeFuncInflater) startInflateFrames()             { i.startInflateFramesFunc() }
-func (i fakeFuncInflater) putDeflatedFrame(f *Frame) error { return i.putDeflatedFrameFunc(f) }
-func (i fakeFuncInflater) pullInflatedBytes(buf []byte) (int, error) {
-	return i.pullInflatedBytesFunc(buf)
+func (i fakeFuncInflater) startInflateFrames() int64 { return i.startInflateFramesFunc() }
+func (i fakeFuncInflater) putDeflatedFrame(token int64, f *Frame) error {
+	return i.putDeflatedFrameFunc(token, f)
 }
-func (i fakeFuncInflater) endInflateFrames() { i.endInflateFramesFunc() }
-func (i fakeFuncInflater) dropContext()      { i.dropContextFunc() }
+func (i fakeFuncInflater) pullInflatedBytes(token int64, buf []byte) (int, error) {
+	return i.pullInflatedBytesFunc(token, buf)
+}
+func (i fakeFuncInflater) endInflateFrames(token int64) { i.endInflateFramesFunc(token) }
+func (i fakeFuncInflater) dropContext(token int64)      { i.dropContextFunc(token) }
 
 func TestDataFramesBytesFunc(t *testing.T) {
 	err_inflate := errors.New("inflate failed")
@@ -302,26 +304,10 @@ func TestDataFramesBytesFunc(t *testing.T) {
 }
 
 func TestStartInflateDataFrames(t *testing.T) {
-	err_put := errors.New("put failed")
-
-	t.Run("starts, then puts the first frame and returns its error", func(t *testing.T) {
-		var steps []string
-		first_frame := &Frame{PayloadData: []byte("a")}
-		conn := &Conn{contextInflater: fakeFuncInflater{
-			startInflateFramesFunc: func() { steps = append(steps, "start") },
-			putDeflatedFrameFunc: func(f *Frame) error {
-				if f != first_frame {
-					t.Errorf("put %v, want first_frame", f)
-				}
-				steps = append(steps, "put")
-				return err_put
-			},
-		}}
-		if err := conn.StartInflateDataFrames(first_frame); err != err_put {
-			t.Errorf("StartInflateDataFrames = %v, want %v", err, err_put)
-		}
-		if want := []string{"start", "put"}; !slices.Equal(steps, want) {
-			t.Errorf("steps %q, want %q", steps, want)
+	t.Run("returns start's token", func(t *testing.T) {
+		conn := &Conn{contextInflater: fakeFuncInflater{startInflateFramesFunc: func() int64 { return 7 }}}
+		if token := conn.StartInflateDataFrames(); token != 7 {
+			t.Errorf("StartInflateDataFrames = %d, want 7", token)
 		}
 	})
 }
@@ -336,26 +322,27 @@ func TestPullInflatedBytes(t *testing.T) {
 		{"nil", nil, nil},
 		{"io.EOF as it is", io.EOF, io.EOF},
 		{"ErrInflatedSizeExceeded as it is", ErrInflatedSizeExceeded, ErrInflatedSizeExceeded},
+		{"ErrInflateFramesTokenStale as it is", ErrInflateFramesTokenStale, ErrInflateFramesTokenStale},
 	} {
 		t.Run("returns what it pulled, "+tc.name, func(t *testing.T) {
 			buf := make([]byte, 0, 8)
-			conn := &Conn{contextInflater: fakeFuncInflater{pullInflatedBytesFunc: func(got []byte) (int, error) {
-				if cap(got) != 8 {
-					t.Errorf("pull with cap %d, want buf, 8", cap(got))
+			conn := &Conn{contextInflater: fakeFuncInflater{pullInflatedBytesFunc: func(token int64, got []byte) (int, error) {
+				if token != 7 || cap(got) != 8 {
+					t.Errorf("pull token %d, cap %d, want 7, buf's 8", token, cap(got))
 				}
 				return 3, tc.err
 			}}}
-			if n, err := conn.PullInflatedBytes(buf); n != 3 || err != tc.want_err {
+			if n, err := conn.PullInflatedBytes(7, buf); n != 3 || err != tc.want_err {
 				t.Errorf("PullInflatedBytes = %d, %v, want 3, %v", n, err, tc.want_err)
 			}
 		})
 	}
 
 	t.Run("wraps another error in ErrInflateDataInvalid", func(t *testing.T) {
-		conn := &Conn{contextInflater: fakeFuncInflater{pullInflatedBytesFunc: func(buf []byte) (int, error) {
+		conn := &Conn{contextInflater: fakeFuncInflater{pullInflatedBytesFunc: func(token int64, buf []byte) (int, error) {
 			return 3, err_inflate
 		}}}
-		n, err := conn.PullInflatedBytes(make([]byte, 0, 8))
+		n, err := conn.PullInflatedBytes(7, make([]byte, 0, 8))
 		if n != 3 || !errors.Is(err, ErrInflateDataInvalid) || !errors.Is(err, err_inflate) {
 			t.Errorf("PullInflatedBytes = %d, %v, want 3, ErrInflateDataInvalid wrapping %v", n, err, err_inflate)
 		}
@@ -372,17 +359,17 @@ func TestEndInflateDataFrames(t *testing.T) {
 		{
 			name:   "a peer that agreed to no context takeover drops the context, then ends",
 			agreed: &PermessageDeflateConfig{ClientNoContextTakeover: true},
-			want:   []string{"drop context", "end"},
+			want:   []string{"drop context 7", "end 7"},
 		},
 		{
 			name:   "a peer that keeps its context only ends",
 			agreed: &PermessageDeflateConfig{ServerNoContextTakeover: true},
-			want:   []string{"end"},
+			want:   []string{"end 7"},
 		},
 		{
 			name:   "permessage-deflate not agreed: ends without dropping the context",
 			agreed: nil,
-			want:   []string{"end"},
+			want:   []string{"end 7"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -391,11 +378,11 @@ func TestEndInflateDataFrames(t *testing.T) {
 				peerIsClient:                  true,
 				permessageDeflateAgreedConfig: tc.agreed,
 				contextInflater: fakeFuncInflater{
-					dropContextFunc:      func() { steps = append(steps, "drop context") },
-					endInflateFramesFunc: func() { steps = append(steps, "end") },
+					dropContextFunc:      func(token int64) { steps = append(steps, fmt.Sprintf("drop context %d", token)) },
+					endInflateFramesFunc: func(token int64) { steps = append(steps, fmt.Sprintf("end %d", token)) },
 				},
 			}
-			conn.EndInflateDataFrames()
+			conn.EndInflateDataFrames(7)
 			if !slices.Equal(steps, tc.want) {
 				t.Errorf("steps %q, want %q", steps, tc.want)
 			}
@@ -427,12 +414,14 @@ func TestPeerNoContextTakeover(t *testing.T) {
 }
 
 func TestInflateError(t *testing.T) {
-	t.Run("nil and ErrInflatedSizeExceeded come as they are", func(t *testing.T) {
+	t.Run("nil, ErrInflatedSizeExceeded and ErrInflateFramesTokenStale come as they are", func(t *testing.T) {
 		if err := inflateError(nil); err != nil {
 			t.Errorf("inflateError(nil) = %v, want nil", err)
 		}
-		if err := inflateError(ErrInflatedSizeExceeded); err != ErrInflatedSizeExceeded {
-			t.Errorf("inflateError(ErrInflatedSizeExceeded) = %v, want it as it is", err)
+		for _, want := range []error{ErrInflatedSizeExceeded, ErrInflateFramesTokenStale} {
+			if err := inflateError(want); err != want {
+				t.Errorf("inflateError(%v) = %v, want it as it is", want, err)
+			}
 		}
 	})
 
