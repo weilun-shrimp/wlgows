@@ -112,6 +112,72 @@ func noContextInflateDataFrames(frames DataFrames, buf []byte, di noContextInfla
 	return n, err
 }
 
+// inflateDataFramesReader returns a reader of frames, one whole message,
+// inflated. Read returns io.EOF at the message's end, else compress/flate's
+// errors. Close it when done.
+func (c *noContextInflater) inflateDataFramesReader(frames DataFrames) io.ReadCloser {
+	return noContextInflateDataFramesReader(frames, noContextInflateDataFramesReaderDI{
+		newPipeSource:         newPipeSource,
+		getFlateReader:        getNoContextFlateReader,
+		noContextFlateReaders: &noContextFlateReaders,
+	})
+}
+
+// noContextInflateDataFramesReaderDI is what noContextInflateDataFramesReader
+// calls.
+type noContextInflateDataFramesReaderDI struct {
+	newPipeSource         func() inflaterPipeSource
+	getFlateReader        func(source io.Reader) io.ReadCloser
+	noContextFlateReaders flateReaderPool
+}
+
+// noContextInflateDataFramesReader is noContextInflater.inflateDataFramesReader.
+func noContextInflateDataFramesReader(frames DataFrames, di noContextInflateDataFramesReaderDI) io.ReadCloser {
+	source := di.newPipeSource()
+	for _, f := range frames {
+		if len(f.PayloadData) != 0 {
+			source.put(f.PayloadData)
+		}
+	}
+	source.put(inflateTail) // RFC 7692 7.2.2
+	source.close(io.EOF)
+
+	return &noContextInflateReader{
+		source:                source,
+		flateReader:           di.getFlateReader(source),
+		noContextFlateReaders: di.noContextFlateReaders,
+	}
+}
+
+// noContextInflateReader reads one message with a flate reader from
+// noContextFlateReaders, and gives it back on Close.
+type noContextInflateReader struct {
+	source                inflaterPipeSource
+	flateReader           io.ReadCloser // nil once closed
+	noContextFlateReaders flateReaderPool
+}
+
+// Read inflates into p. After Close, it returns io.ErrClosedPipe: the flate
+// reader may already read another message.
+func (r *noContextInflateReader) Read(p []byte) (int, error) {
+	if r.flateReader == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return r.flateReader.Read(p)
+}
+
+// Close drops source and gives the flate reader back. A second Close does
+// nothing.
+func (r *noContextInflateReader) Close() error {
+	if r.flateReader == nil {
+		return nil
+	}
+	r.source.drop() // the pooled reader still points at source
+	r.noContextFlateReaders.Put(r.flateReader)
+	r.source, r.flateReader = nil, nil
+	return nil
+}
+
 // getNoContextFlateReader is a reader from noContextFlateReaders, or a new
 // one, reading source from an empty window.
 func getNoContextFlateReader(source io.Reader) io.ReadCloser {

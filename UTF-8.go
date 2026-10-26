@@ -1,6 +1,9 @@
 package wlgows
 
-import "unicode/utf8"
+import (
+	"io"
+	"unicode/utf8"
+)
 
 /*
 utf8Checker checks bytes put in pieces as one UTF-8 text (RFC 3629), as a
@@ -61,4 +64,29 @@ func (c *utf8Checker) put(data []byte) {
 // put, false while a rune is cut at the end.
 func (c *utf8Checker) isValid() bool {
 	return !c.invalid && c.incompleteRuneLength == 0
+}
+
+// utf8CheckReader reads reader and checks what it read is UTF-8, as a text
+// message must be (RFC 6455 8.1).
+type utf8CheckReader struct {
+	reader  io.ReadCloser
+	checker utf8Checker
+}
+
+// Read reads into p. When reader returns io.EOF and the bytes read are not
+// UTF-8, or end in a cut rune, Read returns ErrInvalidUTF8 in place of io.EOF.
+// Bytes come out before they are checked: trust them only after io.EOF. Other
+// errors return as they are.
+func (r *utf8CheckReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.checker.put(p[:n])
+	if err == io.EOF && !r.checker.isValid() {
+		return n, ErrInvalidUTF8
+	}
+	return n, err
+}
+
+// Close closes reader.
+func (r *utf8CheckReader) Close() error {
+	return r.reader.Close()
 }

@@ -162,6 +162,147 @@ func TestNoContextInflateDataFrames(t *testing.T) {
 	})
 }
 
+func TestNoContextInflateDataFramesReader(t *testing.T) {
+	var steps []string
+	source := &fakeFuncPipeSource{}
+	flate_reader := &fakeFuncFlateReader{}
+	base_di := func() noContextInflateDataFramesReaderDI {
+		steps = nil
+		*source = fakeFuncPipeSource{
+			putFunc: func(data []byte) error {
+				steps = append(steps, fmt.Sprintf("put % x", data))
+				return nil
+			},
+			closeFunc: func(err error) { steps = append(steps, fmt.Sprintf("close %v", err)) },
+			dropFunc:  func() { steps = append(steps, "drop") },
+		}
+		return noContextInflateDataFramesReaderDI{
+			newPipeSource: func() inflaterPipeSource {
+				steps = append(steps, "new source")
+				return source
+			},
+			getFlateReader: func(got io.Reader) io.ReadCloser {
+				if got != io.Reader(source) {
+					t.Errorf("getFlateReader got %v, want the new source", got)
+				}
+				steps = append(steps, "get flate reader")
+				return flate_reader
+			},
+			noContextFlateReaders: fakeFuncFlateReaderPool{putFunc: func(got any) {
+				if got != any(flate_reader) {
+					t.Errorf("Put got %v, want the flate reader", got)
+				}
+				steps = append(steps, "put flate reader")
+			}},
+		}
+	}
+
+	// RFC 7692 7.2.2: the tail goes after the payloads, and io.EOF closes the
+	// source once the whole message is in.
+	t.Run("puts the payloads and the tail, closes the source, then reads it with a flate reader", func(t *testing.T) {
+		frames := DataFrames{
+			{PayloadData: []byte{0x01, 0x02}},
+			{PayloadData: []byte{}},
+			{PayloadData: []byte{0x03}},
+		}
+		reader := noContextInflateDataFramesReader(frames, base_di()).(*noContextInflateReader)
+		want := []string{
+			"new source",
+			"put 01 02",
+			"put 03",
+			fmt.Sprintf("put % x", inflateTail),
+			"close EOF",
+			"get flate reader",
+		}
+		if !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+		if reader.source != inflaterPipeSource(source) || reader.flateReader != io.ReadCloser(flate_reader) {
+			t.Errorf("reader holds %v, %v, want the source and the flate reader", reader.source, reader.flateReader)
+		}
+	})
+
+	t.Run("no frames puts only the tail", func(t *testing.T) {
+		noContextInflateDataFramesReader(DataFrames{}, base_di())
+		want := []string{"new source", fmt.Sprintf("put % x", inflateTail), "close EOF", "get flate reader"}
+		if !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	t.Run("the reader's Close gives the flate reader back to the pool given", func(t *testing.T) {
+		reader := noContextInflateDataFramesReader(DataFrames{}, base_di())
+		steps = nil
+		reader.Close()
+		if want := []string{"drop", "put flate reader"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+}
+
+func TestNoContextInflateReader(t *testing.T) {
+	err_flate := errors.New("flate failed")
+	var steps []string
+	source := &fakeFuncPipeSource{}
+	flate_reader := &fakeFuncFlateReader{}
+	new_reader := func() *noContextInflateReader {
+		steps = nil
+		*source = fakeFuncPipeSource{dropFunc: func() { steps = append(steps, "drop") }}
+		*flate_reader = fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
+			steps = append(steps, fmt.Sprintf("flate read %d", len(p)))
+			return copy(p, "ab"), err_flate
+		}}
+		return &noContextInflateReader{
+			source:      source,
+			flateReader: flate_reader,
+			noContextFlateReaders: fakeFuncFlateReaderPool{putFunc: func(got any) {
+				if got != any(flate_reader) {
+					t.Errorf("Put got %v, want the flate reader", got)
+				}
+				steps = append(steps, "put flate reader")
+			}},
+		}
+	}
+
+	t.Run("Read returns what the flate reader read, its error as it is", func(t *testing.T) {
+		reader := new_reader()
+		p := make([]byte, 4)
+		n, err := reader.Read(p)
+		if n != 2 || err != err_flate || string(p[:n]) != "ab" {
+			t.Errorf("Read = %d, %v, %q, want 2, %v, \"ab\"", n, err, p[:n], err_flate)
+		}
+		if want := []string{"flate read 4"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	// The source is dropped before the flate reader, which still points at it,
+	// goes back to the pool.
+	t.Run("Close drops the source, then pools the flate reader, once only", func(t *testing.T) {
+		reader := new_reader()
+		if err := reader.Close(); err != nil {
+			t.Errorf("Close = %v, want nil", err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Errorf("second Close = %v, want nil", err)
+		}
+		if want := []string{"drop", "put flate reader"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	// The pooled flate reader may already read another message.
+	t.Run("Read after Close returns io.ErrClosedPipe, the flate reader untouched", func(t *testing.T) {
+		reader := new_reader()
+		reader.Close()
+		steps = nil
+		n, err := reader.Read(make([]byte, 4))
+		if n != 0 || err != io.ErrClosedPipe || steps != nil {
+			t.Errorf("Read = %d, %v, steps %q, want 0, io.ErrClosedPipe, nothing run", n, err, steps)
+		}
+	})
+}
+
 func TestGetFlateReader(t *testing.T) {
 	var steps []string
 	source := &fakeIOReader{}

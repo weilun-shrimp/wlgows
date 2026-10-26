@@ -1,6 +1,11 @@
 package wlgows
 
-import "testing"
+import (
+	"bytes"
+	"errors"
+	"io"
+	"testing"
+)
 
 func TestUTF8Checker(t *testing.T) {
 	// 中 is E4 B8 AD, 😀 is F0 9F 98 80
@@ -68,6 +73,78 @@ func TestUTF8Checker(t *testing.T) {
 		checker.put([]byte{0xAD})
 		if !checker.isValid() {
 			t.Errorf("isValid() = false, want true")
+		}
+	})
+}
+
+func TestUTF8CheckReader(t *testing.T) {
+	err_read := errors.New("read failed")
+	err_close := errors.New("close failed")
+	// read is one Read's bytes and error.
+	type read = struct {
+		data []byte
+		err  error
+	}
+	new_reader := func(reads []read) *utf8CheckReader {
+		return &utf8CheckReader{reader: &fakeFuncReadCloser{
+			readFunc: func(p []byte) (int, error) {
+				if len(reads) == 0 {
+					return 0, io.EOF
+				}
+				next := reads[0]
+				reads = reads[1:]
+				return copy(p, next.data), next.err
+			},
+			closeFunc: func() error { return err_close },
+		}}
+	}
+
+	// RFC 6455 8.1: a text message must be UTF-8. It is known only once the
+	// whole message is read.
+	for _, tc := range []struct {
+		name     string
+		reads    []read
+		want_err error
+	}{
+		{"UTF-8 passes io.EOF", []read{{[]byte("中"), nil}, {[]byte("a"), io.EOF}}, io.EOF},
+		{"nothing read passes io.EOF", nil, io.EOF},
+		{"a rune split across Reads passes", []read{{[]byte{0xE4}, nil}, {[]byte{0xB8, 0xAD}, io.EOF}}, io.EOF},
+		{"not UTF-8 returns ErrInvalidUTF8 at io.EOF", []read{{[]byte{0xFF}, nil}, {nil, io.EOF}}, ErrInvalidUTF8},
+		{"a rune cut at the end returns ErrInvalidUTF8", []read{{[]byte{0xE4, 0xB8}, io.EOF}}, ErrInvalidUTF8},
+		{"another error returns as it is", []read{{[]byte{0xFF}, err_read}}, err_read},
+	} {
+		t.Run(tc.name+", every byte read handed out", func(t *testing.T) {
+			var want_bytes []byte
+			for _, r := range tc.reads {
+				want_bytes = append(want_bytes, r.data...)
+			}
+			reader := new_reader(tc.reads)
+			var got_bytes []byte
+			var err error
+			// the fake returns io.EOF once its reads run out
+			for i := 0; i <= len(tc.reads) && err == nil; i++ {
+				p := make([]byte, 16)
+				var n int
+				n, err = reader.Read(p)
+				got_bytes = append(got_bytes, p[:n]...)
+			}
+			if err != tc.want_err || !bytes.Equal(got_bytes, want_bytes) {
+				t.Errorf("Reads gave % x, %v, want % x, %v", got_bytes, err, want_bytes, tc.want_err)
+			}
+		})
+	}
+
+	t.Run("a Read after ErrInvalidUTF8 returns it again", func(t *testing.T) {
+		reader := new_reader([]read{{[]byte{0xFF}, io.EOF}})
+		reader.Read(make([]byte, 16))
+		if _, err := reader.Read(make([]byte, 16)); err != ErrInvalidUTF8 {
+			t.Errorf("Read again error %v, want ErrInvalidUTF8", err)
+		}
+	})
+
+	t.Run("Close closes reader", func(t *testing.T) {
+		if err := new_reader(nil).Close(); err != err_close {
+			t.Errorf("Close = %v, want reader's %v", err, err_close)
 		}
 	})
 }

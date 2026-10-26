@@ -78,6 +78,16 @@ type fakeFuncLocker struct {
 func (locker fakeFuncLocker) Lock()   { locker.lock() }
 func (locker fakeFuncLocker) Unlock() { locker.unlock() }
 
+// fakeFuncReadCloser runs its funcs, so a test can record each call. It is an
+// io.ReadCloser. Set the ones the code under test calls.
+type fakeFuncReadCloser struct {
+	readFunc  func(p []byte) (int, error)
+	closeFunc func() error
+}
+
+func (r *fakeFuncReadCloser) Read(p []byte) (int, error) { return r.readFunc(p) }
+func (r *fakeFuncReadCloser) Close() error               { return r.closeFunc() }
+
 // fakeFuncDeflater runs its funcs, so a test can record each call. It is a
 // connContextDeflater, and so every deflater interface. Set the ones the code
 // under test calls.
