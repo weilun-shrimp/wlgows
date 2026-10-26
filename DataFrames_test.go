@@ -2,7 +2,9 @@ package wlgows
 
 import (
 	"bytes"
+	"io"
 	"testing"
+	"testing/iotest"
 	"unicode/utf8"
 )
 
@@ -291,6 +293,51 @@ func TestCheckDataFramesFormat(t *testing.T) {
 		}
 		if err := checkDataFramesFormat(frames); err != ErrReservedBitsSet {
 			t.Errorf("checkDataFramesFormat = %v, want ErrReservedBitsSet", err)
+		}
+	})
+}
+
+func TestNewDataFramesReader(t *testing.T) {
+	// iotest.TestReader checks order, small reads and io.EOF again after the
+	// end. Empty and nil payloads between frames are skipped.
+	t.Run("reads every payload in order", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{
+			{PayloadData: []byte("ab")},
+			{PayloadData: []byte{}},
+			{PayloadData: nil},
+			{PayloadData: []byte("cde")},
+		})
+		if err := iotest.TestReader(reader, []byte("abcde")); err != nil {
+			t.Error(err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		frames DataFrames
+	}{
+		{"no frames", nil},
+		{"only empty payloads", DataFrames{{PayloadData: nil}, {PayloadData: []byte{}}}},
+	} {
+		t.Run(tc.name+" is an empty message", func(t *testing.T) {
+			if got, err := io.ReadAll(newDataFramesReader(tc.frames)); len(got) != 0 || err != nil {
+				t.Errorf("ReadAll = %q, %v, want empty, nil", got, err)
+			}
+		})
+	}
+
+	t.Run("reads the payloads in place: a change before the Read shows", func(t *testing.T) {
+		payload := []byte("ab")
+		reader := newDataFramesReader(DataFrames{{PayloadData: payload}})
+		payload[0] = 'x'
+		if got, _ := io.ReadAll(reader); string(got) != "xb" {
+			t.Errorf("ReadAll = %q, want \"xb\"", got)
+		}
+	})
+
+	t.Run("Close returns nil", func(t *testing.T) {
+		if err := newDataFramesReader(nil).Close(); err != nil {
+			t.Errorf("Close = %v, want nil", err)
 		}
 	})
 }

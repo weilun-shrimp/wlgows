@@ -1,6 +1,8 @@
 package wlgows
 
 import (
+	"bytes"
+	"io"
 	"strings"
 )
 
@@ -117,4 +119,14 @@ func checkDataFramesFormat(data_frames DataFrames) error {
 		return ErrDataFramesNotEnded
 	}
 	return nil
+}
+
+// newDataFramesReader returns a reader of data_frames' payloads as they are,
+// one whole message not deflated. It reads them in place. Close does nothing.
+func newDataFramesReader(data_frames DataFrames) io.ReadCloser {
+	readers := make([]io.Reader, len(data_frames))
+	for i, f := range data_frames {
+		readers[i] = bytes.NewReader(f.PayloadData)
+	}
+	return io.NopCloser(io.MultiReader(readers...))
 }
