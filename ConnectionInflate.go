@@ -300,6 +300,84 @@ func contextInflateDataFrames(frames DataFrames, buf []byte, di contextInflateDa
 	return n, err
 }
 
+/*
+inflateDataFramesReader returns a reader of frames, one whole message ending
+with FIN, inflated from the messages before it (RFC 7692 7.1.1). It holds the
+inflater until Read returns an error, io.EOF included, or Close. Read returns
+io.EOF at the message's end, else compress/flate's errors.
+
+Close it when done, and not during a Read. Closed before io.EOF, the message
+is cut short in the history, so the next one may inflate to wrong bytes with
+no error: close the connection.
+*/
+func (c *contextInflater) inflateDataFramesReader(frames DataFrames) io.ReadCloser {
+	return contextInflateDataFramesReader(frames, contextInflateDataFramesReaderDI{
+		startInflateFrames: c.startInflateFrames,
+		putDeflatedFrame:   c.putDeflatedFrame,
+		pullInflatedBytes:  c.pullInflatedBytes,
+		endInflateFrames:   c.endInflateFrames,
+	})
+}
+
+// contextInflateDataFramesReaderDI is what contextInflateDataFramesReader
+// calls.
+type contextInflateDataFramesReaderDI struct {
+	startInflateFrames func() int64
+	putDeflatedFrame   func(token int64, f *Frame) error
+	pullInflatedBytes  func(token int64, buf []byte) (int, error)
+	endInflateFrames   func(token int64)
+}
+
+// contextInflateDataFramesReader is contextInflater.inflateDataFramesReader. A
+// put error ends the message, and the reader's first Read returns it.
+func contextInflateDataFramesReader(frames DataFrames, di contextInflateDataFramesReaderDI) io.ReadCloser {
+	reader := &contextInflateReader{
+		token:             di.startInflateFrames(),
+		pullInflatedBytes: di.pullInflatedBytes,
+		endInflateFrames:  di.endInflateFrames,
+	}
+	for _, f := range frames {
+		if err := di.putDeflatedFrame(reader.token, f); err != nil {
+			reader.err = err
+			di.endInflateFrames(reader.token)
+			break
+		}
+	}
+	return reader
+}
+
+// contextInflateReader pulls one message opened by startInflateFrames. It ends
+// the message at its first error, io.EOF included, or on Close.
+type contextInflateReader struct {
+	token             int64
+	pullInflatedBytes func(token int64, buf []byte) (int, error)
+	endInflateFrames  func(token int64)
+	// The first error, io.EOF included, returned again by every Read after.
+	// io.ErrClosedPipe once closed.
+	err error
+}
+
+// Read inflates into p.
+func (r *contextInflateReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	n, err := r.pullInflatedBytes(r.token, p[:len(p):len(p)]) // pull writes up to cap, Read only up to len
+	if err != nil {
+		r.err = err
+		r.endInflateFrames(r.token)
+	}
+	return n, err
+}
+
+// Close ends the message, if Read has not. Read after it returns
+// io.ErrClosedPipe.
+func (r *contextInflateReader) Close() error {
+	r.endInflateFrames(r.token) // a stale token does nothing
+	r.err = io.ErrClosedPipe
+	return nil
+}
+
 // startInflateFrames opens a message: an empty pipeSource, read by flateReader
 // from the last 32 KB of history. It returns the message's token, for every
 // call after. endInflateFrames must follow.
