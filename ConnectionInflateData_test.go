@@ -49,70 +49,46 @@ func TestDataFramesBytesFunc(t *testing.T) {
 				steps = append(steps, fmt.Sprintf("no context inflate %d frames, cap %d", len(frames), cap(buf)))
 				return copy(buf[:cap(buf)], "abc"), nil
 			}},
+			checkDataFramesFormat: func(data_frames DataFrames) error { return nil },
 		}
 	}
-	inflate_if_agreed_config := DataFramesBytesConfig{InflateIfAgreed: true}
 	deflated_message_frames := DataFrames{
 		{Opcode: OpcodeBinary, RSV1: true, PayloadData: []byte("x")},
 		{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("y")},
 	}
+	message_frames := DataFrames{
+		{Opcode: OpcodeBinary, PayloadData: []byte("x")},
+		{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("y")},
+	}
 
 	t.Run("no frames, nothing written", func(t *testing.T) {
-		n, err := dataFramesBytes(nil, make([]byte, 0, 8), inflate_if_agreed_config, base_di())
+		n, err := dataFramesBytes(nil, make([]byte, 0, 8), base_di())
 		if n != 0 || err != nil || steps != nil {
 			t.Errorf("dataFramesBytes = %d, %v, steps %q, want 0, nil, nothing run", n, err, steps)
 		}
 	})
 
-	// RFC 6455 5.4: one message is a text or binary frame, then continuations,
-	// the last with FIN set.
-	for _, tc := range []struct {
-		name   string
-		frames DataFrames
-		want   error
-	}{
-		{"a continuation first", DataFrames{
-			{Opcode: OpcodeContinuation, FIN: true},
-		}, ErrContinuationFrameWithoutMsg},
-		{"a text or binary frame after the first", DataFrames{
-			{Opcode: OpcodeBinary},
-			{Opcode: OpcodeText, FIN: true},
-		}, ErrDataFrameDuringMsg},
-		{"a frame after a FIN frame", DataFrames{
-			{Opcode: OpcodeBinary, FIN: true},
-			{Opcode: OpcodeContinuation, FIN: true},
-		}, ErrContinuationFrameWithoutMsg},
-		{"a last frame with FIN clear", DataFrames{
-			{Opcode: OpcodeBinary},
-			{Opcode: OpcodeContinuation},
-		}, ErrDataFramesNotEnded},
-	} {
-		t.Run(tc.name+" is not one message", func(t *testing.T) {
-			buf := make([]byte, 0, 8)
-			n, err := dataFramesBytes(tc.frames, buf, inflate_if_agreed_config, base_di())
-			if n != 0 || err != tc.want || steps != nil {
-				t.Errorf("dataFramesBytes = %d, %v, steps %q, want 0, %v, nothing run", n, err, steps, tc.want)
+	t.Run("checks the frames' format first; an error returns as it is, nothing run", func(t *testing.T) {
+		err_check := errors.New("check failed")
+		di := base_di()
+		di.deflateAgreedConfig = nil // RSV1 with nothing agreed would fail next: the check goes first
+		di.checkDataFramesFormat = func(data_frames DataFrames) error {
+			if len(data_frames) != 2 {
+				t.Errorf("check %d frames, want the 2 frames", len(data_frames))
 			}
-		})
-	}
-
-	// RFC 6455 5.2: RSV1 means nothing unless an extension was agreed.
-	// RFC 7692 6.1: only the first frame carries RSV1, agreed or not.
-	t.Run("RSV1 on a frame after the first returns ErrReservedBitsSet", func(t *testing.T) {
-		frames := DataFrames{
-			{Opcode: OpcodeBinary, PayloadData: []byte("x")},
-			{Opcode: OpcodeContinuation, FIN: true, RSV1: true, PayloadData: []byte("y")},
+			return err_check
 		}
-		n, err := dataFramesBytes(frames, make([]byte, 0, 8), inflate_if_agreed_config, base_di())
-		if n != 0 || err != ErrReservedBitsSet || steps != nil {
-			t.Errorf("dataFramesBytes = %d, %v, steps %q, want 0, ErrReservedBitsSet, nothing run", n, err, steps)
+		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), di)
+		if n != 0 || err != err_check || steps != nil {
+			t.Errorf("dataFramesBytes = %d, %v, steps %q, want 0, %v, nothing run", n, err, steps, err_check)
 		}
 	})
 
+	// RFC 6455 5.2: RSV1 means nothing unless an extension was agreed.
 	t.Run("RSV1 with nothing agreed returns ErrReservedBitsSet", func(t *testing.T) {
 		di := base_di()
 		di.deflateAgreedConfig = nil
-		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), DataFramesBytesConfig{}, di)
+		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), di)
 		if n != 0 || err != ErrReservedBitsSet || steps != nil {
 			t.Errorf("dataFramesBytes = %d, %v, steps %q, want 0, ErrReservedBitsSet, nothing run", n, err, steps)
 		}
@@ -120,25 +96,16 @@ func TestDataFramesBytesFunc(t *testing.T) {
 
 	for _, tc := range []struct {
 		name   string
-		frames DataFrames
-		config DataFramesBytesConfig
 		agreed *PermessageDeflateConfig
 	}{
-		{"without InflateIfAgreed", deflated_message_frames, DataFramesBytesConfig{}, &PermessageDeflateConfig{}},
-		{"with RSV1 clear", DataFrames{
-			{Opcode: OpcodeBinary, PayloadData: []byte("x")},
-			{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("y")},
-		}, inflate_if_agreed_config, &PermessageDeflateConfig{}},
-		{"with nothing agreed", DataFrames{
-			{Opcode: OpcodeBinary, PayloadData: []byte("x")},
-			{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("y")},
-		}, inflate_if_agreed_config, nil},
+		{"with RSV1 clear", &PermessageDeflateConfig{}},
+		{"with nothing agreed", nil},
 	} {
 		t.Run("copies the payloads as they are into buf from its start, "+tc.name, func(t *testing.T) {
 			di := base_di()
 			di.deflateAgreedConfig = tc.agreed
 			buf := make([]byte, 1, 8)
-			n, err := dataFramesBytes(tc.frames, buf, tc.config, di)
+			n, err := dataFramesBytes(message_frames, buf, di)
 			if n != 2 || err != nil || string(buf[:n]) != "xy" || steps != nil {
 				t.Errorf("dataFramesBytes = %d, %v, %q, steps %q, want 2, nil, \"xy\", no inflate", n, err, buf[:n], steps)
 			}
@@ -147,7 +114,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 
 	t.Run("copies payloads that fill buf exactly", func(t *testing.T) {
 		buf := make([]byte, 0, 2)
-		n, err := dataFramesBytes(deflated_message_frames, buf, DataFramesBytesConfig{}, base_di())
+		n, err := dataFramesBytes(message_frames, buf, base_di())
 		if n != 2 || err != nil || string(buf[:n]) != "xy" {
 			t.Errorf("dataFramesBytes = %d, %v, %q, want 2, nil, \"xy\"", n, err, buf[:n])
 		}
@@ -155,7 +122,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 
 	t.Run("payloads past cap(buf) return ErrDataFramesBytesSizeExceeded, nothing written", func(t *testing.T) {
 		buf := []byte{'-'}[:0]
-		n, err := dataFramesBytes(deflated_message_frames, buf, DataFramesBytesConfig{}, base_di())
+		n, err := dataFramesBytes(message_frames, buf, base_di())
 		if n != 0 || err != ErrDataFramesBytesSizeExceeded || buf[:1][0] != '-' {
 			t.Errorf("dataFramesBytes = %d, %v, buf %q, want 0, ErrDataFramesBytesSizeExceeded, buf untouched", n, err, buf[:1])
 		}
@@ -198,7 +165,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 			di := base_di()
 			di.peerIsClient, di.deflateAgreedConfig = tc.peer_is_client, &tc.agreed
 			buf := make([]byte, 0, 8)
-			n, err := dataFramesBytes(deflated_message_frames, buf, inflate_if_agreed_config, di)
+			n, err := dataFramesBytes(deflated_message_frames, buf, di)
 			if n != 3 || err != nil || string(buf[:n]) != "abc" {
 				t.Errorf("dataFramesBytes = %d, %v, %q, want 3, nil, \"abc\"", n, err, buf[:n])
 			}
@@ -213,7 +180,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 		di.contextInflater = fakeFuncInflater{inflateDataFramesFunc: func(frames DataFrames, buf []byte) (int, error) {
 			return 2, err_inflate
 		}}
-		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), inflate_if_agreed_config, di)
+		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), di)
 		if n != 2 || !errors.Is(err, ErrInflateDataInvalid) || !errors.Is(err, err_inflate) {
 			t.Errorf("dataFramesBytes = %d, %v, want 2, ErrInflateDataInvalid wrapping %v", n, err, err_inflate)
 		}
@@ -224,7 +191,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 		di.contextInflater = fakeFuncInflater{inflateDataFramesFunc: func(frames DataFrames, buf []byte) (int, error) {
 			return 8, ErrInflatedSizeExceeded
 		}}
-		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), inflate_if_agreed_config, di)
+		n, err := dataFramesBytes(deflated_message_frames, make([]byte, 0, 8), di)
 		if n != 8 || err != ErrInflatedSizeExceeded {
 			t.Errorf("dataFramesBytes = %d, %v, want 8, ErrInflatedSizeExceeded", n, err)
 		}
@@ -235,7 +202,6 @@ func TestDataFramesBytesFunc(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		frames   DataFrames
-		config   DataFramesBytesConfig
 		want_err error
 	}{
 		{
@@ -243,7 +209,6 @@ func TestDataFramesBytesFunc(t *testing.T) {
 			frames: DataFrames{
 				{Opcode: OpcodeText, FIN: true, PayloadData: []byte{0xff}},
 			},
-			config:   inflate_if_agreed_config,
 			want_err: ErrInvalidUTF8,
 		},
 		{
@@ -251,23 +216,13 @@ func TestDataFramesBytesFunc(t *testing.T) {
 			frames: DataFrames{
 				{Opcode: OpcodeText, FIN: true, RSV1: true, PayloadData: []byte("x")},
 			},
-			config:   inflate_if_agreed_config,
 			want_err: ErrInvalidUTF8,
-		},
-		{
-			name: "deflated text copied unchanged is not checked",
-			frames: DataFrames{
-				{Opcode: OpcodeText, FIN: true, RSV1: true, PayloadData: []byte{0xff}},
-			},
-			config:   DataFramesBytesConfig{},
-			want_err: nil,
 		},
 		{
 			name: "binary is not checked",
 			frames: DataFrames{
 				{Opcode: OpcodeBinary, FIN: true, RSV1: true, PayloadData: []byte("x")},
 			},
-			config:   inflate_if_agreed_config,
 			want_err: nil,
 		},
 	} {
@@ -277,7 +232,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 				return copy(buf[:cap(buf)], []byte{0xff}), nil
 			}}
 			buf := make([]byte, 0, 8)
-			n, err := dataFramesBytes(tc.frames, buf, tc.config, di)
+			n, err := dataFramesBytes(tc.frames, buf, di)
 			if n != 1 || err != tc.want_err || buf[:n][0] != 0xff {
 				t.Errorf("dataFramesBytes = %d, %v, % x, want 1, %v, ff", n, err, buf[:n], tc.want_err)
 			}
@@ -288,7 +243,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 	// UTF-8.
 	t.Run("copied UTF-8 text passes", func(t *testing.T) {
 		buf := []byte{0, 0, 0, 0xff, 0xff}[:0]
-		n, err := dataFramesBytes(DataFrames{{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hé")}}, buf, inflate_if_agreed_config, base_di())
+		n, err := dataFramesBytes(DataFrames{{Opcode: OpcodeText, FIN: true, PayloadData: []byte("hé")}}, buf, base_di())
 		if n != 3 || err != nil || string(buf[:n]) != "hé" {
 			t.Errorf("dataFramesBytes = %d, %v, %q, want 3, nil, \"hé\"", n, err, buf[:n])
 		}
@@ -296,7 +251,7 @@ func TestDataFramesBytesFunc(t *testing.T) {
 
 	t.Run("inflated UTF-8 text passes", func(t *testing.T) {
 		buf := []byte{0, 0, 0, 0xff, 0xff}[:0]
-		n, err := dataFramesBytes(DataFrames{{Opcode: OpcodeText, FIN: true, RSV1: true, PayloadData: []byte("x")}}, buf, inflate_if_agreed_config, base_di())
+		n, err := dataFramesBytes(DataFrames{{Opcode: OpcodeText, FIN: true, RSV1: true, PayloadData: []byte("x")}}, buf, base_di())
 		if n != 3 || err != nil || string(buf[:n]) != "abc" {
 			t.Errorf("dataFramesBytes = %d, %v, %q, want 3, nil, \"abc\"", n, err, buf[:n])
 		}

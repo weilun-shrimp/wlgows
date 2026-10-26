@@ -88,3 +88,33 @@ func (f DataFrames) ByteLen() int {
 	}
 	return total
 }
+
+/*
+checkDataFramesFormat returns nil when data_frames are one message: a text or
+binary frame, then continuations, the last with FIN set (RFC 6455 5.4). RSV1
+goes only on the first frame (RFC 7692 6.1). No frames return
+ErrDataFramesNotEnded.
+*/
+func checkDataFramesFormat(data_frames DataFrames) error {
+	if len(data_frames) == 0 { // no FIN frame
+		return ErrDataFramesNotEnded
+	}
+	if data_frames[0].Opcode == OpcodeContinuation { // RFC 6455 5.4: the first frame carries the message's opcode
+		return ErrContinuationFrameWithoutMsg
+	}
+	for i, f := range data_frames[1:] { // RFC 6455 5.4: every frame after the first continues it
+		if f.Opcode != OpcodeContinuation {
+			return ErrDataFrameDuringMsg
+		}
+		if f.RSV1 { // RFC 7692 6.1: RSV1 goes on the first frame only
+			return ErrReservedBitsSet
+		}
+		if data_frames[i].FIN { // the message ended before f
+			return ErrContinuationFrameWithoutMsg
+		}
+	}
+	if !data_frames[len(data_frames)-1].FIN { // RFC 6455 5.4: the last frame has FIN set
+		return ErrDataFramesNotEnded
+	}
+	return nil
+}

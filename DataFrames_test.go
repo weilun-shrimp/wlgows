@@ -233,3 +233,64 @@ func BenchmarkDataFramesAssembly(b *testing.B) {
 		}
 	})
 }
+
+func TestCheckDataFramesFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		frames DataFrames
+	}{
+		{"one frame", DataFrames{{Opcode: OpcodeText, FIN: true}}},
+		{"a deflated message", DataFrames{
+			{Opcode: OpcodeBinary, RSV1: true},
+			{Opcode: OpcodeContinuation, FIN: true},
+		}},
+	} {
+		t.Run(tc.name+" is one message", func(t *testing.T) {
+			if err := checkDataFramesFormat(tc.frames); err != nil {
+				t.Errorf("checkDataFramesFormat = %v, want nil", err)
+			}
+		})
+	}
+
+	// RFC 6455 5.4: one message is a text or binary frame, then continuations,
+	// the last with FIN set.
+	for _, tc := range []struct {
+		name   string
+		frames DataFrames
+		want   error
+	}{
+		{"no frames", DataFrames{}, ErrDataFramesNotEnded},
+		{"a continuation first", DataFrames{
+			{Opcode: OpcodeContinuation, FIN: true},
+		}, ErrContinuationFrameWithoutMsg},
+		{"a text or binary frame after the first", DataFrames{
+			{Opcode: OpcodeBinary},
+			{Opcode: OpcodeText, FIN: true},
+		}, ErrDataFrameDuringMsg},
+		{"a frame after a FIN frame", DataFrames{
+			{Opcode: OpcodeBinary, FIN: true},
+			{Opcode: OpcodeContinuation, FIN: true},
+		}, ErrContinuationFrameWithoutMsg},
+		{"a last frame with FIN clear", DataFrames{
+			{Opcode: OpcodeBinary},
+			{Opcode: OpcodeContinuation},
+		}, ErrDataFramesNotEnded},
+	} {
+		t.Run(tc.name+" is not one message", func(t *testing.T) {
+			if err := checkDataFramesFormat(tc.frames); err != tc.want {
+				t.Errorf("checkDataFramesFormat = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	// RFC 7692 6.1: only the first frame carries RSV1.
+	t.Run("RSV1 on a frame after the first returns ErrReservedBitsSet", func(t *testing.T) {
+		frames := DataFrames{
+			{Opcode: OpcodeBinary, PayloadData: []byte("x")},
+			{Opcode: OpcodeContinuation, FIN: true, RSV1: true, PayloadData: []byte("y")},
+		}
+		if err := checkDataFramesFormat(frames); err != ErrReservedBitsSet {
+			t.Errorf("checkDataFramesFormat = %v, want ErrReservedBitsSet", err)
+		}
+	})
+}

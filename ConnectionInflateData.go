@@ -6,83 +6,61 @@ import (
 	"unicode/utf8"
 )
 
-// DataFramesBytesConfig is how DataFramesBytes reads one message.
-type DataFramesBytesConfig struct {
-	// InflateIfAgreed inflates the message when permessage-deflate was agreed
-	// and its first frame has RSV1 set (RFC 7692 6: the sender chooses for each
-	// message). Otherwise the payloads are copied as they are.
-	InflateIfAgreed bool
-}
-
 /*
 DataFramesBytes writes the payload of data_frames, one whole message ending
 with FIN, into buf[:cap(buf)] from its start, and returns how many bytes it
 wrote. cap(buf) is the size allowed: a message past it returns
 ErrInflatedSizeExceeded when inflated, ErrDataFramesBytesSizeExceeded when not.
 
-With config.InflateIfAgreed, a deflated message is inflated: from an empty
-window for a peer that agreed to no context takeover, else from the messages
-inflated before it (RFC 7692 7.1.1). Those must all have gone through the Conn
-in order. One that does not inflate returns ErrInflateDataInvalid. After
-ErrInflatedSizeExceeded from a peer that keeps its context, close the
-connection (1009): the message was cut short, so the next one may inflate to
-wrong bytes with no error.
+A message whose first frame has RSV1 set is deflated (RFC 7692 6) and is
+inflated: from an empty window for a peer that agreed to no context takeover,
+else from the messages inflated before it (RFC 7692 7.1.1). Those must all
+have gone through the Conn in order. One that does not inflate returns
+ErrInflateDataInvalid. After ErrInflatedSizeExceeded from a peer that keeps
+its context, close the connection (1009): the message was cut short, so the
+next one may inflate to wrong bytes with no error.
 
 A text message that is not UTF-8 once written returns ErrInvalidUTF8 (RFC 6455
-8.1); a deflated one copied as it is is not checked. Frames that are not one
-message (RFC 6455 5.4) return ErrContinuationFrameWithoutMsg for a
-continuation first or after a FIN frame, ErrDataFrameDuringMsg for text or
-binary after the first, and ErrDataFramesNotEnded for a last frame with FIN
-clear. RSV1 on a frame after the first (RFC 7692 6.1), or on the first with
-permessage-deflate not agreed (RFC 6455 5.2), returns ErrReservedBitsSet.
+8.1). Frames that are not one message (RFC 6455 5.4) return
+ErrContinuationFrameWithoutMsg for a continuation first or after a FIN frame,
+ErrDataFrameDuringMsg for text or binary after the first, and
+ErrDataFramesNotEnded for a last frame with FIN clear. RSV1 on a frame after
+the first (RFC 7692 6.1), or on the first with permessage-deflate not agreed
+(RFC 6455 5.2), returns ErrReservedBitsSet.
 */
-func (c *Conn) DataFramesBytes(data_frames DataFrames, buf []byte, config DataFramesBytesConfig) (int, error) {
-	return dataFramesBytes(data_frames, buf, config, dataFramesBytesDI{
-		peerIsClient:        c.peerIsClient,
-		deflateAgreedConfig: c.permessageDeflateAgreedConfig,
-		contextInflater:     c.contextInflater,
-		noContextInflater:   c.noContextInflater,
+func (c *Conn) DataFramesBytes(data_frames DataFrames, buf []byte) (int, error) {
+	return dataFramesBytes(data_frames, buf, dataFramesBytesDI{
+		peerIsClient:          c.peerIsClient,
+		deflateAgreedConfig:   c.permessageDeflateAgreedConfig,
+		contextInflater:       c.contextInflater,
+		noContextInflater:     c.noContextInflater,
+		checkDataFramesFormat: checkDataFramesFormat,
 	})
 }
 
 type dataFramesBytesDI struct {
-	peerIsClient        bool
-	deflateAgreedConfig *PermessageDeflateConfig
-	contextInflater     connContextInflater
-	noContextInflater   connNoContextInflater
+	peerIsClient          bool
+	deflateAgreedConfig   *PermessageDeflateConfig
+	contextInflater       connContextInflater
+	noContextInflater     connNoContextInflater
+	checkDataFramesFormat func(data_frames DataFrames) error
 }
 
-func dataFramesBytes(data_frames DataFrames, buf []byte, config DataFramesBytesConfig, di dataFramesBytesDI) (int, error) {
+func dataFramesBytes(data_frames DataFrames, buf []byte, di dataFramesBytesDI) (int, error) {
 	if len(data_frames) == 0 {
 		return 0, nil
 	}
-	if data_frames[0].Opcode == OpcodeContinuation { // RFC 6455 5.4: the first frame carries the message's opcode
-		return 0, ErrContinuationFrameWithoutMsg
-	}
-	for i, f := range data_frames[1:] { // RFC 6455 5.4: every frame after the first continues it
-		if f.Opcode != OpcodeContinuation {
-			return 0, ErrDataFrameDuringMsg
-		}
-		if f.RSV1 { // RFC 7692 6.1: RSV1 goes on the first frame only
-			return 0, ErrReservedBitsSet
-		}
-		if data_frames[i].FIN { // the message ended before f
-			return 0, ErrContinuationFrameWithoutMsg
-		}
-	}
-	if !data_frames[len(data_frames)-1].FIN { // RFC 6455 5.4: the last frame has FIN set
-		return 0, ErrDataFramesNotEnded
+	if err := di.checkDataFramesFormat(data_frames); err != nil {
+		return 0, err
 	}
 	if data_frames[0].RSV1 && di.deflateAgreedConfig == nil { // RFC 6455 5.2: no extension gives RSV1 a meaning
 		return 0, ErrReservedBitsSet
 	}
 
-	deflated := config.InflateIfAgreed && di.deflateAgreedConfig != nil &&
-		data_frames[0].RSV1 // RFC 7692 6: the first frame marks it
 	var n int
 	var err error
 	switch {
-	case !deflated:
+	case !data_frames[0].RSV1: // RFC 7692 6: the first frame marks a deflated message
 		if data_frames.ByteLen() > cap(buf) {
 			return 0, ErrDataFramesBytesSizeExceeded
 		}
@@ -98,9 +76,7 @@ func dataFramesBytes(data_frames DataFrames, buf []byte, config DataFramesBytesC
 		return n, inflateError(err)
 	}
 
-	// RFC 6455 8.1. A deflated message copied as it is holds no text to check.
-	is_text := data_frames[0].Opcode == OpcodeText && (deflated || !data_frames[0].RSV1)
-	if is_text && !utf8.Valid(buf[:n]) {
+	if data_frames[0].Opcode == OpcodeText && !utf8.Valid(buf[:n]) { // RFC 6455 8.1
 		return n, ErrInvalidUTF8
 	}
 	return n, nil
