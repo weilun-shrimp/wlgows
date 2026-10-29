@@ -306,6 +306,7 @@ func TestNewDataFramesReader(t *testing.T) {
 			{PayloadData: []byte{}},
 			{PayloadData: nil},
 			{PayloadData: []byte("cde")},
+			{PayloadData: nil},
 		})
 		if err := iotest.TestReader(reader, []byte("abcde")); err != nil {
 			t.Error(err)
@@ -335,9 +336,43 @@ func TestNewDataFramesReader(t *testing.T) {
 		}
 	})
 
-	t.Run("Close returns nil", func(t *testing.T) {
-		if err := newDataFramesReader(nil).Close(); err != nil {
+	t.Run("one Read fills p across frames", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{{PayloadData: []byte("ab")}, {PayloadData: []byte("cd")}})
+		p := make([]byte, 3)
+		if n, err := reader.Read(p); n != 3 || err != nil || string(p) != "abc" {
+			t.Errorf("Read = %d, %v, %q, want 3, nil, \"abc\"", n, err, p[:n])
+		}
+	})
+
+	t.Run("an empty p reads nothing, no error, before the end", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{{PayloadData: []byte("ab")}})
+		if n, err := reader.Read(nil); n != 0 || err != nil {
+			t.Errorf("Read(nil) = %d, %v, want 0, nil", n, err)
+		}
+	})
+
+	t.Run("allocates once", func(t *testing.T) {
+		frames := DataFrames{{PayloadData: []byte("ab")}, {PayloadData: []byte("cd")}, {PayloadData: []byte("e")}}
+		var reader io.ReadCloser // kept outside the func, so the reader goes to the heap as in real use
+		if allocs := testing.AllocsPerRun(100, func() { reader = newDataFramesReader(frames) }); allocs != 1 {
+			t.Errorf("newDataFramesReader allocates %v times, want 1", allocs)
+		}
+		_ = reader
+	})
+
+	t.Run("Close lets go of the frames; a Read after returns io.ErrClosedPipe", func(t *testing.T) {
+		reader := newDataFramesReader(DataFrames{{PayloadData: []byte("ab")}})
+		if err := reader.Close(); err != nil {
 			t.Errorf("Close = %v, want nil", err)
+		}
+		if frames := reader.(*dataFramesPayloadReader).dataFrames; frames != nil {
+			t.Errorf("frames after Close %v, want nil", frames)
+		}
+		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != io.ErrClosedPipe {
+			t.Errorf("Read after Close = %d, %v, want 0, io.ErrClosedPipe", n, err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Errorf("second Close = %v, want nil", err)
 		}
 	})
 }

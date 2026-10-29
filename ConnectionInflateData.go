@@ -83,6 +83,81 @@ func dataFramesBytes(data_frames DataFrames, buf []byte, di dataFramesBytesDI) (
 }
 
 /*
+DataFramesReader returns a reader of the payload of data_frames, one whole
+message ending with FIN. Read it until io.EOF: only then is the message whole.
+Close it when done, even after Read returns an error, and not during a Read.
+Do not Read after Close. The frames' payloads are read in place, so leave
+them unchanged until Close.
+
+A message whose first frame has RSV1 set is deflated (RFC 7692 6) and is read
+inflated: from an empty window for a peer that agreed to no context takeover,
+else from the messages inflated before it (RFC 7692 7.1.1). Those must all
+have gone through the Conn in order. One that does not inflate returns
+ErrInflateDataInvalid from Read. For a peer that keeps its context:
+  - DataFramesReader for the next deflated message waits until Read returns
+    an error, io.EOF included, or Close. From the same goroutine, it never
+    returns.
+  - Closed before io.EOF, close the connection: the next message may inflate
+    to wrong bytes with no error.
+
+To limit the size, read through io.LimitReader(reader, max+1). More than max
+bytes read: the message is too big, close the connection with 1009 (RFC 6455
+7.4.1).
+
+A text message that is not UTF-8 returns ErrInvalidUTF8 in place of io.EOF
+(RFC 6455 8.1). Frames that are not one message (RFC 6455 5.4) make
+DataFramesReader return ErrContinuationFrameWithoutMsg for a continuation
+first or after a FIN frame, ErrDataFrameDuringMsg for text or binary after the
+first, and ErrDataFramesNotEnded for no frames or a last frame with FIN clear.
+RSV1 on a frame after the first (RFC 7692 6.1), or on the first with
+permessage-deflate not agreed (RFC 6455 5.2), makes it return
+ErrReservedBitsSet.
+*/
+func (c *Conn) DataFramesReader(data_frames DataFrames) (io.ReadCloser, error) {
+	return dataFramesReader(data_frames, dataFramesReaderDI{
+		peerIsClient:          c.peerIsClient,
+		deflateAgreedConfig:   c.permessageDeflateAgreedConfig,
+		contextInflater:       c.contextInflater,
+		noContextInflater:     c.noContextInflater,
+		checkDataFramesFormat: checkDataFramesFormat,
+		newDataFramesReader:   newDataFramesReader,
+	})
+}
+
+type dataFramesReaderDI struct {
+	peerIsClient          bool
+	deflateAgreedConfig   *PermessageDeflateConfig
+	contextInflater       connContextInflater
+	noContextInflater     connNoContextInflater
+	checkDataFramesFormat func(data_frames DataFrames) error
+	newDataFramesReader   func(data_frames DataFrames) io.ReadCloser
+}
+
+func dataFramesReader(data_frames DataFrames, di dataFramesReaderDI) (io.ReadCloser, error) {
+	if err := di.checkDataFramesFormat(data_frames); err != nil {
+		return nil, err
+	}
+	if data_frames[0].RSV1 && di.deflateAgreedConfig == nil { // RFC 6455 5.2: no extension gives RSV1 a meaning
+		return nil, ErrReservedBitsSet
+	}
+
+	var reader io.ReadCloser
+	switch {
+	case !data_frames[0].RSV1: // RFC 7692 6: the first frame marks a deflated message
+		reader = di.newDataFramesReader(data_frames)
+	case peerNoContextTakeover(di.peerIsClient, di.deflateAgreedConfig):
+		reader = di.noContextInflater.inflateDataFramesReader(data_frames)
+	default:
+		reader = di.contextInflater.inflateDataFramesReader(data_frames)
+	}
+
+	if data_frames[0].Opcode == OpcodeText { // RFC 6455 8.1
+		reader = &utf8CheckReader{reader: reader}
+	}
+	return reader, nil
+}
+
+/*
 StartInflateDataFrames opens a deflated message inflated frame by frame, as in
 a Data hook. It returns the message's token: pass it to PutDeflatedDataFrame,
 PullInflatedBytes and EndInflateDataFrames.

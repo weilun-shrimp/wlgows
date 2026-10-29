@@ -29,6 +29,7 @@ type inflaterPipeSource interface {
 // connNoContextInflater inflates a whole message from an empty window.
 type connNoContextInflater interface {
 	inflateDataFrames(frames DataFrames, buf []byte) (int, error)
+	inflateDataFramesReader(frames DataFrames) io.ReadCloser
 }
 
 // connContextInflater inflates a message frame by frame, each from the
@@ -114,7 +115,7 @@ func noContextInflateDataFrames(frames DataFrames, buf []byte, di noContextInfla
 
 // inflateDataFramesReader returns a reader of frames, one whole message,
 // inflated. Read returns io.EOF at the message's end, else compress/flate's
-// errors. Close it when done.
+// errors in ErrInflateDataInvalid. Close it when done.
 func (c *noContextInflater) inflateDataFramesReader(frames DataFrames) io.ReadCloser {
 	return noContextInflateDataFramesReader(frames, noContextInflateDataFramesReaderDI{
 		newPipeSource:         newPipeSource,
@@ -163,7 +164,11 @@ func (r *noContextInflateReader) Read(p []byte) (int, error) {
 	if r.flateReader == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return r.flateReader.Read(p)
+	n, err := r.flateReader.Read(p)
+	if err == io.EOF { // the message ended
+		return n, err
+	}
+	return n, inflateError(err)
 }
 
 // Close drops source and gives the flate reader back. A second Close does
@@ -304,7 +309,8 @@ func contextInflateDataFrames(frames DataFrames, buf []byte, di contextInflateDa
 inflateDataFramesReader returns a reader of frames, one whole message ending
 with FIN, inflated from the messages before it (RFC 7692 7.1.1). It holds the
 inflater until Read returns an error, io.EOF included, or Close. Read returns
-io.EOF at the message's end, else compress/flate's errors.
+io.EOF at the message's end, else compress/flate's errors in
+ErrInflateDataInvalid.
 
 Close it when done, and not during a Read. Closed before io.EOF, the message
 is cut short in the history, so the next one may inflate to wrong bytes with
@@ -338,7 +344,7 @@ func contextInflateDataFramesReader(frames DataFrames, di contextInflateDataFram
 	}
 	for _, f := range frames {
 		if err := di.putDeflatedFrame(reader.token, f); err != nil {
-			reader.err = err
+			reader.err = inflateError(err)
 			di.endInflateFrames(reader.token)
 			break
 		}
@@ -363,11 +369,15 @@ func (r *contextInflateReader) Read(p []byte) (int, error) {
 		return 0, r.err
 	}
 	n, err := r.pullInflatedBytes(r.token, p[:len(p):len(p)]) // pull writes up to cap, Read only up to len
-	if err != nil {
-		r.err = err
-		r.endInflateFrames(r.token)
+	if err == nil {
+		return n, nil
 	}
-	return n, err
+	r.err = err
+	if err != io.EOF { // io.EOF: the message ended
+		r.err = inflateError(err)
+	}
+	r.endInflateFrames(r.token)
+	return n, r.err
 }
 
 // Close ends the message, if Read has not. Read after it returns

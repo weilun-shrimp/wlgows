@@ -245,12 +245,12 @@ func TestNoContextInflateReader(t *testing.T) {
 	var steps []string
 	source := &fakeFuncPipeSource{}
 	flate_reader := &fakeFuncFlateReader{}
-	new_reader := func() *noContextInflateReader {
+	new_reader := func(read_err error) *noContextInflateReader {
 		steps = nil
 		*source = fakeFuncPipeSource{dropFunc: func() { steps = append(steps, "drop") }}
 		*flate_reader = fakeFuncFlateReader{readFunc: func(p []byte) (int, error) {
 			steps = append(steps, fmt.Sprintf("flate read %d", len(p)))
-			return copy(p, "ab"), err_flate
+			return copy(p, "ab"), read_err
 		}}
 		return &noContextInflateReader{
 			source:      source,
@@ -264,12 +264,20 @@ func TestNoContextInflateReader(t *testing.T) {
 		}
 	}
 
-	t.Run("Read returns what the flate reader read, its error as it is", func(t *testing.T) {
-		reader := new_reader()
+	t.Run("Read returns what the flate reader read, io.EOF as it is", func(t *testing.T) {
+		p := make([]byte, 4)
+		n, err := new_reader(io.EOF).Read(p)
+		if n != 2 || err != io.EOF || string(p[:n]) != "ab" {
+			t.Errorf("Read = %d, %v, %q, want 2, io.EOF, \"ab\"", n, err, p[:n])
+		}
+	})
+
+	t.Run("Read returns what the flate reader read, its error in ErrInflateDataInvalid", func(t *testing.T) {
+		reader := new_reader(err_flate)
 		p := make([]byte, 4)
 		n, err := reader.Read(p)
-		if n != 2 || err != err_flate || string(p[:n]) != "ab" {
-			t.Errorf("Read = %d, %v, %q, want 2, %v, \"ab\"", n, err, p[:n], err_flate)
+		if n != 2 || !errors.Is(err, ErrInflateDataInvalid) || !errors.Is(err, err_flate) || string(p[:n]) != "ab" {
+			t.Errorf("Read = %d, %v, %q, want 2, ErrInflateDataInvalid wrapping %v, \"ab\"", n, err, p[:n], err_flate)
 		}
 		if want := []string{"flate read 4"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
@@ -279,7 +287,7 @@ func TestNoContextInflateReader(t *testing.T) {
 	// The source is dropped before the flate reader, which still points at it,
 	// goes back to the pool.
 	t.Run("Close drops the source, then pools the flate reader, once only", func(t *testing.T) {
-		reader := new_reader()
+		reader := new_reader(nil)
 		if err := reader.Close(); err != nil {
 			t.Errorf("Close = %v, want nil", err)
 		}
@@ -293,7 +301,7 @@ func TestNoContextInflateReader(t *testing.T) {
 
 	// The pooled flate reader may already read another message.
 	t.Run("Read after Close returns io.ErrClosedPipe, the flate reader untouched", func(t *testing.T) {
-		reader := new_reader()
+		reader := new_reader(nil)
 		reader.Close()
 		steps = nil
 		n, err := reader.Read(make([]byte, 4))
@@ -569,14 +577,14 @@ func TestContextInflateDataFramesReader(t *testing.T) {
 				return 7
 			},
 			putDeflatedFrame: func(token int64, f *Frame) error {
-				steps = append(steps, fmt.Sprintf("put %s token %d", f.PayloadData, token))
+				steps = append(steps, fmt.Sprintf("put %q token %d", f.PayloadData, token))
 				return nil
 			},
 			pullInflatedBytes: func(token int64, buf []byte) (int, error) {
 				steps = append(steps, fmt.Sprintf("pull token %d", token))
 				return 0, io.EOF
 			},
-			endInflateFrames: func(token int64) { steps = append(steps, fmt.Sprintf("end %d", token)) },
+			endInflateFrames: func(token int64) { steps = append(steps, fmt.Sprintf("end token %d", token)) },
 		}
 	}
 	frames := DataFrames{{PayloadData: []byte("a")}, {PayloadData: []byte("b"), FIN: true}}
@@ -584,7 +592,7 @@ func TestContextInflateDataFramesReader(t *testing.T) {
 	t.Run("starts and puts every frame with start's token; the reader pulls and ends with it", func(t *testing.T) {
 		reader := contextInflateDataFramesReader(frames, base_di())
 		reader.Read(make([]byte, 4))
-		want := []string{"start", "put a token 7", "put b token 7", "pull token 7", "end 7"}
+		want := []string{"start", `put "a" token 7`, `put "b" token 7`, "pull token 7", "end token 7"}
 		if !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
@@ -593,14 +601,14 @@ func TestContextInflateDataFramesReader(t *testing.T) {
 	t.Run("a put error stops there and ends; the first Read returns it, nothing pulled", func(t *testing.T) {
 		di := base_di()
 		di.putDeflatedFrame = func(token int64, f *Frame) error {
-			steps = append(steps, fmt.Sprintf("put %s token %d", f.PayloadData, token))
+			steps = append(steps, fmt.Sprintf("put %q token %d", f.PayloadData, token))
 			return err_put
 		}
 		reader := contextInflateDataFramesReader(frames, di)
-		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != err_put {
-			t.Errorf("Read = %d, %v, want 0, %v", n, err, err_put)
+		if n, err := reader.Read(make([]byte, 4)); n != 0 || !errors.Is(err, ErrInflateDataInvalid) || !errors.Is(err, err_put) {
+			t.Errorf("Read = %d, %v, want 0, ErrInflateDataInvalid wrapping %v", n, err, err_put)
 		}
-		if want := []string{"start", "put a token 7", "end 7"}; !slices.Equal(steps, want) {
+		if want := []string{"start", `put "a" token 7`, "end token 7"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
@@ -608,7 +616,7 @@ func TestContextInflateDataFramesReader(t *testing.T) {
 	t.Run("after a put error, Close ends again, nothing pulled", func(t *testing.T) {
 		di := base_di()
 		di.putDeflatedFrame = func(token int64, f *Frame) error {
-			steps = append(steps, fmt.Sprintf("put %s token %d", f.PayloadData, token))
+			steps = append(steps, fmt.Sprintf("put %q token %d", f.PayloadData, token))
 			return err_put
 		}
 		reader := contextInflateDataFramesReader(frames, di)
@@ -616,7 +624,7 @@ func TestContextInflateDataFramesReader(t *testing.T) {
 		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != io.ErrClosedPipe {
 			t.Errorf("Read after Close = %d, %v, want 0, io.ErrClosedPipe", n, err)
 		}
-		if want := []string{"start", "put a token 7", "end 7", "end 7"}; !slices.Equal(steps, want) {
+		if want := []string{"start", `put "a" token 7`, "end token 7", "end token 7"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
@@ -630,10 +638,10 @@ func TestContextInflateReader(t *testing.T) {
 		return &contextInflateReader{
 			token: 7,
 			pullInflatedBytes: func(token int64, buf []byte) (int, error) {
-				steps = append(steps, fmt.Sprintf("pull %d len %d cap %d", token, len(buf), cap(buf)))
+				steps = append(steps, fmt.Sprintf("pull token %d, buf len %d cap %d", token, len(buf), cap(buf)))
 				return copy(buf, "ab"), pull_err
 			},
-			endInflateFrames: func(token int64) { steps = append(steps, fmt.Sprintf("end %d", token)) },
+			endInflateFrames: func(token int64) { steps = append(steps, fmt.Sprintf("end token %d", token)) },
 		}
 	}
 
@@ -644,31 +652,37 @@ func TestContextInflateReader(t *testing.T) {
 		if n != 2 || err != nil || string(p[:n]) != "ab" {
 			t.Errorf("Read = %d, %v, %q, want 2, nil, \"ab\"", n, err, p[:n])
 		}
-		if want := []string{"pull 7 len 4 cap 4"}; !slices.Equal(steps, want) {
+		if want := []string{"pull token 7, buf len 4 cap 4"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
 
-	for _, tc := range []struct {
-		name string
-		err  error
-	}{
-		{"io.EOF", io.EOF},
-		{"a flate error", err_flate},
-	} {
-		t.Run(tc.name+" ends the message; a Read after returns it again, nothing pulled", func(t *testing.T) {
-			reader := new_reader(tc.err)
-			if n, err := reader.Read(make([]byte, 4)); n != 2 || err != tc.err {
-				t.Errorf("Read = %d, %v, want 2, %v", n, err, tc.err)
-			}
-			if n, err := reader.Read(make([]byte, 4)); n != 0 || err != tc.err {
-				t.Errorf("Read after = %d, %v, want 0, %v", n, err, tc.err)
-			}
-			if want := []string{"pull 7 len 4 cap 4", "end 7"}; !slices.Equal(steps, want) {
-				t.Errorf("steps %q, want %q", steps, want)
-			}
-		})
-	}
+	t.Run("io.EOF ends the message; a Read after returns io.EOF again, nothing pulled", func(t *testing.T) {
+		reader := new_reader(io.EOF)
+		if n, err := reader.Read(make([]byte, 4)); n != 2 || err != io.EOF {
+			t.Errorf("Read = %d, %v, want 2, io.EOF", n, err)
+		}
+		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != io.EOF {
+			t.Errorf("Read after = %d, %v, want 0, io.EOF", n, err)
+		}
+		if want := []string{"pull token 7, buf len 4 cap 4", "end token 7"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	t.Run("a flate error ends the message in ErrInflateDataInvalid; a Read after returns it again, nothing pulled", func(t *testing.T) {
+		reader := new_reader(err_flate)
+		n, err := reader.Read(make([]byte, 4))
+		if n != 2 || !errors.Is(err, ErrInflateDataInvalid) || !errors.Is(err, err_flate) {
+			t.Errorf("Read = %d, %v, want 2, ErrInflateDataInvalid wrapping %v", n, err, err_flate)
+		}
+		if n, again := reader.Read(make([]byte, 4)); n != 0 || again != err {
+			t.Errorf("Read after = %d, %v, want 0, %v", n, again, err)
+		}
+		if want := []string{"pull token 7, buf len 4 cap 4", "end token 7"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
 
 	t.Run("Close ends the message; a Read after returns io.ErrClosedPipe, nothing pulled", func(t *testing.T) {
 		reader := new_reader(nil)
@@ -678,7 +692,7 @@ func TestContextInflateReader(t *testing.T) {
 		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != io.ErrClosedPipe {
 			t.Errorf("Read after Close = %d, %v, want 0, io.ErrClosedPipe", n, err)
 		}
-		if want := []string{"end 7"}; !slices.Equal(steps, want) {
+		if want := []string{"end token 7"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
@@ -691,7 +705,7 @@ func TestContextInflateReader(t *testing.T) {
 		if n, err := reader.Read(make([]byte, 4)); n != 0 || err != io.ErrClosedPipe {
 			t.Errorf("Read after Close = %d, %v, want 0, io.ErrClosedPipe", n, err)
 		}
-		if want := []string{"pull 7 len 4 cap 4", "end 7", "end 7"}; !slices.Equal(steps, want) {
+		if want := []string{"pull token 7, buf len 4 cap 4", "end token 7", "end token 7"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})
@@ -702,7 +716,7 @@ func TestContextInflateReader(t *testing.T) {
 		if err := reader.Close(); err != nil {
 			t.Errorf("second Close = %v, want nil", err)
 		}
-		if want := []string{"end 7", "end 7"}; !slices.Equal(steps, want) {
+		if want := []string{"end token 7", "end token 7"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}
 	})

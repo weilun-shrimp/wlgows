@@ -1,7 +1,6 @@
 package wlgows
 
 import (
-	"bytes"
 	"io"
 	"strings"
 )
@@ -122,11 +121,46 @@ func checkDataFramesFormat(data_frames DataFrames) error {
 }
 
 // newDataFramesReader returns a reader of data_frames' payloads as they are,
-// one whole message not deflated. It reads them in place. Close does nothing.
+// one whole message not deflated. It reads them in place.
 func newDataFramesReader(data_frames DataFrames) io.ReadCloser {
-	readers := make([]io.Reader, len(data_frames))
-	for i, f := range data_frames {
-		readers[i] = bytes.NewReader(f.PayloadData)
+	return &dataFramesPayloadReader{dataFrames: data_frames}
+}
+
+// dataFramesPayloadReader reads the payloads of dataFrames in order, from
+// where the last Read stopped.
+type dataFramesPayloadReader struct {
+	dataFrames   DataFrames
+	frameIndex   int // the frame being read
+	payloadIndex int // where the next Read starts in that frame's payload
+	closed       bool
+}
+
+// Read copies the next payload bytes into p, across frames. io.EOF after the
+// last frame. After Close, it returns io.ErrClosedPipe.
+func (r *dataFramesPayloadReader) Read(p []byte) (int, error) {
+	if r.closed {
+		return 0, io.ErrClosedPipe
 	}
-	return io.NopCloser(io.MultiReader(readers...))
+	n := 0
+	for n < len(p) && r.frameIndex < len(r.dataFrames) {
+		payload := r.dataFrames[r.frameIndex].PayloadData
+		copied := copy(p[n:], payload[r.payloadIndex:])
+		n += copied
+		r.payloadIndex += copied
+		if r.payloadIndex == len(payload) { // this frame is read: go to the next
+			r.frameIndex++
+			r.payloadIndex = 0
+		}
+	}
+	if n == 0 && r.frameIndex == len(r.dataFrames) {
+		return 0, io.EOF
+	}
+	return n, nil
+}
+
+// Close lets go of the frames. A second Close does nothing.
+func (r *dataFramesPayloadReader) Close() error {
+	r.dataFrames = nil
+	r.closed = true
+	return nil
 }

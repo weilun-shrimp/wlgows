@@ -12,16 +12,20 @@ import (
 // connContextInflater, and so a connNoContextInflater too. Set the ones the
 // code under test calls.
 type fakeFuncInflater struct {
-	inflateDataFramesFunc  func(frames DataFrames, buf []byte) (int, error)
-	startInflateFramesFunc func() int64
-	putDeflatedFrameFunc   func(token int64, f *Frame) error
-	pullInflatedBytesFunc  func(token int64, buf []byte) (int, error)
-	endInflateFramesFunc   func(token int64)
-	dropContextFunc        func(token int64)
+	inflateDataFramesFunc       func(frames DataFrames, buf []byte) (int, error)
+	inflateDataFramesReaderFunc func(frames DataFrames) io.ReadCloser
+	startInflateFramesFunc      func() int64
+	putDeflatedFrameFunc        func(token int64, f *Frame) error
+	pullInflatedBytesFunc       func(token int64, buf []byte) (int, error)
+	endInflateFramesFunc        func(token int64)
+	dropContextFunc             func(token int64)
 }
 
 func (i fakeFuncInflater) inflateDataFrames(frames DataFrames, buf []byte) (int, error) {
 	return i.inflateDataFramesFunc(frames, buf)
+}
+func (i fakeFuncInflater) inflateDataFramesReader(frames DataFrames) io.ReadCloser {
+	return i.inflateDataFramesReaderFunc(frames)
 }
 func (i fakeFuncInflater) startInflateFrames() int64 { return i.startInflateFramesFunc() }
 func (i fakeFuncInflater) putDeflatedFrame(token int64, f *Frame) error {
@@ -256,6 +260,190 @@ func TestDataFramesBytesFunc(t *testing.T) {
 			t.Errorf("dataFramesBytes = %d, %v, %q, want 3, nil, \"abc\"", n, err, buf[:n])
 		}
 	})
+}
+
+func TestDataFramesReaderFunc(t *testing.T) {
+	plain_reader := &fakeFuncReadCloser{}
+	context_reader := &fakeFuncReadCloser{}
+	no_context_reader := &fakeFuncReadCloser{}
+	var steps []string
+	base_di := func() dataFramesReaderDI {
+		steps = nil
+		return dataFramesReaderDI{
+			peerIsClient:        true,
+			deflateAgreedConfig: &PermessageDeflateConfig{},
+			contextInflater: fakeFuncInflater{inflateDataFramesReaderFunc: func(frames DataFrames) io.ReadCloser {
+				steps = append(steps, fmt.Sprintf("context inflate %d frames", len(frames)))
+				return context_reader
+			}},
+			noContextInflater: fakeFuncInflater{inflateDataFramesReaderFunc: func(frames DataFrames) io.ReadCloser {
+				steps = append(steps, fmt.Sprintf("no context inflate %d frames", len(frames)))
+				return no_context_reader
+			}},
+			checkDataFramesFormat: func(data_frames DataFrames) error { return nil },
+			newDataFramesReader: func(data_frames DataFrames) io.ReadCloser {
+				steps = append(steps, fmt.Sprintf("plain %d frames", len(data_frames)))
+				return plain_reader
+			},
+		}
+	}
+	deflated_message_frames := DataFrames{
+		{Opcode: OpcodeBinary, RSV1: true, PayloadData: []byte("x")},
+		{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("y")},
+	}
+	message_frames := DataFrames{
+		{Opcode: OpcodeBinary, PayloadData: []byte("x")},
+		{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("y")},
+	}
+
+	t.Run("checks the frames' format first; an error returns as it is, nothing run", func(t *testing.T) {
+		err_check := errors.New("check failed")
+		di := base_di()
+		di.deflateAgreedConfig = nil // RSV1 with nothing agreed would fail next: the check goes first
+		di.checkDataFramesFormat = func(data_frames DataFrames) error {
+			if len(data_frames) != 2 {
+				t.Errorf("check %d frames, want the 2 frames", len(data_frames))
+			}
+			return err_check
+		}
+		reader, err := dataFramesReader(deflated_message_frames, di)
+		if reader != nil || err != err_check || steps != nil {
+			t.Errorf("dataFramesReader = %v, %v, steps %q, want nil, %v, nothing run", reader, err, steps, err_check)
+		}
+	})
+
+	// RFC 6455 5.2: RSV1 means nothing unless an extension was agreed.
+	t.Run("RSV1 with nothing agreed returns ErrReservedBitsSet", func(t *testing.T) {
+		di := base_di()
+		di.deflateAgreedConfig = nil
+		reader, err := dataFramesReader(deflated_message_frames, di)
+		if reader != nil || err != ErrReservedBitsSet || steps != nil {
+			t.Errorf("dataFramesReader = %v, %v, steps %q, want nil, ErrReservedBitsSet, nothing run", reader, err, steps)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		agreed *PermessageDeflateConfig
+	}{
+		{"with permessage-deflate agreed", &PermessageDeflateConfig{}},
+		{"with nothing agreed", nil},
+	} {
+		t.Run("RSV1 clear reads the payloads as they are, "+tc.name, func(t *testing.T) {
+			di := base_di()
+			di.deflateAgreedConfig = tc.agreed
+			reader, err := dataFramesReader(message_frames, di)
+			if reader != io.ReadCloser(plain_reader) || err != nil {
+				t.Errorf("dataFramesReader = %v, %v, want the plain reader, nil", reader, err)
+			}
+			if want := []string{"plain 2 frames"}; !slices.Equal(steps, want) {
+				t.Errorf("steps %q, want %q", steps, want)
+			}
+		})
+	}
+
+	// RFC 7692 7.1.1: the peer's own no context takeover param says how it
+	// sends.
+	for _, tc := range []struct {
+		name           string
+		peer_is_client bool
+		agreed         PermessageDeflateConfig
+		want_reader    io.ReadCloser
+		want_step      string
+	}{
+		{
+			name:           "a client that agreed to no context takeover",
+			peer_is_client: true,
+			agreed:         PermessageDeflateConfig{ClientNoContextTakeover: true},
+			want_reader:    no_context_reader,
+			want_step:      "no context inflate 2 frames",
+		},
+		{
+			name:           "a server that agreed to no context takeover",
+			peer_is_client: false,
+			agreed:         PermessageDeflateConfig{ServerNoContextTakeover: true},
+			want_reader:    no_context_reader,
+			want_step:      "no context inflate 2 frames",
+		},
+		{
+			name:           "a client that keeps its context",
+			peer_is_client: true,
+			agreed:         PermessageDeflateConfig{ServerNoContextTakeover: true},
+			want_reader:    context_reader,
+			want_step:      "context inflate 2 frames",
+		},
+		{
+			name:           "a server that keeps its context",
+			peer_is_client: false,
+			agreed:         PermessageDeflateConfig{ClientNoContextTakeover: true},
+			want_reader:    context_reader,
+			want_step:      "context inflate 2 frames",
+		},
+	} {
+		t.Run("reads the message of "+tc.name+" inflated", func(t *testing.T) {
+			di := base_di()
+			di.peerIsClient, di.deflateAgreedConfig = tc.peer_is_client, &tc.agreed
+			reader, err := dataFramesReader(deflated_message_frames, di)
+			if reader != tc.want_reader || err != nil {
+				t.Errorf("dataFramesReader = %v, %v, want the inflate reader, nil", reader, err)
+			}
+			if want := []string{tc.want_step}; !slices.Equal(steps, want) {
+				t.Errorf("steps %q, want %q", steps, want)
+			}
+		})
+	}
+
+	// RFC 6455 8.1: a text message must be UTF-8 once it is what the sender
+	// wrote.
+	for _, tc := range []struct {
+		name        string
+		rsv1        bool
+		agreed      *PermessageDeflateConfig
+		want_reader io.ReadCloser
+		want_step   string
+	}{
+		{
+			name:        "not deflated, nothing agreed",
+			rsv1:        false,
+			agreed:      nil,
+			want_reader: plain_reader,
+			want_step:   "plain 1 frames",
+		},
+		{
+			name:        "not deflated, permessage-deflate agreed",
+			rsv1:        false,
+			agreed:      &PermessageDeflateConfig{},
+			want_reader: plain_reader,
+			want_step:   "plain 1 frames",
+		},
+		{
+			name:        "inflated, no context takeover",
+			rsv1:        true,
+			agreed:      &PermessageDeflateConfig{ClientNoContextTakeover: true},
+			want_reader: no_context_reader,
+			want_step:   "no context inflate 1 frames",
+		},
+		{
+			name:        "inflated, context takeover",
+			rsv1:        true,
+			agreed:      &PermessageDeflateConfig{},
+			want_reader: context_reader,
+			want_step:   "context inflate 1 frames",
+		},
+	} {
+		t.Run(tc.name+": text is read through the UTF-8 check", func(t *testing.T) {
+			di := base_di()
+			di.deflateAgreedConfig = tc.agreed
+			reader, err := dataFramesReader(DataFrames{{Opcode: OpcodeText, FIN: true, RSV1: tc.rsv1}}, di)
+			check_reader, is_check_reader := reader.(*utf8CheckReader)
+			if err != nil || !is_check_reader || check_reader.reader != tc.want_reader {
+				t.Errorf("dataFramesReader = %v, %v, want a utf8CheckReader of the %s reader, nil", reader, err, tc.name)
+			}
+			if want := []string{tc.want_step}; !slices.Equal(steps, want) {
+				t.Errorf("steps %q, want %q", steps, want)
+			}
+		})
+	}
 }
 
 func TestStartInflateDataFrames(t *testing.T) {
