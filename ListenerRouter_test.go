@@ -398,7 +398,7 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 	})
 
 	// RFC 7692 6: RSV1 marks a deflated message. Its bytes are deflate output,
-	// so it is checked once inflated, by DataFramesBytes.
+	// so it is checked once inflated, by DataFramesReader.
 	t.Run("deflated text skips the UTF-8 check", func(t *testing.T) {
 		called := 0
 		l := &Listener{configLocker: &sync.Mutex{}}

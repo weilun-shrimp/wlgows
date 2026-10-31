@@ -87,7 +87,7 @@ func (l *Listener) routeFrame(f *Frame) error {
 	l.resetCurrentDataFrames()
 	switch opcode {
 	case OpcodeText:
-		// Deflated text is checked once inflated, by DataFramesBytes (RFC 6455 5.6).
+		// Deflated text is checked once inflated, by DataFramesReader (RFC 6455 5.6).
 		if !frames[0].RSV1 && !validTextUTF8(frames) {
 			return ErrInvalidUTF8
 		}

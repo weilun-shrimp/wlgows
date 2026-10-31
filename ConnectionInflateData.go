@@ -3,84 +3,7 @@ package wlgows
 import (
 	"fmt"
 	"io"
-	"unicode/utf8"
 )
-
-/*
-DataFramesBytes writes the payload of data_frames, one whole message ending
-with FIN, into buf[:cap(buf)] from its start, and returns how many bytes it
-wrote. cap(buf) is the size allowed: a message past it returns
-ErrInflatedSizeExceeded when inflated, ErrDataFramesBytesSizeExceeded when not.
-
-A message whose first frame has RSV1 set is deflated (RFC 7692 6) and is
-inflated: from an empty window for a peer that agreed to no context takeover,
-else from the messages inflated before it (RFC 7692 7.1.1). Those must all
-have gone through the Conn in order. One that does not inflate returns
-ErrInflateDataInvalid. After ErrInflatedSizeExceeded from a peer that keeps
-its context, close the connection (1009): the message was cut short, so the
-next one may inflate to wrong bytes with no error.
-
-A text message that is not UTF-8 once written returns ErrInvalidUTF8 (RFC 6455
-8.1). Frames that are not one message (RFC 6455 5.4) return
-ErrContinuationFrameWithoutMsg for a continuation first or after a FIN frame,
-ErrDataFrameDuringMsg for text or binary after the first, and
-ErrDataFramesNotEnded for a last frame with FIN clear. RSV1 on a frame after
-the first (RFC 7692 6.1), or on the first with permessage-deflate not agreed
-(RFC 6455 5.2), returns ErrReservedBitsSet.
-*/
-func (c *Conn) DataFramesBytes(data_frames DataFrames, buf []byte) (int, error) {
-	return dataFramesBytes(data_frames, buf, dataFramesBytesDI{
-		peerIsClient:          c.peerIsClient,
-		deflateAgreedConfig:   c.permessageDeflateAgreedConfig,
-		contextInflater:       c.contextInflater,
-		noContextInflater:     c.noContextInflater,
-		checkDataFramesFormat: checkDataFramesFormat,
-	})
-}
-
-type dataFramesBytesDI struct {
-	peerIsClient          bool
-	deflateAgreedConfig   *PermessageDeflateConfig
-	contextInflater       connContextInflater
-	noContextInflater     connNoContextInflater
-	checkDataFramesFormat func(data_frames DataFrames) error
-}
-
-func dataFramesBytes(data_frames DataFrames, buf []byte, di dataFramesBytesDI) (int, error) {
-	if len(data_frames) == 0 {
-		return 0, nil
-	}
-	if err := di.checkDataFramesFormat(data_frames); err != nil {
-		return 0, err
-	}
-	if data_frames[0].RSV1 && di.deflateAgreedConfig == nil { // RFC 6455 5.2: no extension gives RSV1 a meaning
-		return 0, ErrReservedBitsSet
-	}
-
-	var n int
-	var err error
-	switch {
-	case !data_frames[0].RSV1: // RFC 7692 6: the first frame marks a deflated message
-		if data_frames.ByteLen() > cap(buf) {
-			return 0, ErrDataFramesBytesSizeExceeded
-		}
-		for _, f := range data_frames {
-			n += copy(buf[n:cap(buf)], f.PayloadData)
-		}
-	case peerNoContextTakeover(di.peerIsClient, di.deflateAgreedConfig):
-		n, err = di.noContextInflater.inflateDataFrames(data_frames, buf)
-	default:
-		n, err = di.contextInflater.inflateDataFrames(data_frames, buf)
-	}
-	if err != nil {
-		return n, inflateError(err)
-	}
-
-	if data_frames[0].Opcode == OpcodeText && !utf8.Valid(buf[:n]) { // RFC 6455 8.1
-		return n, ErrInvalidUTF8
-	}
-	return n, nil
-}
 
 /*
 DataFramesReader returns a reader of the payload of data_frames, one whole
@@ -102,7 +25,7 @@ ErrInflateDataInvalid from Read. For a peer that keeps its context:
 
 To limit the size, read through io.LimitReader(reader, max+1). More than max
 bytes read: the message is too big, close the connection with 1009 (RFC 6455
-7.4.1).
+7.4.1), as StandardClosePayloadFor(ErrInflatedSizeExceeded) gives.
 
 A text message that is not UTF-8 returns ErrInvalidUTF8 in place of io.EOF
 (RFC 6455 8.1). Frames that are not one message (RFC 6455 5.4) make
@@ -229,9 +152,9 @@ func peerNoContextTakeover(peer_is_client bool, agreed *PermessageDeflateConfig)
 }
 
 // inflateError is err as the Conn returns it: compress/flate's errors wrapped
-// in ErrInflateDataInvalid, the size limit and a stale token as they are.
+// in ErrInflateDataInvalid, a stale token as it is.
 func inflateError(err error) error {
-	if err == nil || err == ErrInflatedSizeExceeded || err == ErrInflateFramesTokenStale {
+	if err == nil || err == ErrInflateFramesTokenStale {
 		return err
 	}
 	return fmt.Errorf("%w: %w", ErrInflateDataInvalid, err)

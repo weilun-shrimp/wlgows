@@ -43,6 +43,7 @@ func TestStandardClosePayloadFor(t *testing.T) {
 		{"a limit the caller set was passed", []error{
 			ErrFrameByteLengthExceeded,
 			ErrDataFrameCountExceeded,
+			ErrInflatedSizeExceeded,
 		}, &ClosePayload{StatusCode: CloseMessageTooBig}},
 
 		// The connection is already gone, so there is nothing to send it. 7.4.1

@@ -170,22 +170,18 @@ var (
 	// It wraps compress/flate's error — answer with close code 1007.
 	ErrInflateDataInvalid = errors.New("compressed message does not inflate")
 
-	// ErrInflatedSizeExceeded is data that inflates past the room given for it,
-	// cap(buf) — answer with close code 1009.
+	// ErrInflatedSizeExceeded is a message past the size you allow. Nothing in
+	// this package returns it: pass it to StandardClosePayloadFor for close
+	// code 1009.
 	ErrInflatedSizeExceeded = errors.New("inflated data exceeds the size allowed")
 
 	// ErrInflateFramesTokenStale is a token from StartInflateDataFrames whose
 	// message ended, or another message's token.
 	ErrInflateFramesTokenStale = errors.New("token is not the open inflated message's")
 
-	// ErrDataFramesBytesSizeExceeded is a message DataFramesBytes does not
-	// inflate whose payloads go past the room given for them, cap(buf) —
-	// answer with close code 1009.
-	ErrDataFramesBytesSizeExceeded = errors.New("data frames' payload exceeds the size allowed")
-
-	// ErrDataFramesNotEnded is data frames given to DataFramesBytes whose last
-	// frame has FIN clear, so they are not one whole message (RFC 6455 5.4).
-	// Nothing is written.
+	// ErrDataFramesNotEnded is data frames given to DataFramesReader that are
+	// empty or whose last frame has FIN clear, so they are not one whole
+	// message (RFC 6455 5.4).
 	ErrDataFramesNotEnded = errors.New("data frames do not end with a FIN frame")
 )
 
@@ -311,8 +307,7 @@ the codes an endpoint may use to name each one. This is that table:
 	ErrInflateDataInvalid                         -> 1007 CloseInvalidFramePayloadData
 	ErrFrameByteLengthExceeded,
 	ErrDataFrameCountExceeded,
-	ErrInflatedSizeExceeded,
-	ErrDataFramesBytesSizeExceeded                -> 1009 CloseMessageTooBig
+	ErrInflatedSizeExceeded                       -> 1009 CloseMessageTooBig
 	every other violation a frame can commit      -> 1002 CloseProtocolError
 
 Reason is left empty. What to tell the peer about your own internals is a policy
@@ -354,8 +349,7 @@ func StandardClosePayloadFor(err error) *ClosePayload {
 
 	case errors.Is(err, ErrFrameByteLengthExceeded),
 		errors.Is(err, ErrDataFrameCountExceeded),
-		errors.Is(err, ErrInflatedSizeExceeded),
-		errors.Is(err, ErrDataFramesBytesSizeExceeded):
+		errors.Is(err, ErrInflatedSizeExceeded):
 		return &ClosePayload{StatusCode: CloseMessageTooBig}
 
 	case errors.Is(err, ErrReservedBitsSet),

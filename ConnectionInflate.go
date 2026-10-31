@@ -28,7 +28,6 @@ type inflaterPipeSource interface {
 
 // connNoContextInflater inflates a whole message from an empty window.
 type connNoContextInflater interface {
-	inflateDataFrames(frames DataFrames, buf []byte) (int, error)
 	inflateDataFramesReader(frames DataFrames) io.ReadCloser
 }
 
@@ -64,54 +63,10 @@ type flateReaderPool interface {
 /*
 noContextInflater is a Conn's receiving side of permessage-deflate for a whole
 message from a peer that agreed to no context takeover (RFC 7692 7.1.1): each
-message inflates from an empty window. Each inflateDataFrames takes a reader
-from noContextFlateReaders, so messages may inflate at once.
+message inflates from an empty window. Each inflateDataFramesReader takes a
+reader from noContextFlateReaders, so messages may inflate at once.
 */
 type noContextInflater struct{}
-
-/*
-inflateDataFrames inflates frames, one whole message, into buf[:cap(buf)] and
-returns how many bytes it wrote. cap(buf) is the size allowed: a message that
-inflates past it returns ErrInflatedSizeExceeded. Any other error is
-compress/flate's.
-*/
-func (c *noContextInflater) inflateDataFrames(frames DataFrames, buf []byte) (int, error) {
-	return noContextInflateDataFrames(frames, buf, noContextInflateDataFramesDI{
-		newPipeSource:         newPipeSource,
-		getFlateReader:        getNoContextFlateReader,
-		noContextFlateReaders: &noContextFlateReaders,
-		readInflated:          readInflated,
-	})
-}
-
-// noContextInflateDataFramesDI is what noContextInflateDataFrames calls.
-type noContextInflateDataFramesDI struct {
-	newPipeSource         func() inflaterPipeSource
-	getFlateReader        func(source io.Reader) io.ReadCloser
-	noContextFlateReaders flateReaderPool
-	readInflated          func(inflate_read func(buf []byte) (int, error), buf []byte) (int, error)
-}
-
-// noContextInflateDataFrames is noContextInflater.inflateDataFrames.
-func noContextInflateDataFrames(frames DataFrames, buf []byte, di noContextInflateDataFramesDI) (int, error) {
-	source := di.newPipeSource()
-	for _, f := range frames {
-		if len(f.PayloadData) != 0 {
-			source.put(f.PayloadData)
-		}
-	}
-	source.put(inflateTail) // RFC 7692 7.2.2
-	source.close(io.EOF)
-
-	flate_reader := di.getFlateReader(source)
-	n, err := di.readInflated(flate_reader.Read, buf)
-	source.drop() // the pooled reader still points at source
-	di.noContextFlateReaders.Put(flate_reader)
-	if err == io.EOF { // the message ended
-		return n, nil
-	}
-	return n, err
-}
 
 // inflateDataFramesReader returns a reader of frames, one whole message,
 // inflated. Read returns io.EOF at the message's end, else compress/flate's
@@ -209,31 +164,6 @@ func getFlateReader(source io.Reader, di getFlateReaderDI) io.ReadCloser {
 }
 
 /*
-readInflated reads one whole message into buf[:cap(buf)] with inflate_read,
-which writes the next inflated bytes into the buf it gets, until io.EOF, and
-returns how many bytes it wrote with that io.EOF: the message ended. cap(buf)
-is the size allowed: a message that inflates past it returns
-ErrInflatedSizeExceeded. Any other error is inflate_read's.
-*/
-func readInflated(inflate_read func(buf []byte) (int, error), buf []byte) (int, error) {
-	n := 0
-	for n < cap(buf) {
-		m, err := inflate_read(buf[n:cap(buf)])
-		n += m
-		if err != nil { // io.EOF included: the message ended
-			return n, err
-		}
-	}
-	// buf is full: the message must end here.
-	var probe [1]byte
-	m, err := inflate_read(probe[:])
-	if m > 0 {
-		return n, ErrInflatedSizeExceeded
-	}
-	return n, err
-}
-
-/*
 contextInflater is a Conn's receiving side of permessage-deflate for a peer
 that keeps its context, and for every message inflated frame by frame. NewConn
 sets both lockers; the flate reader is built on first use, then Reset for each
@@ -261,48 +191,6 @@ type contextInflater struct {
 	// before it resolve. A peer may send with a smaller window (RFC 7692
 	// 7.1.2); 32 KB holds any.
 	history []byte
-}
-
-/*
-inflateDataFrames inflates frames, one whole message ending with FIN, into
-buf[:cap(buf)] from the messages before it, and returns how many bytes it
-wrote. cap(buf) is the size allowed: a message that inflates past it returns
-ErrInflatedSizeExceeded. Any other error is compress/flate's.
-*/
-func (c *contextInflater) inflateDataFrames(frames DataFrames, buf []byte) (int, error) {
-	return contextInflateDataFrames(frames, buf, contextInflateDataFramesDI{
-		startInflateFrames: c.startInflateFrames,
-		putDeflatedFrame:   c.putDeflatedFrame,
-		pullInflatedBytes:  c.pullInflatedBytes,
-		endInflateFrames:   c.endInflateFrames,
-		readInflated:       readInflated,
-	})
-}
-
-// contextInflateDataFramesDI is what contextInflateDataFrames calls.
-type contextInflateDataFramesDI struct {
-	startInflateFrames func() int64
-	putDeflatedFrame   func(token int64, f *Frame) error
-	pullInflatedBytes  func(token int64, buf []byte) (int, error)
-	endInflateFrames   func(token int64)
-	readInflated       func(inflate_read func(buf []byte) (int, error), buf []byte) (int, error)
-}
-
-// contextInflateDataFrames is contextInflater.inflateDataFrames.
-func contextInflateDataFrames(frames DataFrames, buf []byte, di contextInflateDataFramesDI) (int, error) {
-	token := di.startInflateFrames()
-	defer di.endInflateFrames(token)
-	for _, f := range frames {
-		if err := di.putDeflatedFrame(token, f); err != nil {
-			return 0, err
-		}
-	}
-	pull := func(buf []byte) (int, error) { return di.pullInflatedBytes(token, buf) }
-	n, err := di.readInflated(pull, buf)
-	if err == io.EOF { // the message ended
-		return n, nil
-	}
-	return n, err
 }
 
 /*
