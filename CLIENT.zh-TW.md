@@ -1,4 +1,4 @@
-[English](./CLIENT_README.md) · **繁體中文**
+[English](./CLIENT.md) · **繁體中文**
 
 # Client
 
@@ -15,9 +15,9 @@ handshake、subprotocol，以及壓縮。
 - [自己跑 handshake](#自己跑-handshake) — 不建議
 - [下一步：讀取與傳送](#下一步讀取與傳送)
 
-讀取見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)，傳送見
-[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)，server 端見
-[SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md)。
+讀取見 [LISTENER.zh-TW.md](./LISTENER.zh-TW.md)，傳送見
+[SENDING.zh-TW.md](./SENDING.zh-TW.md)，server 端見
+[SERVER.zh-TW.md](./SERVER.zh-TW.md)。
 
 ## 建立連線
 
@@ -86,7 +86,7 @@ if err != nil {
   的開頭一起讀進去。
 - **`writer`** 是每個 frame 送出時經過的地方。client 會在裡面替每個 payload 的複本做
   mask，所以它的大小決定了大 message 需要幾次 socket 寫入。見
-  [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。
+  [記憶體與 write buffer](./SENDING.zh-TW.md#記憶體與-write-buffer)。
   handshake 的 request 本身直接寫進 `netConn`。
 - **`config`** 是 handshake 要提出的內容。`ClientHandShakeConfig{}` 什麼都不提出，
   就是一般的 handshake。見 [設定](#設定)。
@@ -175,7 +175,7 @@ redirect 或 401。
 用它來判斷什麼時候該關閉。
 
 它只認得 handshake 的 error。`Listen` 的 error 請見
-[`StandardClosePayloadFor`](./LISTENER_README.zh-TW.md#errors)。
+[`StandardClosePayloadFor`](./LISTENER.zh-TW.md#errors)。
 
 ## Subprotocols
 
@@ -253,7 +253,7 @@ if resp.Header.Get("Sec-WebSocket-Protocol") == "" {
 `config.PermessageDeflates` 的每一項就是一個提議，最想用的放最前面。每個欄位的意思見
 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#permessagedeflateconfig)。
 協議之後如何 deflate 後傳送，見
-[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#壓縮-permessage-deflate)。
+[SENDING.zh-TW.md](./SENDING.zh-TW.md#壓縮-permessage-deflate)。
 
 ```go
 config := wlgows.ClientHandShakeConfig{
@@ -377,9 +377,9 @@ if err := listener.Listen(); err != nil {
 }
 ```
 
-- **讀取：**[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md) —— hook、上限、
-  每種 error 的意義、[偵測已斷線的對方](./LISTENER_README.zh-TW.md#它沒有-ping-pong-存活偵測)，
+- **讀取：**[LISTENER.zh-TW.md](./LISTENER.zh-TW.md) —— hook、上限、
+  每種 error 的意義、[偵測已斷線的對方](./LISTENER.zh-TW.md#它沒有-ping-pong-存活偵測)，
   以及一次讀一個 frame。
-- **傳送：**[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md) ——
-  [該用哪個呼叫](./SENDING_README.zh-TW.md#選擇要用哪個呼叫)、串流傳送大的 message、
-  [定期送出 ping](./SENDING_README.zh-TW.md#定期送出-ping)、write buffer，以及 lock。
+- **傳送：**[SENDING.zh-TW.md](./SENDING.zh-TW.md) ——
+  [該用哪個呼叫](./SENDING.zh-TW.md#選擇要用哪個呼叫)、串流傳送大的 message、
+  [定期送出 ping](./SENDING.zh-TW.md#定期送出-ping)、write buffer，以及 lock。

@@ -339,7 +339,7 @@ that the connection is healthy, and it never means "close the connection":
     if you know what such an error means.
 
 Decide the connection's fate from its state, not from this result. The Errors
-section of LISTENER_README.md works through the whole shape.
+section of LISTENER.md works through the whole shape.
 */
 func StandardClosePayloadFor(err error) *ClosePayload {
 	switch {

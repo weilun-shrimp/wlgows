@@ -1,4 +1,4 @@
-[English](./SENDING_README.md) · **繁體中文**
+[English](./SENDING.md) · **繁體中文**
 
 # Sending
 
@@ -34,9 +34,9 @@ buffer 越大，記憶體越多、寫入次數越少。server 可以低到每條
 - [Control frame 與自訂 frame](#control-frame-與自訂-frame)
 - [定期送出 ping](#定期送出-ping) — `StartPingLoop` 與 `Loop`
 
-取得 `Conn` 的方法見 [SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md) 與
-[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)，讀取見
-[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)。
+取得 `Conn` 的方法見 [SERVER.zh-TW.md](./SERVER.zh-TW.md) 與
+[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)，讀取見
+[LISTENER.zh-TW.md](./LISTENER.zh-TW.md)。
 
 ## 選擇要用哪個呼叫
 
@@ -145,8 +145,8 @@ for {
 只有在兩個條件都成立時，message 才會 deflate 後送出：
 
 - **handshake 時協議了 permessage-deflate。** 見
-  [CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md#壓縮-permessage-deflate) 與
-  [SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md#壓縮-permessage-deflate)。沒有
+  [CLIENT.zh-TW.md](./CLIENT.zh-TW.md#壓縮-permessage-deflate) 與
+  [SERVER.zh-TW.md](./SERVER.zh-TW.md#壓縮-permessage-deflate)。沒有
   協議時，要求 deflate 不是錯誤：message 會照原樣送出（RFC 7692 5）。
 - **你要求了**，每則 message 用 `DeflateIfAgreed` 決定。
 
@@ -343,7 +343,7 @@ goroutine。不包含 `net.Conn` 本身與作業系統的 socket。
 | Reader 16、writer 14，再加上 `StartPingLoop` | 約 9 KB | 約 900 MB |
 
 用到最小的大小時，buffer 只剩 30 byte。reader 那一邊見
-[記憶體與 read buffer](./LISTENER_README.zh-TW.md#記憶體與-read-buffer)。剩下的大多是
+[記憶體與 read buffer](./LISTENER.zh-TW.md#記憶體與-read-buffer)。剩下的大多是
 goroutine 的 stack：`Listen` 約 4 KB，每個 `StartPingLoop` 再多約 3 KB。wlgows 沒辦法
 縮小這些。你可以做的是：
 
@@ -353,9 +353,9 @@ goroutine 的 stack：`Listen` 約 4 KB，每個 `StartPingLoop` 再多約 3 KB�
   這個 loop 跟著卡住，所以請替每條連線設定 write deadline。
 - **省掉每則 message 的複製。** 使用 `unsafe` 時，一則 message 只會存在一份，而不是
   兩份 —— 見 [傳送](#更快更省記憶體用-unsafe-送出-string)與
-  [讀取](./LISTENER_README.zh-TW.md#不複製地讀取-textunsafe)。
+  [讀取](./LISTENER.zh-TW.md#不複製地讀取-textunsafe)。
 - **用串流接收大的 message。** `Data` hook 一次只持有一個 frame，而不是整則 message
-  —— 見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md#hooks)。
+  —— 見 [LISTENER.zh-TW.md](./LISTENER.zh-TW.md#hooks)。
 
 ## 選擇 chunk size
 
@@ -370,7 +370,7 @@ goroutine 的 stack：`Listen` 約 4 KB，每個 `StartPingLoop` 再多約 3 KB�
   frame 數量。wlgows 自己的 `Listener` 就可以用 `MaxDataFrameCount` 設定這個上限
   （`NewStandardListener` 設為 16，單純的 `ListenerConfig` 則沒有限制），超過時會以 `ErrDataFrameCountExceeded` 拒絕這則 message。請讓
   message 大小 ÷ `ChunkSize` 保持在這個上限以下。例如 16 MB 以 4 KB 為一個 chunk
-  是 4,096 個 frame，比 [Listener 說明文件](./LISTENER_README.zh-TW.md#configuration)
+  是 4,096 個 frame，比 [Listener 說明文件](./LISTENER.zh-TW.md#configuration)
   範例中使用的 4,000 還多。
 
 對於相較於對方限制很小的 message，用 0 就可以。大的 message，4 KB 到 64 KB 是合理
@@ -411,7 +411,7 @@ err := conn.SendText(payload, wlgows.SendDataConfig{})
   `EndLongDataTransmission`、`SendPing`、`SendPong` 與 `SendFrame`。
 
 接收時也能反過來這樣做：見
-[不複製地讀取 text](./LISTENER_README.zh-TW.md#不複製地讀取-textunsafe)。
+[不複製地讀取 text](./LISTENER.zh-TW.md#不複製地讀取-textunsafe)。
 
 ## 傳送失敗時
 
@@ -511,7 +511,7 @@ go conn.StartPingLoop(30*time.Second, func() []byte {
 序號或時間戳記。
 
 送 ping 只是一半。發現 pong 不再回來是讀取那一端的事：見
-[它沒有 ping pong 存活偵測](./LISTENER_README.zh-TW.md#它沒有-ping-pong-存活偵測)。
+[它沒有 ping pong 存活偵測](./LISTENER.zh-TW.md#它沒有-ping-pong-存活偵測)。
 
 `StartPingLoop` 建立在 `Loop` 之上，它會定期執行任何 func，直到 func 要求停止：
 

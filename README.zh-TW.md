@@ -13,7 +13,7 @@ gorilla/websocket 快（[benchmark](./BENCHMARK_COMPARISON.zh-TW.md)）。容易
 
 **正確性優先。** 我們追求最快的程式，但前提是正確且安全：不用 `unsafe`，也不跳過
 bounds check。如果你清楚自己在做什麼，你的程式可以更進一步。見
-[更快、更省記憶體](./SENDING_README.zh-TW.md#更快更省記憶體用-unsafe-送出-string)。
+[更快、更省記憶體](./SENDING.zh-TW.md#更快更省記憶體用-unsafe-送出-string)。
 
 ## Features
 
@@ -25,7 +25,7 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 - **Listener**：單一 read loop，依 RFC 6455 驗證每個 frame 後交給你的 hook
 - **Frame-level control**：需要時可自行組出 frame 並送出
 - **Streaming**：以一個個 fragment 傳送比記憶體還大的 message
-- **Memory in your hands**：每條連線的 write buffer 由你提供，最小 14 byte，而且隨時可以更換；每次傳送也能自己選 frame 大小。見 [SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#掌控權在你手上)
+- **Memory in your hands**：每條連線的 write buffer 由你提供，最小 14 byte，而且隨時可以更換；每次傳送也能自己選 frame 大小。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#掌控權在你手上)
 - **Keepalive**：定期發送 ping，每次的 payload 由你決定
 - **Concurrent sending**：以 lock 保護，且 control frame 不會被卡在大型 message
   後面
@@ -108,7 +108,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	listener.SetConfig(config)
 
 	// 心跳，在獨立的 goroutine 中執行，連線結束時會自動停止。若要偵測
-	// 「連線還在卻一直不回 pong」的對方，請見 LISTENER_README.zh-TW.md。
+	// 「連線還在卻一直不回 pong」的對方，請見 LISTENER.zh-TW.md。
 	go conn.StartPingLoop(30*time.Second, nil)
 
 	if err := listener.Listen(); err != nil {
@@ -122,7 +122,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 Gin 之下做法相同，改用 `c.Writer.Hijack()` 與 `c.Request`。因為 Gin 的 `Run` 不設逾時，
 請用你自己的 `http.Server` 來提供 Gin engine。見
-[HTTP Hijacking](./SERVER_README.zh-TW.md#http-hijacking)。
+[HTTP Hijacking](./SERVER.zh-TW.md#http-hijacking)。
 
 ### Client
 
@@ -144,7 +144,7 @@ import (
 func main() {
 	// DialContext 只負責建立連線並組好 request，handshake 由你執行，所以送出前
 	// 仍可替 request 加上 header。ctx 與 dialer 都會限制建立連線的時間，以先到的
-	// 為準。詳見 CLIENT_README.zh-TW.md。
+	// 為準。詳見 CLIENT.zh-TW.md。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
@@ -154,8 +154,8 @@ func main() {
 	}
 	defer netConn.Close()
 
-	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 LISTENER_README.zh-TW.md
-	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 每條連線 4096 byte；見 SENDING_README.zh-TW.md
+	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 LISTENER.zh-TW.md
+	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 每條連線 4096 byte；見 SENDING.zh-TW.md
 	if err != nil {
 		panic(err)
 	}
@@ -191,10 +191,10 @@ func main() {
 
 | 文件 | 內容 |
 |---|---|
-| **[SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md)** | 接受連線、handshake 與它的拒絕回應、從 `net/http` 或 Gin hijack、TLS、subprotocol |
-| **[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)** | 建立連線、TLS、handshake、加上 header、subprotocol |
-| **[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)** | 讀取：hook、上限、error、偵測已斷線的對方、一次讀一個 frame、read buffer |
-| **[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)** | 傳送：完整 message、streaming、壓縮、control frame、定期送出 ping、write buffer、lock |
+| **[SERVER.zh-TW.md](./SERVER.zh-TW.md)** | 接受連線、handshake 與它的拒絕回應、從 `net/http` 或 Gin hijack、TLS、subprotocol |
+| **[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)** | 建立連線、TLS、handshake、加上 header、subprotocol |
+| **[LISTENER.zh-TW.md](./LISTENER.zh-TW.md)** | 讀取：hook、上限、error、偵測已斷線的對方、一次讀一個 frame、read buffer |
+| **[SENDING.zh-TW.md](./SENDING.zh-TW.md)** | 傳送：完整 message、streaming、壓縮、control frame、定期送出 ping、write buffer、lock |
 | **[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)** | 與 gorilla/websocket、gobwas/ws 比較：每個數字，以及每一項落後為何保留 |
 
 ## Examples
@@ -230,7 +230,7 @@ go run ./stream_client   # 另開一個終端機，按兩次 Enter 就會傳送 
 兩個 hijack server 啟動時會詢問憑證與金鑰。按兩次 Enter 用 `ws://`，輸入路徑用
 `wss://`。
 
-每個範例都使用 [`Listener`](./LISTENER_README.zh-TW.md)，它會回應 ping 與 close，
+每個範例都使用 [`Listener`](./LISTENER.zh-TW.md)，它會回應 ping 與 close，
 並擋下不合法的 frame。每個檔案剩下的是你自己要寫的部分：hook。
 
 ## 從 v6 升級

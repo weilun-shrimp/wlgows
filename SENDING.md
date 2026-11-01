@@ -1,4 +1,4 @@
-**English** · [繁體中文](./SENDING_README.zh-TW.md)
+**English** · [繁體中文](./SENDING.zh-TW.md)
 
 # Sending
 
@@ -38,9 +38,9 @@ as 14 bytes per connection. See
 - [Control frames and your own frames](#control-frames-and-your-own-frames)
 - [Pinging on an interval](#pinging-on-an-interval) — `StartPingLoop` and `Loop`
 
-Getting a `Conn` is in [SERVER_README.md](./SERVER_README.md) and
-[CLIENT_README.md](./CLIENT_README.md), and reading in
-[LISTENER_README.md](./LISTENER_README.md).
+Getting a `Conn` is in [SERVER.md](./SERVER.md) and
+[CLIENT.md](./CLIENT.md), and reading in
+[LISTENER.md](./LISTENER.md).
 
 ## Choosing a call
 
@@ -156,8 +156,8 @@ The rules:
 A message goes out deflated only when both hold:
 
 - **permessage-deflate was agreed** in the handshake. See
-  [CLIENT_README.md](./CLIENT_README.md#compression-permessage-deflate) and
-  [SERVER_README.md](./SERVER_README.md#compression-permessage-deflate). Without
+  [CLIENT.md](./CLIENT.md#compression-permessage-deflate) and
+  [SERVER.md](./SERVER.md#compression-permessage-deflate). Without
   it, asking is not an error: the message goes out as it is (RFC 7692 5).
 - **You ask for it**, per message, with `DeflateIfAgreed`.
 
@@ -363,7 +363,7 @@ goroutine running `Listen`. The `net.Conn` and the OS socket are not counted.
 | Reader 16, writer 14, plus `StartPingLoop` | ~9 KB | ~900 MB |
 
 At the smallest sizes the buffers are 30 bytes. The reader's side is in
-[Memory: the read buffer](./LISTENER_README.md#memory-the-read-buffer). Most of
+[Memory: the read buffer](./LISTENER.md#memory-the-read-buffer). Most of
 what is left is goroutine stacks: about 4 KB for `Listen`, and about 3 KB more
 for each `StartPingLoop`. wlgows cannot shrink those. What you can do:
 
@@ -373,9 +373,9 @@ for each `StartPingLoop`. wlgows cannot shrink those. What you can do:
   stalled peer blocks that loop, so give each connection a write deadline.
 - **Skip the copy of each message.** With `unsafe`, a message is held once
   instead of twice — see [sending](#faster-and-less-memory-sending-a-string-with-unsafe)
-  and [reading](./LISTENER_README.md#reading-text-without-a-copy-unsafe).
+  and [reading](./LISTENER.md#reading-text-without-a-copy-unsafe).
 - **Stream a large message.** The `Data` hook holds one frame at a time instead
-  of the whole message — see [LISTENER_README.md](./LISTENER_README.md#hooks).
+  of the whole message — see [LISTENER.md](./LISTENER.md#hooks).
 
 ## Choosing a chunk size
 
@@ -393,7 +393,7 @@ already in memory. What it changes:
   `ListenerConfig`), and refuses the message with
   `ErrDataFrameCountExceeded`. Keep message size ÷ `ChunkSize` under that cap.
   For example, 16 MB in 4 KB chunks is 4,096 frames, more than the 4,000 the
-  [Listener guide](./LISTENER_README.md#configuration) uses as its example.
+  [Listener guide](./LISTENER.md#configuration) uses as its example.
 
 0 is fine for messages that are small next to the peer's limits. For large ones,
 4 KB to 64 KB is a fair range. A stream's chunk is the buffer you read into
@@ -441,7 +441,7 @@ The rules:
   `SendFrame`.
 
 Receiving has the same trick the other way round: see
-[Reading text without a copy](./LISTENER_README.md#reading-text-without-a-copy-unsafe).
+[Reading text without a copy](./LISTENER.md#reading-text-without-a-copy-unsafe).
 
 ## When a send fails
 
@@ -550,7 +550,7 @@ The pong for `ping-4` carries `ping-4` back to your `Pong` hook. The payload can
 you can recognise, such as a number or a timestamp.
 
 Sending pings is only half. Noticing that pongs stopped is done on the reading
-side: see [It has no ping/pong liveness](./LISTENER_README.md#it-has-no-pingpong-liveness).
+side: see [It has no ping/pong liveness](./LISTENER.md#it-has-no-pingpong-liveness).
 
 `StartPingLoop` is built on `Loop`, which runs any func on an interval until the
 func signals stop:

@@ -55,8 +55,8 @@ func TestListenerIntegration(t *testing.T) {
 		MaxDataFramesSize: 1024,
 		FrameReadTimeout:  5 * time.Second,
 
-		Text:   func(frames DataFrames) { got = append(got, "Text:"+frames.String()) },
-		Binary: func(frames DataFrames) { got = append(got, fmt.Sprintf("Binary:% x", frames.Bytes())) },
+		Text:   func(frames DataFrames) { got = append(got, "Text:"+string(joinPayloads(frames))) },
+		Binary: func(frames DataFrames) { got = append(got, fmt.Sprintf("Binary:% x", joinPayloads(frames))) },
 		Ping:   func(frame *Frame) { got = append(got, "Ping:"+string(frame.PayloadData)) },
 		Close: func(frame *Frame) {
 			payload, err := frame.GetClosePayload()

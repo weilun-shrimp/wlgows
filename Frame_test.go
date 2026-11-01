@@ -229,7 +229,7 @@ func TestNewFrameFIN(t *testing.T) {
 		if tail.Opcode != 0 {
 			t.Errorf("continuation Opcode = %d, want 0", tail.Opcode)
 		}
-		if got := (DataFrames{head, tail}).String(); got != "中文字" {
+		if got := string(joinPayloads(DataFrames{head, tail})); got != "中文字" {
 			t.Errorf("reassembled = %q, want 中文字", got)
 		}
 	})

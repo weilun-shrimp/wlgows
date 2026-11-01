@@ -1,6 +1,7 @@
 package wlgows
 
 import (
+	"bytes"
 	"errors"
 	"slices"
 	"sync"
@@ -87,8 +88,8 @@ func TestListenerRouteFrame(t *testing.T) {
 			}
 		}
 
-		if got.String() != "hello 中文" {
-			t.Errorf("Text got %q, want %q", got.String(), "hello 中文")
+		if string(joinPayloads(got)) != "hello 中文" {
+			t.Errorf("Text got %q, want %q", string(joinPayloads(got)), "hello 中文")
 		}
 		// Reset on FIN, or the next message starts with this one's frames and
 		// this one's spent budget.
@@ -108,8 +109,8 @@ func TestListenerRouteFrame(t *testing.T) {
 		l.routeFrame(&Frame{Opcode: OpcodeBinary, PayloadData: []byte{0x00}})
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte{0xFF}})
 
-		if len(got) != 2 || got.Bytes()[0] != 0x00 || got.Bytes()[1] != 0xFF {
-			t.Errorf("Binary got % x", got.Bytes())
+		if len(got) != 2 || !bytes.Equal(joinPayloads(got), []byte{0x00, 0xFF}) {
+			t.Errorf("Binary got % x", joinPayloads(got))
 		}
 	})
 
@@ -166,8 +167,8 @@ func TestListenerRouteFrame(t *testing.T) {
 		l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("first")})
 		l.routeFrame(&Frame{Opcode: OpcodeText, FIN: true, PayloadData: []byte("second")})
 
-		if first.String() != "first" {
-			t.Errorf("the first message became %q after the second arrived", first.String())
+		if string(joinPayloads(first)) != "first" {
+			t.Errorf("the first message became %q after the second arrived", string(joinPayloads(first)))
 		}
 	})
 
@@ -235,8 +236,8 @@ func TestListenerRouteFrameDataHook(t *testing.T) {
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation, PayloadData: []byte("llo ")})
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("中文")})
 
-		if got.String() != "hello 中文" {
-			t.Errorf("Data received %q, want %q", got.String(), "hello 中文")
+		if string(joinPayloads(got)) != "hello 中文" {
+			t.Errorf("Data received %q, want %q", string(joinPayloads(got)), "hello 中文")
 		}
 		if textCalled != 0 || binaryCalled != 0 {
 			t.Errorf("Text called %d times and Binary %d, want 0 and 0", textCalled, binaryCalled)
@@ -427,8 +428,8 @@ func TestListenerRouteFrameTextUTF8(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err = %v, want nil — the joined bytes are 中", err)
 		}
-		if got.String() != "中" {
-			t.Errorf("Text got %q, want 中", got.String())
+		if string(joinPayloads(got)) != "中" {
+			t.Errorf("Text got %q, want 中", string(joinPayloads(got)))
 		}
 	})
 
@@ -542,8 +543,8 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 			if testCase.opcode == OpcodeBinary {
 				got, other = gotBinary, gotText
 			}
-			if string(got.Bytes()) != "hello" || len(got) != 1002 {
-				t.Errorf("hook got %q in %d frames, want hello in 1002", got.Bytes(), len(got))
+			if !bytes.Equal(joinPayloads(got), []byte("hello")) || len(got) != 1002 {
+				t.Errorf("hook got %q in %d frames, want hello in 1002", joinPayloads(got), len(got))
 			}
 			if other != nil {
 				t.Error("the other hook must not run")
@@ -565,8 +566,8 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 		}
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("llo")})
 
-		if string(got.Bytes()) != "hello" || len(got) != 1002 {
-			t.Errorf("Data got %q in %d frames, want hello in 1002", got.Bytes(), len(got))
+		if string(joinPayloads(got)) != "hello" || len(got) != 1002 {
+			t.Errorf("Data got %q in %d frames, want hello in 1002", string(joinPayloads(got)), len(got))
 		}
 		if textCalled != 0 || binaryCalled != 0 {
 			t.Errorf("Text called %d times and Binary %d, want 0 and 0", textCalled, binaryCalled)
@@ -582,8 +583,8 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 		l.routeFrame(&Frame{Opcode: OpcodeText, PayloadData: []byte("hi")})
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true})
 
-		if got.String() != "hi" {
-			t.Errorf("Text got %q, want hi", got.String())
+		if string(joinPayloads(got)) != "hi" {
+			t.Errorf("Text got %q, want hi", string(joinPayloads(got)))
 		}
 		if len(l.currentDataFrames) != 0 {
 			t.Error("the message should have completed")
@@ -605,8 +606,8 @@ func TestListenerRouteFrameEmptyContinuation(t *testing.T) {
 		}
 		l.routeFrame(&Frame{Opcode: OpcodeContinuation, FIN: true, PayloadData: []byte("hi")})
 
-		if got.String() != "hi" {
-			t.Errorf("Text got %q, want hi", got.String())
+		if string(joinPayloads(got)) != "hi" {
+			t.Errorf("Text got %q, want hi", string(joinPayloads(got)))
 		}
 	})
 }
@@ -650,8 +651,8 @@ func TestListenerRouteFrameControlFramesDoNotCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("2 data frames against a limit of 2: %v", err)
 	}
-	if got.String() != "hello" {
-		t.Errorf("Text got %q, want hello", got.String())
+	if string(joinPayloads(got)) != "hello" {
+		t.Errorf("Text got %q, want hello", string(joinPayloads(got)))
 	}
 }
 
@@ -713,8 +714,8 @@ func TestListenerResetCurrentDataFrames(t *testing.T) {
 			Opcode: OpcodeText, PayloadData: []byte("second"),
 		})
 
-		if held.String() != "first" {
-			t.Errorf("the frames held from before the reset became %q", held.String())
+		if string(joinPayloads(held)) != "first" {
+			t.Errorf("the frames held from before the reset became %q", string(joinPayloads(held)))
 		}
 	})
 }

@@ -1,4 +1,4 @@
-[English](./SERVER_README.md) · **繁體中文**
+[English](./SERVER.md) · **繁體中文**
 
 # Server
 
@@ -17,9 +17,9 @@ handshake、從 `net/http` 或 Gin hijack、TLS、subprotocol，以及壓縮。
 - [自己跑 handshake](#自己跑-handshake) — 不建議
 - [下一步：讀取與傳送](#下一步讀取與傳送)
 
-讀取見 [LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md)，傳送見
-[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)，client 端見
-[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)。
+讀取見 [LISTENER.zh-TW.md](./LISTENER.zh-TW.md)，傳送見
+[SENDING.zh-TW.md](./SENDING.zh-TW.md)，client 端見
+[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)。
 
 ## 接受連線
 
@@ -81,7 +81,7 @@ request 的 method、HTTP 版本、`Host`、`Upgrade`、`Connection`、`Sec-WebS
 |---|---|
 | `netConn` | 這條連線。回應會直接寫進它。 |
 | `reader` | 你讀取 request 時用的同一個 `*bufio.Reader`。它可能已經讀進第一個 frame 的開頭，換一個新的就會遺失這些 byte。 |
-| `writer` | 每個 frame 都經由這個 `*bufio.Writer` 送出。大小由你決定：見 [記憶體與 write buffer](./SENDING_README.zh-TW.md#記憶體與-write-buffer)。 |
+| `writer` | 每個 frame 都經由這個 `*bufio.Writer` 送出。大小由你決定：見 [記憶體與 write buffer](./SENDING.zh-TW.md#記憶體與-write-buffer)。 |
 | `request` | 已經解析好的 request。 |
 | `config` | server 要回應的內容。一般的 handshake 傳 `wlgows.ServerHandShakeConfig{}`。見 [設定](#設定)。 |
 
@@ -175,7 +175,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 - **要傳 `bufRW.Reader`。** net/http 可能已經把第一個 frame 的開頭讀進去了。
 - **`bufRW.Writer` 沿用 net/http 的 writer。** `bufio.NewWriterSize(netConn, size)`
   也可以。hijack 之後如何釋放記憶體，見
-  [最低記憶體的設定方式](./SENDING_README.zh-TW.md#最低記憶體的設定方式)。
+  [最低記憶體的設定方式](./SENDING.zh-TW.md#最低記憶體的設定方式)。
 - **要拒絕就在 `Hijack` 之前**，這時 net/http 還能替你回應。`Hijack` 之後連線就是你的，
   寫出的每個 byte 也都由你負責。
 
@@ -305,7 +305,7 @@ subprotocol，沒有協議出任何一個時則是 `""`。
 壓縮。每個欄位的意思見
 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#permessagedeflateconfig)。
 協議之後如何 deflate 後傳送，見
-[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#壓縮-permessage-deflate)。
+[SENDING.zh-TW.md](./SENDING.zh-TW.md#壓縮-permessage-deflate)。
 
 ```go
 config := wlgows.ServerHandShakeConfig{
@@ -479,9 +479,9 @@ if err := listener.Listen(); err != nil {
 }
 ```
 
-- **讀取：**[LISTENER_README.zh-TW.md](./LISTENER_README.zh-TW.md) —— hook、上限、
-  每種 error 的意義、[偵測已斷線的對方](./LISTENER_README.zh-TW.md#它沒有-ping-pong-存活偵測)，
+- **讀取：**[LISTENER.zh-TW.md](./LISTENER.zh-TW.md) —— hook、上限、
+  每種 error 的意義、[偵測已斷線的對方](./LISTENER.zh-TW.md#它沒有-ping-pong-存活偵測)，
   以及一次讀一個 frame。
-- **傳送：**[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md) ——
-  [該用哪個呼叫](./SENDING_README.zh-TW.md#選擇要用哪個呼叫)、串流傳送大的 message、
-  [定期送出 ping](./SENDING_README.zh-TW.md#定期送出-ping)、write buffer，以及 lock。
+- **傳送：**[SENDING.zh-TW.md](./SENDING.zh-TW.md) ——
+  [該用哪個呼叫](./SENDING.zh-TW.md#選擇要用哪個呼叫)、串流傳送大的 message、
+  [定期送出 ping](./SENDING.zh-TW.md#定期送出-ping)、write buffer，以及 lock。

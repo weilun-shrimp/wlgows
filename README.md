@@ -16,7 +16,7 @@ rule RFC 6455 gives you is documented.
 **Correctness first.** We want the fastest code, but only when it stays correct
 and safe: no `unsafe`, and no skipped bounds checks. Your own code may go
 further if you know what you are doing. See
-[Faster and less memory](./SENDING_README.md#faster-and-less-memory-sending-a-string-with-unsafe).
+[Faster and less memory](./SENDING.md#faster-and-less-memory-sending-a-string-with-unsafe).
 
 ## Features
 
@@ -28,7 +28,7 @@ further if you know what you are doing. See
 - **Listener** — a read loop that validates against RFC 6455 and routes frames to your hooks
 - **Frame-level control** — build and send your own frames when you need to
 - **Streaming** — send a message larger than memory, fragment by fragment
-- **Memory in your hands** — hand each connection its own write buffer, from 14 bytes up, and swap it at any time. Pick the frame size on every send. See [SENDING_README.md](./SENDING_README.md#you-are-in-control)
+- **Memory in your hands** — hand each connection its own write buffer, from 14 bytes up, and swap it at any time. Pick the frame size on every send. See [SENDING.md](./SENDING.md#you-are-in-control)
 - **Keepalive** — ping on an interval, with a payload you choose per ping
 - **Concurrent sending** — lock-guarded, and control frames are never stuck behind a long message
 
@@ -111,7 +111,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	listener.SetConfig(config)
 
 	// Heartbeat, on a goroutine of its own. It ends itself when the connection
-	// does — see LISTENER_README.md for noticing a peer that never pongs back.
+	// does — see LISTENER.md for noticing a peer that never pongs back.
 	go conn.StartPingLoop(30*time.Second, nil)
 
 	if err := listener.Listen(); err != nil {
@@ -125,7 +125,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 Under Gin it is the same, with `c.Writer.Hijack()` and `c.Request`. Serve the
 Gin engine with your own `http.Server`, since Gin's `Run` sets no timeout. See
-[HTTP hijacking](./SERVER_README.md#http-hijacking).
+[HTTP hijacking](./SERVER.md#http-hijacking).
 
 ### Client
 
@@ -147,7 +147,7 @@ import (
 func main() {
 	// DialContext only connects and builds the request — running the handshake
 	// is yours, so you can still add headers to request before it goes out. ctx
-	// and dialer each bound the connect; the earlier one wins. See CLIENT_README.md.
+	// and dialer each bound the connect; the earlier one wins. See CLIENT.md.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
@@ -157,8 +157,8 @@ func main() {
 	}
 	defer netConn.Close()
 
-	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see LISTENER_README.md to shrink it
-	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 4096 bytes/conn; see SENDING_README.md
+	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see LISTENER.md to shrink it
+	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 4096 bytes/conn; see SENDING.md
 	if err != nil {
 		panic(err)
 	}
@@ -195,10 +195,10 @@ none (RFC 6455 5.1).
 
 | Guide | What is in it |
 |---|---|
-| **[SERVER_README.md](./SERVER_README.md)** | Accepting a connection, the handshake and its refusals, HTTP hijacking from `net/http` or Gin, TLS, subprotocols |
-| **[CLIENT_README.md](./CLIENT_README.md)** | Dialing, TLS, the handshake, adding headers, subprotocols |
-| **[LISTENER_README.md](./LISTENER_README.md)** | Reading: hooks, limits, errors, noticing a dead peer, one frame at a time, the read buffer |
-| **[SENDING_README.md](./SENDING_README.md)** | Sending: whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks |
+| **[SERVER.md](./SERVER.md)** | Accepting a connection, the handshake and its refusals, HTTP hijacking from `net/http` or Gin, TLS, subprotocols |
+| **[CLIENT.md](./CLIENT.md)** | Dialing, TLS, the handshake, adding headers, subprotocols |
+| **[LISTENER.md](./LISTENER.md)** | Reading: hooks, limits, errors, noticing a dead peer, one frame at a time, the read buffer |
+| **[SENDING.md](./SENDING.md)** | Sending: whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks |
 | **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket and gobwas/ws: every number, and why each loss stays |
 
 ## Examples
@@ -234,7 +234,7 @@ go run ./stream_client   # in another terminal, enter twice for README.md
 Both hijack servers ask for a certificate and key at startup. Press enter twice
 for `ws://`, or give paths for `wss://`.
 
-Each example uses a [`Listener`](./LISTENER_README.md), which answers pings and
+Each example uses a [`Listener`](./LISTENER.md), which answers pings and
 closes and refuses bad frames. What is left in each file is the part you write
 yourself: the hooks.
 
