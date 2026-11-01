@@ -1,4 +1,4 @@
-**English** · [繁體中文](./LISTENER_README.zh-TW.md)
+**English** · [繁體中文](./LISTENER.zh-TW.md)
 
 # Listener
 
@@ -22,15 +22,15 @@ hooks do that.
 - [Memory: the read buffer](#memory-the-read-buffer)
 - [Concurrency](#concurrency) — one reader
 
-Getting a `Conn` is in [SERVER_README.md](./SERVER_README.md) and
-[CLIENT_README.md](./CLIENT_README.md), and sending in
-[SENDING_README.md](./SENDING_README.md).
+Getting a `Conn` is in [SERVER.md](./SERVER.md) and
+[CLIENT.md](./CLIENT.md), and sending in
+[SENDING.md](./SENDING.md).
 
 ## Quick start
 
 `conn` is an already handshaken `*wlgows.Conn`, from
-[the server](./SERVER_README.md#the-handshake) or
-[the client](./CLIENT_README.md#the-handshake) side. This one is a server's.
+[the server](./SERVER.md#the-handshake) or
+[the client](./CLIENT.md#the-handshake) side. This one is a server's.
 It handles one connection and every way `Listen` can return. `Pong` is nil on
 purpose: 5.5.3 expects no answer to a pong, and a nil hook does nothing.
 
@@ -184,7 +184,7 @@ says it fails the connection.
 The `Ping` and `Pong` hooks tell you a frame arrived. A dead peer looks exactly
 like a quiet one, and detecting it is a timer you own:
 
-- send a ping on an interval: [`StartPingLoop`](./SENDING_README.md#pinging-on-an-interval) does it
+- send a ping on an interval: [`StartPingLoop`](./SENDING.md#pinging-on-an-interval) does it
 - reset a deadline on **any** pong — ignore the payload
 - if the deadline passes with no pong, the peer is gone; close
 
@@ -361,7 +361,7 @@ must call `PauseListen`. Otherwise a later message still reaches `Text` or
 ### Reading text without a copy: `unsafe`
 
 **Only if you know exactly what you are doing.** The warning in
-[the sending guide](./SENDING_README.md#faster-and-less-memory-sending-a-string-with-unsafe)
+[the sending guide](./SENDING.md#faster-and-less-memory-sending-a-string-with-unsafe)
 applies. If unsure, use `frames.String()`, which costs one copy.
 
 wlgows never writes to a payload after reading it, and each frame has its own.
@@ -618,7 +618,7 @@ The 100-frame row assumes the bytes have already arrived. A slow peer narrows
 the gap.
 
 For a whole idle connection, see
-[The smallest connection](./SENDING_README.md#the-smallest-connection).
+[The smallest connection](./SENDING.md#the-smallest-connection).
 
 ## Concurrency
 

@@ -1,4 +1,4 @@
-**English** · [繁體中文](./SERVER_README.zh-TW.md)
+**English** · [繁體中文](./SERVER.zh-TW.md)
 
 # Server
 
@@ -18,9 +18,9 @@ compression.
 - [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
 
-Reading is in [LISTENER_README.md](./LISTENER_README.md), sending in
-[SENDING_README.md](./SENDING_README.md), and the client side in
-[CLIENT_README.md](./CLIENT_README.md).
+Reading is in [LISTENER.md](./LISTENER.md), sending in
+[SENDING.md](./SENDING.md), and the client side in
+[CLIENT.md](./CLIENT.md).
 
 ## Accepting a connection
 
@@ -86,7 +86,7 @@ the `Conn`. `Origin` and the other fields are not checked.
 |---|---|
 | `netConn` | The connection. The answer is written straight to it. |
 | `reader` | The same `*bufio.Reader` you read the request from. It may already hold the start of the first frame, so a new one would lose it. |
-| `writer` | The `*bufio.Writer` every frame is sent through. Its size is yours: see [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer). |
+| `writer` | The `*bufio.Writer` every frame is sent through. Its size is yours: see [Memory: the write buffer](./SENDING.md#memory-the-write-buffer). |
 | `request` | The request, already parsed. |
 | `config` | What the server answers with. `wlgows.ServerHandShakeConfig{}` runs a plain handshake. See [The config](#the-config). |
 
@@ -188,7 +188,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
   into it.
 - **`bufRW.Writer` reuses net/http's writer.** `bufio.NewWriterSize(netConn, size)`
   works too. To free memory after a hijack, see
-  [The lowest memory setup](./SENDING_README.md#the-lowest-memory-setup).
+  [The lowest memory setup](./SENDING.md#the-lowest-memory-setup).
 - **Refuse before `Hijack`**, while net/http can still answer for you. After it,
   the connection is yours, and so is every byte you write to it.
 
@@ -323,7 +323,7 @@ List the answers the server wants in `config.PermessageDeflates`, most
 preferred first. An empty list turns compression off. What each field means is
 in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
 Sending deflated once it is agreed is in
-[SENDING_README.md](./SENDING_README.md#compression-permessage-deflate).
+[SENDING.md](./SENDING.md#compression-permessage-deflate).
 
 ```go
 config := wlgows.ServerHandShakeConfig{
@@ -510,9 +510,9 @@ if err := listener.Listen(); err != nil {
 }
 ```
 
-- **Reading:** [LISTENER_README.md](./LISTENER_README.md) — hooks, limits, what
-  each error means, [noticing a dead peer](./LISTENER_README.md#it-has-no-pingpong-liveness),
+- **Reading:** [LISTENER.md](./LISTENER.md) — hooks, limits, what
+  each error means, [noticing a dead peer](./LISTENER.md#it-has-no-pingpong-liveness),
   and reading one frame at a time.
-- **Sending:** [SENDING_README.md](./SENDING_README.md) — [which call to use](./SENDING_README.md#choosing-a-call),
-  streaming a large message, [pinging on an interval](./SENDING_README.md#pinging-on-an-interval),
+- **Sending:** [SENDING.md](./SENDING.md) — [which call to use](./SENDING.md#choosing-a-call),
+  streaming a large message, [pinging on an interval](./SENDING.md#pinging-on-an-interval),
   the write buffer, and locks.

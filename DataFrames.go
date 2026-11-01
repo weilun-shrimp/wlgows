@@ -1,9 +1,6 @@
 package wlgows
 
-import (
-	"io"
-	"strings"
-)
+import "io"
 
 /*
 DataFrames is one WebSocket message: the frames it was split into, in wire order.
@@ -37,48 +34,8 @@ does not want to hold a huge message in memory never has to:
 */
 type DataFrames []*Frame
 
-/*
-String joins every frame payload into one string.
-
-Reference: https://studygolang.com/articles/12796
-用傳統的string([]byte)方法可能會發生字串符段連接問題, 因為一個UTF-8中文是3bytes，如果剛好切一半在下一個frame就完了
-而且很可能會有超大量字串，所以要用效能最好的strings.Builder底層自動分配資料至內部slice再組成string
-
-Note this makes DataFrames a fmt.Stringer: a %v or %s of a DataFrames prints the whole
-payload, so avoid logging one directly when the message may be large.
-*/
-func (f DataFrames) String() string {
-	var builder strings.Builder
-	builder.Grow(f.ByteLen()) // one exact allocation instead of regrowth
-	for _, frame := range f {
-		builder.Write(frame.PayloadData)
-	}
-	return builder.String()
-}
-
-/*
-Bytes joins every frame payload into one slice.
-
-Prefer it over []byte(String()) whenever the caller wants bytes — the conversion
-copies the assembled payload a second time, so the byte path costs two full-size
-buffers where this costs one. A binary (opcode 2) message has no reason to
-become a string at all.
-
-The result is a fresh copy, so mutating it never reaches the frames. Callers
-willing to trade that safety for zero allocations can read a single frame
-message straight off f[0].PayloadData, but must then treat the slice as owned by
-the DataFrames.
-*/
-func (f DataFrames) Bytes() []byte {
-	result := make([]byte, 0, f.ByteLen())
-	for _, frame := range f {
-		result = append(result, frame.PayloadData...)
-	}
-	return result
-}
-
-// ByteLen is the byte length of what String and Bytes return, without
-// assembling them. Never a character count: "中文字" reports 9, not 3.
+// ByteLen is the byte length of every frame payload, without joining them.
+// Never a character count: "中文字" reports 9, not 3.
 //
 // Not a size guard — judge each frame's header before reading its payload; by the
 // time a DataFrames exists its frames have already been read and allocated.

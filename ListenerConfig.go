@@ -32,7 +32,7 @@ type ListenerConfig struct {
 	// MaxDataFrameCount caps how many data frames one message may arrive in.
 	// It bounds the memory of held frames, which tiny fragments make far larger
 	// than the bytes they spend. 0 means no limit. When a message goes over it,
-	// answer 1009 and close. LISTENER_README.md explains how to pick a value.
+	// answer 1009 and close. LISTENER.md explains how to pick a value.
 	MaxDataFrameCount uint64
 
 	// The hooks run one at a time in the read loop. A slow hook stops reading,

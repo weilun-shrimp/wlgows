@@ -12,7 +12,7 @@ on the request read are one setting each. Run and Accept leave both to you.
 You can add them yourself, with a read deadline and a capped reader, but it
 takes more care, so we do not recommend it. But Run (Raw TCP) is fast. If you know what
 you are doing, such as with internal connections from trusted sources, it is
-yours to use. See SERVER_README.md.
+yours to use. See SERVER.md.
 */
 func Run(service string) (*Server, error) {
 	return run(service, runDI{

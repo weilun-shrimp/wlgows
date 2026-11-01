@@ -1,4 +1,4 @@
-**English** · [繁體中文](./CLIENT_README.zh-TW.md)
+**English** · [繁體中文](./CLIENT.zh-TW.md)
 
 # Client
 
@@ -15,9 +15,9 @@ handshake, subprotocols and compression.
 - [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
 
-Reading is in [LISTENER_README.md](./LISTENER_README.md), sending in
-[SENDING_README.md](./SENDING_README.md), and the server side in
-[SERVER_README.md](./SERVER_README.md).
+Reading is in [LISTENER.md](./LISTENER.md), sending in
+[SENDING.md](./SENDING.md), and the server side in
+[SERVER.md](./SERVER.md).
 
 ## Dialing
 
@@ -89,7 +89,7 @@ if err != nil {
   may pull the start of the first frame into it.
 - **`writer`** is what every frame is sent through. A client masks a copy of
   each payload in it, so its size decides how many socket writes a large
-  message takes. See [Memory: the write buffer](./SENDING_README.md#memory-the-write-buffer).
+  message takes. See [Memory: the write buffer](./SENDING.md#memory-the-write-buffer).
   The handshake request itself goes straight to `netConn`.
 - **`config`** is what the handshake offers. `ClientHandShakeConfig{}` offers
   nothing and runs a plain handshake. See [The config](#the-config).
@@ -182,7 +182,7 @@ rows. Use it to know whether the connection is already closed, or, if you
 close it.
 
 It knows only handshake errors. For errors from `Listen`, see
-[`StandardClosePayloadFor`](./LISTENER_README.md#errors).
+[`StandardClosePayloadFor`](./LISTENER.md#errors).
 
 ## Subprotocols
 
@@ -266,7 +266,7 @@ Both client examples have the offer and the check, commented out.
 
 Each item in `config.PermessageDeflates` is one offer, most preferred first.
 What each field means is in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
-Sending deflated once it is agreed is in [SENDING_README.md](./SENDING_README.md#compression-permessage-deflate).
+Sending deflated once it is agreed is in [SENDING.md](./SENDING.md#compression-permessage-deflate).
 
 ```go
 config := wlgows.ClientHandShakeConfig{
@@ -394,9 +394,9 @@ if err := listener.Listen(); err != nil {
 }
 ```
 
-- **Reading:** [LISTENER_README.md](./LISTENER_README.md) — hooks, limits, what
-  each error means, [noticing a dead peer](./LISTENER_README.md#it-has-no-pingpong-liveness),
+- **Reading:** [LISTENER.md](./LISTENER.md) — hooks, limits, what
+  each error means, [noticing a dead peer](./LISTENER.md#it-has-no-pingpong-liveness),
   and reading one frame at a time.
-- **Sending:** [SENDING_README.md](./SENDING_README.md) — [which call to use](./SENDING_README.md#choosing-a-call),
-  streaming a large message, [pinging on an interval](./SENDING_README.md#pinging-on-an-interval),
+- **Sending:** [SENDING.md](./SENDING.md) — [which call to use](./SENDING.md#choosing-a-call),
+  streaming a large message, [pinging on an interval](./SENDING.md#pinging-on-an-interval),
   the write buffer, and locks.

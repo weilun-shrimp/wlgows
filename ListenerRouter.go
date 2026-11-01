@@ -121,15 +121,15 @@ func (l *Listener) resetCurrentDataFrames() {
 validTextUTF8 reports whether a text message is valid UTF-8.
 
 RFC 6455 5.6 puts the rule on the whole message, not on each frame: a frame may
-end halfway through a rune, so the bytes have to be judged joined. A single
-frame message is judged in place, since joining one frame would copy the whole
-payload for nothing.
+end halfway through a rune. The payloads are checked in place, one after the
+other, so nothing is joined.
 */
 func validTextUTF8(frames DataFrames) bool {
-	if len(frames) == 1 { // Avoid an allocation
-		return utf8.Valid(frames[0].PayloadData)
+	var checker utf8Checker
+	for _, frame := range frames {
+		checker.put(frame.PayloadData)
 	}
-	return utf8.Valid(frames.Bytes())
+	return checker.isValid()
 }
 
 /*

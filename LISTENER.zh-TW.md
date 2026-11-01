@@ -1,4 +1,4 @@
-[English](./LISTENER_README.md) · **繁體中文**
+[English](./LISTENER.md) · **繁體中文**
 
 # Listener
 
@@ -20,14 +20,14 @@ message 組回來，再依 opcode 呼叫你的 hook。保留的 opcode 會交給
 - [記憶體與 read buffer](#記憶體與-read-buffer)
 - [Concurrency](#concurrency) — 只用一個讀取者
 
-取得 `Conn` 的方法見 [SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md) 與
-[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md)，傳送見
-[SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md)。
+取得 `Conn` 的方法見 [SERVER.zh-TW.md](./SERVER.zh-TW.md) 與
+[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)，傳送見
+[SENDING.zh-TW.md](./SENDING.zh-TW.md)。
 
 ## Quick start
 
 `conn` 是一條已經完成 handshake 的 `*wlgows.Conn`，可以來自
-[server](./SERVER_README.zh-TW.md#handshake) 端或 [client](./CLIENT_README.zh-TW.md#handshake) 端。
+[server](./SERVER.zh-TW.md#handshake) 端或 [client](./CLIENT.zh-TW.md#handshake) 端。
 這裡用的是 server 端的。它處理一條連線，以及 `Listen` 每一種回傳結果。`Pong` 刻意
 不設：5.5.3 不要求回應 pong，而 nil hook 什麼都不做。
 
@@ -172,7 +172,7 @@ client 要等的話，在交換 close frame 之後繼續讀取，並設定 deadl
 `Ping` 和 `Pong` hook 只告訴你收到了 frame。斷線的對方和安靜的對方看起來一樣，
 所以你需要自己的計時器：
 
-- 定期送出 ping：[`StartPingLoop`](./SENDING_README.zh-TW.md#定期送出-ping) 會替你做
+- 定期送出 ping：[`StartPingLoop`](./SENDING.zh-TW.md#定期送出-ping) 會替你做
 - 收到**任何** pong 就重設 deadline，不要比對 payload
 - deadline 到了還沒收到 pong，就當作對方已經斷線，關閉連線
 
@@ -340,7 +340,7 @@ Listener 在 `Close` 之後會繼續讀，所以你的 `Close` hook 要呼叫 `P
 ### 不複製地讀取 text：`unsafe`
 
 **只有在你完全清楚自己在做什麼時才使用。**
-[傳送說明](./SENDING_README.zh-TW.md#更快更省記憶體用-unsafe-送出-string)裡的警告這裡同樣
+[傳送說明](./SENDING.zh-TW.md#更快更省記憶體用-unsafe-送出-string)裡的警告這裡同樣
 適用。不確定的話，請用 `frames.String()`，只多一次複製。
 
 wlgows 讀完後從不寫入 payload，而且每個 frame 有自己的 payload。所以單一 frame 的
@@ -575,7 +575,7 @@ reader := bufio.NewReaderSize(netConn, 16) // 16 是下限：小於 16 會被 bu
 100 個 frame 那一列假設資料都已到達。對方慢時差距會縮小。
 
 一整條閒置連線的用量，見
-[最小的連線](./SENDING_README.zh-TW.md#最小的連線)。
+[最小的連線](./SENDING.zh-TW.md#最小的連線)。
 
 ## Concurrency
 

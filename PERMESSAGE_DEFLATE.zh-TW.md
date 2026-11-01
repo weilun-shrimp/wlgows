@@ -4,9 +4,9 @@
 
 `PermessageDeflateConfig` 每個欄位的意思，以及一份設定如何寫進
 `Sec-WebSocket-Extensions`（RFC 7692）。兩邊各自怎麼使用，見
-[CLIENT_README.zh-TW.md](./CLIENT_README.zh-TW.md#壓縮-permessage-deflate) 與
-[SERVER_README.zh-TW.md](./SERVER_README.zh-TW.md#壓縮-permessage-deflate)，deflate
-後傳送見 [SENDING_README.zh-TW.md](./SENDING_README.zh-TW.md#壓縮-permessage-deflate)。
+[CLIENT.zh-TW.md](./CLIENT.zh-TW.md#壓縮-permessage-deflate) 與
+[SERVER.zh-TW.md](./SERVER.zh-TW.md#壓縮-permessage-deflate)，deflate
+後傳送見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#壓縮-permessage-deflate)。
 
 ## Contents
 
