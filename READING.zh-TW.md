@@ -280,6 +280,9 @@ Listener 不會解壓縮。所以壓縮過的 text message：
 
 如果對方同意 no context takeover，每則 message 都各自獨立，提早 `Close` 就沒問題。
 
+壓縮會怎麼使用你的記憶體、用掉多少，見
+[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#記憶體)。
+
 ## 大型 message：Data hook
 
 `Text` 與 `Binary` hook 拿到的是整則 message，所以它必須放得進記憶體。message 大到

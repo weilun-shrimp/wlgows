@@ -6,7 +6,7 @@
 
 | Area | vs gorilla | vs gobwas |
 |---|---|---|
-| Server send, small frame | **Win** (19 vs 23 ns) | Lose (19 vs 15 ns), and **Win** 0 allocs vs 1 |
+| Server send, small frame | **Win** (17.8 vs 23 ns) | Lose (17.8 vs 15 ns), and **Win** 0 allocs vs 1 |
 | Server send, large frame | **Win** (53 vs 90 ns) | **Win** (53 vs 59 ns) |
 | Server send, 64 frames batched | **Win** (672 vs 1480 ns) | **Win** (672 vs 811 ns) |
 | Send memory | **Win** (0 allocs, always) | **Win** (0 allocs vs 1 per frame) |
@@ -16,12 +16,19 @@
 | Read, small frame | **Win** (1.9x to 2.8x faster) | **Win** on a server at 16B (8% to 12% faster)<br>Tie at 1KB on a client, 4% to 6% slower on a server<br>13% to 24% slower on a client at 16B |
 | Read memory, 1MB frame | **Win** (1.05 MB vs 2.23 MB) | Tie (1.05 MB) |
 
-wlgows is faster than gorilla in every case but small client sends, and it is
-the only one of the three that never allocates on send. Against gobwas it wins
-batched and large server sends and 16B server reads, ties single client reads
-from 1KB, and loses the client send path, where gobwas trades away safety for
-speed. It also trails gobwas on single 16B server sends, small client reads and
-large server reads.
+wlgows is faster than gorilla in every case but client sends. It is the only
+one of the three that never allocates on send.
+
+Against gobwas:
+
+- wlgows wins batched server sends, large server sends and 16B server reads.
+- wlgows ties on client reads of 1KB and larger, and is 20% faster on one 1MB
+  client frame.
+- wlgows is slower on client sends, where gobwas gives up safety for speed.
+- wlgows is slower on single 16B server sends (17.8 vs 15 ns), but **Win** 0
+  allocs vs 1.
+- wlgows is also slower on small client reads, and server reads of 1KB and
+  larger.
 
 **Both client send losses are on purpose.** wlgows puts correctness and safety
 before benchmark numbers (see [Correctness first](./README.md)). Each loss
@@ -47,6 +54,7 @@ harness that mirrors it case for case:
 - A 4096 byte reader and writer on every connection.
 - Sizes are the whole frame on the wire, header and payload, from empty to 1MB.
 - "one" is a single frame per op, "many" is 64 frames per op.
+- No compression: permessage-deflate is not measured.
 - Sends go to a connection that drops the bytes and counts the Writes. Reads
   come from a wire recorded once with wlgows and replayed, so all three read the
   same bytes.
@@ -162,7 +170,8 @@ Masking in place means the caller cannot pass:
 - A buffer still in use elsewhere, such as a message sent to many connections or
   a pooled buffer. After the call it holds masked bytes.
 
-wlgows accepts all of these, because the README promises that your payload is
+wlgows accepts all of these, because
+[SENDING.md](./SENDING.md#whole-messages) promises that your payload is
 only read. The copy is the price of that promise.
 
 ## Reads, against gobwas
@@ -198,7 +207,7 @@ the payload itself. The "many" 1MB reads allocate 64 MB per op and vary by up to
 
 | frames | size | wlgows | gorilla | gobwas | wlgows B/allocs | gorilla B/allocs | gobwas B/allocs |
 |---|---|---|---|---|---|---|---|
-| one | 16B | 19 | 23 | 15 | 0 / 0 | 0 / 0 | 16 / 1 |
+| one | 16B | 17.8 | 23 | 15 | 0 / 0 | 0 / 0 | 16 / 1 |
 | one | 1KB | 27 | 34 | 26 | 0 / 0 | 0 / 0 | 16 / 1 |
 | one | 16KB | 53 | 89 | 59 | 0 / 0 | 72 / 2 | 16 / 1 |
 | one | 1MB | 53 | 90 | 59 | 0 / 0 | 72 / 2 | 16 / 1 |

@@ -9,7 +9,7 @@ gorilla/websocket 快（[benchmark](./BENCHMARK_COMPARISON.zh-TW.md)）。容易
 下方的 Quick Start 是一個能執行的 echo server。`conn.NewStandardListener()` 會替你
 處理 ping、pong 與 close。需要更多時，你可以串流比記憶體還大的 message、自己處理
 每個 frame、依自己的節奏送 ping，或手動組出 frame。handshake 由你自己執行，RFC 6455
-要你負責的每條規則都有文件說明。
+與 RFC 7692 的每條規則都有文件說明。
 
 **正確性優先。** 我們追求最快的程式，但前提是正確且安全：不用 `unsafe`，也不跳過
 bounds check。如果你清楚自己在做什麼，你的程式可以更進一步。見
@@ -25,6 +25,7 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 - **Listener**：單一 read loop，依 RFC 6455 驗證每個 frame 後交給你的 hook
 - **Frame-level control**：需要時可自行組出 frame 並送出
 - **Streaming**：以一個個 fragment 傳送比記憶體還大的 message
+- **Compression**：permessage-deflate（RFC 7692），兩端皆支援。見 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)
 - **Memory in your hands**：每條連線的 write buffer 由你提供，最小 14 byte，而且隨時可以更換；每次傳送也能自己選 frame 大小。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#掌控權在你手上)
 - **Keepalive**：定期發送 ping，每次的 payload 由你決定
 - **Concurrent sending**：以 lock 保護，且 control frame 不會被卡在大型 message
@@ -34,7 +35,7 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 
 - [Installation](#installation)
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client)
-- [說明文件](#說明文件) — server、client、讀取、傳送、benchmark
+- [說明文件](#說明文件) — server、client、讀取、Listener、傳送、壓縮、benchmark
 - [Examples](#examples) — 三個 echo server、一個 client，以及一組 streaming 範例
 - [從 v6 升級](#從-v6-升級)
 - [Testing](#testing)
@@ -57,12 +58,27 @@ go get github.com/weilun-shrimp/wlgows/v7
 package main
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/weilun-shrimp/wlgows/v7"
 )
+
+const maxMessageSize = 10 * 1024 * 1024 // 10 MB
+
+// readMessage 回傳一則 message 的內容，最多 maxMessageSize byte。壓縮過的
+// message 會先解壓縮，text 會檢查是不是 UTF-8。message 超過 maxMessageSize 時，
+// 回傳 ErrSizeLimitExceeded。見 READING.zh-TW.md。
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close() // 一定要 Close
+	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxMessageSize))
+}
 
 func main() {
 	server := &http.Server{
@@ -94,16 +110,21 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ping、pong、close 與保留 opcode 都已處理好，masking 也已依連線端別設定完成。
+	// ping、pong、close 與保留 opcode 都已處理好。
 	listener := conn.NewStandardListener()
 
 	// SetConfig 會整份替換設定，所以請從標準 hook 設好的那份開始修改。
 	config := listener.GetConfig()
-	config.MaxDataFramesSize = 10 * 1024 * 1024
-	config.MaxFrameSize = 10 * 1024 * 1024
-	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
+	config.MaxDataFramesSize = maxMessageSize
+	config.MaxFrameSize = maxMessageSize
+	config.MaxDataFrameCount = maxMessageSize / 256
 	config.Text = func(frames wlgows.DataFrames) {
-		conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen 會回傳 err
+			return
+		}
+		conn.SendText(message, wlgows.SendDataConfig{}) // echo
 	}
 	listener.SetConfig(config)
 
@@ -126,14 +147,13 @@ Gin 之下做法相同，改用 `c.Writer.Hijack()` 與 `c.Request`。因為 Gin
 
 ### Client
 
-你不需要設定 masking：`Conn` 知道自己是哪一端。
-
 ```go
 package main
 
 import (
 	"bufio"
 	"context"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -141,10 +161,24 @@ import (
 	"github.com/weilun-shrimp/wlgows/v7"
 )
 
+const maxMessageSize = 10 * 1024 * 1024 // 10 MB
+
+// readMessage 回傳一則 message 的內容，最多 maxMessageSize byte。壓縮過的
+// message 會先解壓縮，text 會檢查是不是 UTF-8。message 超過 maxMessageSize 時，
+// 回傳 ErrSizeLimitExceeded。見 READING.zh-TW.md。
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close() // 一定要 Close
+	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxMessageSize))
+}
+
 func main() {
-	// DialContext 只負責建立連線並組好 request，handshake 由你執行，所以送出前
-	// 仍可替 request 加上 header。ctx 與 dialer 都會限制建立連線的時間，以先到的
-	// 為準。詳見 CLIENT.zh-TW.md。
+	// DialContext 只負責建立連線並組好 request。handshake 由你自己執行，所以送出前
+	// 還可以替 `request` 加上 header。ctx 與 dialer 都會限制 TCP 連線與 TLS
+	// handshake 的時間，以較短的為準。見 CLIENT.zh-TW.md。
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
@@ -154,7 +188,7 @@ func main() {
 	}
 	defer netConn.Close()
 
-	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 LISTENER.zh-TW.md
+	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 READING.zh-TW.md
 	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 每條連線 4096 byte；見 SENDING.zh-TW.md
 	if err != nil {
 		panic(err)
@@ -163,11 +197,16 @@ func main() {
 	listener := conn.NewStandardListener()
 
 	config := listener.GetConfig() // 標準 hook 設好的那份
-	config.MaxDataFramesSize = 10 * 1024 * 1024
-	config.MaxFrameSize = 10 * 1024 * 1024
-	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
+	config.MaxDataFramesSize = maxMessageSize
+	config.MaxFrameSize = maxMessageSize
+	config.MaxDataFrameCount = maxMessageSize / 256
 	config.Text = func(frames wlgows.DataFrames) {
-		log.Println("received:", frames.String())
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen 會回傳 err
+			return
+		}
+		log.Printf("received: %s", message)
 	}
 	listener.SetConfig(config)
 
@@ -192,9 +231,11 @@ func main() {
 | 文件 | 內容 |
 |---|---|
 | **[SERVER.zh-TW.md](./SERVER.zh-TW.md)** | 接受連線、handshake 與它的拒絕回應、從 `net/http` 或 Gin hijack、TLS、subprotocol |
-| **[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)** | 建立連線、TLS、handshake、加上 header、subprotocol |
-| **[LISTENER.zh-TW.md](./LISTENER.zh-TW.md)** | 讀取：hook、上限、error、偵測已斷線的對方、一次讀一個 frame、read buffer |
+| **[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)** | 建立連線、TLS、handshake、加上 header、subprotocol、壓縮 |
+| **[READING.zh-TW.md](./READING.zh-TW.md)** | 讀取 message：限制大小、error 與對應的 close code、壓縮的 message、一次讀一個 frame、read buffer |
+| **[LISTENER.zh-TW.md](./LISTENER.zh-TW.md)** | read loop：標準 Listener、hook、上限、error、偵測已斷線的對方、暫停 |
 | **[SENDING.zh-TW.md](./SENDING.zh-TW.md)** | 傳送：完整 message、streaming、壓縮、control frame、定期送出 ping、write buffer、lock |
+| **[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)** | 壓縮：每個設定欄位、context takeover、記憶體、自己壓縮大型資料 |
 | **[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)** | 與 gorilla/websocket、gobwas/ws 比較：每個數字，以及每一項落後為何保留 |
 
 ## Examples
@@ -236,7 +277,8 @@ go run ./stream_client   # 另開一個終端機，按兩次 Enter 就會傳送 
 ## 從 v6 升級
 
 v7 直接從你的 `bufio.Reader` 讀 frame header，所以一個 frame 只配置它自己與 payload。
-Listener 的上限也改了名。其他 `Conn` 程式碼不用改。以下會編譯失敗：
+Listener 的上限也改了名。傳送、兩邊的 handshake、`NewConn` 與 `NewListener` 現在都要
+傳入一份設定。以下會編譯失敗：
 
 | v6 | v7 |
 |---|---|
@@ -251,8 +293,20 @@ Listener 的上限也改了名。其他 `Conn` 程式碼不用改。以下會編
 | `ListenerConfig{MaxMsgPayloadByteLen: n}` | `ListenerConfig{MaxDataFramesSize: n, MaxFrameSize: n}` |
 | `wlgows.ErrMsgFrameCountExceeded` | `wlgows.ErrDataFrameCountExceeded` |
 | `wlgows.Frames`、`func(frames wlgows.Frames)` hook | `wlgows.DataFrames`、`func(frames wlgows.DataFrames)` |
+| `frames.String()`、`frames.Bytes()` | `reader, err := conn.DataFramesReader(frames)`，接著 `defer reader.Close()`，再 `io.ReadAll(wlgows.NewSizeLimitReader(reader, maxSize))`，其中 `maxSize` 是你接受的 message 大小上限。壓縮過的 message 會由 reader 解壓縮，text 也會檢查是不是 UTF-8。見 [READING.zh-TW.md](./READING.zh-TW.md) |
+| `conn.SendText(data, chunkSize)`，`SendBinary` 也一樣 | `conn.SendText(data, wlgows.SendDataConfig{ChunkSize: chunkSize})` |
+| `conn.SendData(opcode, payload, chunkSize)` | `conn.SendData(opcode, payload, wlgows.SendDataConfig{ChunkSize: chunkSize})` |
+| `conn.StartLongDataTransmission(opcode)` | `conn.StartLongDataTransmission(opcode, wlgows.StartLongDataTransmissionConfig{})` |
+| `conn.TransmitData(data)`，`EndLongDataTransmission` 也一樣 | `conn.TransmitData(data, wlgows.TransmitDataConfig{})` |
+| `wlgows.NewConn(netConn, reader, writer, maskSendFrame)` | `wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIsClient: ...})`。意思剛好相反：v6 在 client 端傳 `true`，v7 在 server 端傳 `true` |
+| `wlgows.NewListener(conn)` | `wlgows.NewListener(conn, wlgows.NewListenerConfig{PeerIsClient: ..., PermessageDeflateAgreedConfig: ...})`。在 server 端把 `PeerIsClient` 設為 `true`。設錯的話，每個 frame 都會以 `ErrFrameMasked` 或 `ErrFrameNotMasked` 失敗。沒有協商出壓縮時，`PermessageDeflateAgreedConfig` 是 `nil` |
+| `wlgows.UpgradeRequest(request)` | `wlgows.UpgradeRequest(request, wlgows.ClientHandShakeConfig{})` |
 | `wlgows.ServerHandShake(netConn, reader, writer, request)` | `wlgows.ServerHandShake(netConn, reader, writer, request, wlgows.ServerHandShakeConfig{})` |
+| `wlgows.ClientHandShake(netConn, reader, writer, request)` | `wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})` |
 | 你自己的 `ListenerConn`，實作 `GetNextFrame(max)` | 改為 `LockRead()`、`UnlockRead()`、`GetNextFrameHeader()` 與 `ReadFramePayload(frame)`，與 `*Conn` 相同 |
+
+`wlgows.Dial(url, tlsConfig)` 還是可以用。`DialContext` 是新的：多了 context 與
+`*net.Dialer` 兩個參數。見 [CLIENT.zh-TW.md](./CLIENT.zh-TW.md#建立連線)。
 
 不會出現編譯錯誤、但行為改變的地方：
 
@@ -274,10 +328,12 @@ Listener 的上限也改了名。其他 `Conn` 程式碼不用改。以下會編
   `Sec-WebSocket-Protocol` 不是提出過的值時，會回傳
   `ErrHandshakeResponseSubprotocolNotOffered`；不只一個值時，會回傳
   `ErrHandshakeResponseSubprotocolMultiple`。在 v6 中這兩種都會被接受。
-- **`ClientHandShake` 遇到 RFC 6455 4.1 判定失敗的回應時，會關閉連線。**
-  `Upgrade`、`Connection`、`Sec-WebSocket-Accept` 或 `Sec-WebSocket-Protocol` 不正確時，
-  會在回傳 error 之前關閉 `netConn`（7.1.7）。其他 error 仍由你負責關閉。在 v6 中
-  一律不會關閉。`defer netConn.Close()` 照樣可以用：第二次關閉只會回傳 `net.ErrClosed`。
+- **RFC 6455 4.1 或 RFC 7692 5 要求中斷連線時，`ClientHandShake` 會關閉連線。**
+  例如 `Upgrade`、`Connection`、`Sec-WebSocket-Accept`、`Sec-WebSocket-Protocol` 或
+  `Sec-WebSocket-Extensions` 不正確時，會在回傳 error 之前關閉 `netConn`
+  （RFC 6455 7.1.7）。其他 error 不會關閉連線，要由你關閉。完整清單見
+  [回傳值](./CLIENT.zh-TW.md#回傳值)。在 v6 中一律不會關閉。`defer netConn.Close()`
+  照樣可以用：第二次關閉只會回傳 `net.ErrClosed`。
 - **101 回應不再送出 `Sec-WebSocket-Version`。** RFC 6455 4.2.2 沒有把它列在 101 裡；
   server 只有在拒絕某個版本時，才會在 426 中送回它。錯誤地要求 101 帶有它的 client 現在會失敗。
 - **`TransmitData` 會把空的 chunk 以空的 frame 送出。** 在 v6 中它會被略過。如果你不想

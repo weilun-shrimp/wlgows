@@ -6,7 +6,7 @@
 
 | 項目 | 對 gorilla | 對 gobwas |
 |---|---|---|
-| server 送出，小 frame | **勝**（19 vs 23 ns） | 負（19 vs 15 ns），配置次數**勝**（0 次 vs 1 次） |
+| server 送出，小 frame | **勝**（17.8 vs 23 ns） | 負（17.8 vs 15 ns），配置次數**勝**（0 次 vs 1 次） |
 | server 送出，大 frame | **勝**（53 vs 90 ns） | **勝**（53 vs 59 ns） |
 | server 送出，64 個 frame 批次 | **勝**（672 vs 1480 ns） | **勝**（672 vs 811 ns） |
 | 送出的記憶體 | **勝**（永遠 0 次配置） | **勝**（0 次配置 vs 每個 frame 1 次） |
@@ -16,11 +16,17 @@
 | 讀取，小 frame | **勝**（快 1.9 到 2.8 倍） | server 16B **勝**（快 8% 到 12%）<br>1KB 時 client 平手，server 慢 4% 到 6%<br>client 16B 慢 13% 到 24% |
 | 讀取的記憶體，1MB frame | **勝**（1.05 MB vs 2.23 MB） | 平手（1.05 MB） |
 
-除了 client 送出小 frame 之外，wlgows 在每一項都比 gorilla 快，而且是三者中唯一
-送出時從不配置記憶體的。對 gobwas，wlgows 贏下 server 批次送出、server 大 frame
-送出與 server 16B 讀取，client 讀取 1KB 以上的單一 frame 平手，輸掉 client 送出；
-在 client 送出這一側，gobwas 是拿安全性換速度。server 送出單一 16B frame、client
-讀取小 frame 與 server 讀取大 frame 也落後 gobwas。
+除了 client 送出之外，wlgows 在每一項都比 gorilla 快。它也是三者中唯一送出時從不
+配置記憶體的。
+
+對 gobwas：
+
+- server 批次送出、server 送出大 frame 與 server 讀取 16B，wlgows 勝。
+- client 讀取 1KB 以上的 frame，wlgows 平手；讀取單一 1MB client frame 快 20%。
+- client 送出，wlgows 較慢；在這一側，gobwas 是拿安全性換速度。
+- server 送出單一 16B frame，wlgows 較慢（17.8 vs 15 ns），但配置次數**勝**（0 次
+  vs 1 次）。
+- client 讀取小 frame，以及 server 讀取 1KB 以上的 frame，wlgows 也較慢。
 
 **兩項 client 送出的落後都是刻意的。** wlgows 把正確性與安全性放在 benchmark
 數字之前（見 [正確性優先](./README.zh-TW.md)）。下面每一項落後，都是量測過、
@@ -45,6 +51,7 @@
 - 每條連線都有 4096 byte 的 reader 與 writer。
 - 大小指的是線路上整個 frame，含 header 與 payload，從空的到 1MB。
 - 「one」是每個 op 一個 frame，「many」是每個 op 64 個 frame。
+- 不壓縮：沒有量測 permessage-deflate。
 - 送出時寫到一條丟掉資料、只計算 Write 次數的連線。讀取時重播一份用 wlgows
   事先錄好的線路資料，所以三者讀的是完全相同的 byte。
 
@@ -153,8 +160,8 @@ gobwas 28 ns）。
 - 別處還在使用的 buffer，例如要送給多條連線的 message，或還在用的 pooled
   buffer。呼叫之後裡面就是加過 mask 的 byte。
 
-wlgows 這些都能接受，因為 README 承諾你的 payload 只會被讀取。這次複製就是
-這個承諾的代價。
+wlgows 這些都能接受，因為 [SENDING.zh-TW.md](./SENDING.zh-TW.md#完整的-message)
+承諾你的 payload 只會被讀取。這次複製就是這個承諾的代價。
 
 ## 讀取，對 gobwas
 
@@ -186,7 +193,7 @@ ns/op，越低越好。B/op 與配置次數都是每個 op 的值；讀取的部
 
 | frame 數 | 大小 | wlgows | gorilla | gobwas | wlgows B/配置 | gorilla B/配置 | gobwas B/配置 |
 |---|---|---|---|---|---|---|---|
-| one | 16B | 19 | 23 | 15 | 0 / 0 | 0 / 0 | 16 / 1 |
+| one | 16B | 17.8 | 23 | 15 | 0 / 0 | 0 / 0 | 16 / 1 |
 | one | 1KB | 27 | 34 | 26 | 0 / 0 | 0 / 0 | 16 / 1 |
 | one | 16KB | 53 | 89 | 59 | 0 / 0 | 72 / 2 | 16 / 1 |
 | one | 1MB | 53 | 90 | 59 | 0 / 0 | 72 / 2 | 16 / 1 |

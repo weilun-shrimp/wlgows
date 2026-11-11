@@ -18,7 +18,7 @@ compression.
 - [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
 
-Reading is in [LISTENER.md](./LISTENER.md), sending in
+Reading is in [READING.md](./READING.md), sending in
 [SENDING.md](./SENDING.md), and the client side in
 [CLIENT.md](./CLIENT.md).
 
@@ -29,8 +29,10 @@ timeout and a size limit on the request are one setting each. `Run` and
 `Accept` leave both to you. Without them, a client can hold a connection
 forever, or send headers until memory runs out. You can add them yourself, with
 a read deadline and a capped reader, but it takes more care, so we do not
-recommend it. But `Run` is fast. If you know what you are doing, such as with
-internal connections from trusted sources, it is yours to use.
+recommend it.
+
+But `Run` is fast. If you know what you are doing, such as with internal
+connections from trusted sources, it is yours to use.
 
 `Run` listens. `Accept` returns the next TCP connection, and nothing more. You
 read the request and run the handshake yourself:
@@ -44,6 +46,9 @@ defer server.Close()
 
 for {
 	netConn, err := server.Accept()
+	if errors.Is(err, net.ErrClosed) {
+		return // the server was closed
+	}
 	if err != nil {
 		continue
 	}
@@ -90,8 +95,6 @@ the `Conn`. `Origin` and the other fields are not checked.
 | `request` | The request, already parsed. |
 | `config` | What the server answers with. `wlgows.ServerHandShakeConfig{}` runs a plain handshake. See [The config](#the-config). |
 
-The `Conn` comes back unmasked: a server never masks what it sends (5.1).
-
 ### The config
 
 `ServerHandShakeConfig` holds what the server answers with, if the client
@@ -104,8 +107,10 @@ offered it:
 
 ```go
 config := wlgows.ServerHandShakeConfig{
-	Subprotocol:        "chat.v2",
-	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+	Subprotocol: "chat.v2",
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		{ServerNoContextTakeover: true, ClientNoContextTakeover: true},
+	},
 }
 conn, resp, err := wlgows.ServerHandShake(netConn, reader, writer, request, config)
 ```
@@ -126,13 +131,12 @@ without it. You can check `PermessageDeflates` before any handshake, see
 | a config in `config.PermessageDeflates` is refused — see [Compression](#checking-the-config) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` or `ErrHandshakeServerDeflateConfigUnsupported` |
 
 `conn` is `nil` whenever `err` is not. `resp` is what reached the wire, so you
-can log it. Its body has already been read out. A `nil` `resp` means nothing
-was sent.
+can log it. A `nil` `resp` means nothing was sent.
 
-`ServerHandShake` never closes the connection. **Unless you have a better reason
-not to, we recommend closing it on every handshake error**: the connection can
-never become a WebSocket. `defer netConn.Close()` right after accepting or hijacking
-covers every case.
+`ServerHandShake` never closes the connection. **We recommend closing it on
+every handshake error.** After an error, the connection can never become a
+WebSocket. `defer
+netConn.Close()` right after accepting or hijacking covers every case.
 
 ### Refusals
 
@@ -147,7 +151,7 @@ that names it:
 | `ErrHttpSecWebSocketKeyHeaderNotSet`, `ErrHttpSecWebSocketKeyInvalid` | 400 Bad Request |
 | `ErrHttpSecWebSocketKeyDuplicated`, `ErrHttpSecWebSocketVersionDuplicated` | 400 Bad Request (RFC 6455 11.3.1, 11.3.5) |
 | `ErrHttpConnectionHeaderNotUpgrade`, `ErrHttpUpgradeHeaderNotWebsocket` | 400 Bad Request |
-| `ErrHttpSecWebSocketVersionNotSupported` | 426 Upgrade Required, with `Sec-WebSocket-Version: 13` (4.2.2, 4.4) |
+| `ErrHttpSecWebSocketVersionNotSupported` | 426 Upgrade Required, with `Sec-WebSocket-Version: 13` (RFC 6455 4.2.2, 4.4) |
 
 Every error wraps its sentinel, so compare with `errors.Is`:
 
@@ -193,17 +197,19 @@ func handler(w http.ResponseWriter, r *http.Request) {
   the connection is yours, and so is every byte you write to it.
 
 net/http sets no timeout by default, so set `ReadHeaderTimeout` and
-`IdleTimeout`. `ReadHeaderTimeout` only starts once a request's first bytes
-arrive. Without `IdleTimeout`, a client can send one ordinary request, then keep
-the connection open and silent forever. Neither one touches a hijacked
-connection. `MaxHeaderBytes` is 1 MB by default. Gin's `Run` uses a default server too, so
-serve a Gin engine with your own `http.Server`:
+`IdleTimeout`. On a new connection, `ReadHeaderTimeout` starts at once. On a
+kept-alive connection, it starts when the next request's first bytes arrive.
+Without `IdleTimeout`, a client can send one ordinary request, then keep the
+connection open and silent forever. Neither one touches a hijacked connection.
+
+`MaxHeaderBytes` is 1 MB by default. The example lowers it to 16 KB. Gin's `Run`
+uses a default `http.Server`, so serve a Gin engine with your own:
 
 ```go
 server := &http.Server{
 	Addr:              ":8001",
 	Handler:           mux, // or a Gin engine
-	ReadHeaderTimeout: 10 * time.Second, // once a request starts, the wait for its headers
+	ReadHeaderTimeout: 10 * time.Second, // the wait for a request's headers
 	IdleTimeout:       60 * time.Second, // on a kept-alive connection, the wait for the next request
 	MaxHeaderBytes:    16 * 1024,
 }
@@ -218,7 +224,8 @@ Under Gin it is the same, with `c.Writer.Hijack()` and `c.Request`. The
 
 There are two ways:
 
-- **Behind net/http.** Serve with `http.ListenAndServeTLS` and hijack as above.
+- **Behind net/http.** Call `server.ListenAndServeTLS(certFile, keyFile)` on
+  the `http.Server` above, and hijack the same way.
   The connection you get is already TLS. The hijack examples do this.
 - **On raw TCP.** `Run` is plain TCP, so wrap each accepted connection, and use
   the wrapped one everywhere after:
@@ -226,6 +233,9 @@ There are two ways:
 ```go
 for {
 	netConn, err := server.Accept()
+	if errors.Is(err, net.ErrClosed) {
+		return // the server was closed
+	}
 	if err != nil {
 		continue
 	}
@@ -240,9 +250,7 @@ A subprotocol is the application protocol your messages follow, such as
 `graphql-transport-ws`. The client offers a list in `Sec-WebSocket-Protocol`.
 The server answers with one of them, or none (RFC 6455 4.2.2).
 
-`RequestSubprotocols(request)` reads the offer, in the client's order. It reads
-every header line and splits each on commas, so `"a, b"` on one line and `"a"`
-and `"b"` on two give the same list.
+`RequestSubprotocols(request)` reads the offer, in the client's order.
 
 ### Picking one
 
@@ -254,7 +262,6 @@ conn, resp, err := wlgows.ServerHandShake(netConn, reader, writer, request, wlgo
 })
 ```
 
-It is a single field because the server may answer with one subprotocol only.
 It is sent only if the client offered it. Otherwise no header is sent, and the
 connection opens with no subprotocol. So the line above already means "chat.v2
 if the client speaks it, nothing otherwise".
@@ -304,8 +311,7 @@ if !slices.Contains(wlgows.RequestSubprotocols(request), "chat.v2") {
 	respWriter.WriteHeader(http.StatusBadRequest)
 	respWriter.Write([]byte("subprotocol chat.v2 required"))
 	wlgows.SendHandShakeResponse(netConn, respWriter.GenerateResponse())
-	netConn.Close()
-	return
+	return // the deferred netConn.Close() closes it
 }
 ```
 
@@ -325,11 +331,18 @@ in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
 Sending deflated once it is agreed is in
 [SENDING.md](./SENDING.md#compression-permessage-deflate).
 
+**We recommend sending without context, on both sides.** Then a connection
+keeps almost no compression memory between messages. The numbers are in
+[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#per-connection).
+Use the same config in the client's offer:
+
 ```go
 config := wlgows.ServerHandShakeConfig{
 	PermessageDeflates: []wlgows.PermessageDeflateConfig{
-		{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10}, // first choice
-		{ClientNoContextTakeover: true},                             // fallback
+		{
+			ServerNoContextTakeover: true, // the server sends without context
+			ClientNoContextTakeover: true, // the client sends without context
+		},
 	},
 }
 ```
@@ -341,8 +354,10 @@ before the first handshake. `ServerHandShake` already runs it on every config at
 every handshake, so production code does not have to call it again:
 
 ```go
+var handShakeConfig = wlgows.ServerHandShakeConfig{ /* ... */ } // the config your server uses
+
 func TestDeflateConfigs(t *testing.T) {
-	for _, serverConfig := range config.PermessageDeflates {
+	for _, serverConfig := range handShakeConfig.PermessageDeflates {
 		if err := wlgows.ValidateServerDeflateConfig(serverConfig); err != nil {
 			t.Fatal(err)
 		}
@@ -358,36 +373,26 @@ How the server reads each field:
 
 | Field | Means |
 |---|---|
-| `ServerNoContextTakeover` true | The server resets its window after each message. It is also set when the offer asks for it (RFC 7692 7.1.1.1). |
-| `ClientNoContextTakeover` true | The server asks the client to reset its window after each message (RFC 7692 7.1.1.2). The server then need not keep inflate state between messages. It is also set when the offer has it. |
+| `ServerNoContextTakeover` true | The server sends without context. It is also set when the offer asks for it (RFC 7692 7.1.1.1). |
+| `ClientNoContextTakeover` true | The server asks the client to send without context (RFC 7692 7.1.1.2). Then the server keeps nothing between the client's messages. It is also set when the offer has it. |
 | `ServerMaxWindowBits` | 0 or 15. 8 to 14 is refused, see [Checking the config](#checking-the-config). |
 | `ClientMaxWindowBitsEnabled` false | The server accepts any client window, up to 15 bits. `ClientMaxWindowBits` is ignored. |
 | `ClientMaxWindowBitsEnabled` true | The client's window is at most `ClientMaxWindowBits`, which must be 8 to 15. |
 
 ### Which answer is picked
 
-Your order comes first (library choice: RFC 7692 5 lets the server accept any
-one offer). For each config in the list, the server tries the
-client's offers in the client's order, and answers the first offer that allows
-that config (RFC 7692 5). The first config that some offer allows wins. The
-answer is that config, plus what that offer requires:
-
-- an offered `server_no_context_takeover` is added (RFC 7692 7.1.1.1);
-- an offered `client_no_context_takeover` is sent back, so the client's hint is
-  agreed (RFC 7692 7.1.1.2);
-- either `max_window_bits` is lowered to the offer's value (RFC 7692 7.1.2).
+The server tries your configs in your order. It uses the first one the client
+agrees to.
 
 An offer does not allow a config when:
 
-- it has an [invalid entry](./PERMESSAGE_DEFLATE.md#invalid-entries). The
-  server declines it instead of failing the handshake (RFC 7692 7);
 - it asks the server for a window under 15 bits, which wlgows cannot send with
   (library choice, see
   [Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits));
 - the config limits the client under 15 bits, and the offer has no
   `client_max_window_bits`. The server may send that param only when it was
-  offered (RFC 7692 7.1.2.2). A wlgows client never offers it, which is why the
-  example above has a fallback.
+  offered (RFC 7692 7.1.2.2). A wlgows client never offers it, so such a
+  config never fits a wlgows client.
 
 When no config fits, the answer has no `Sec-WebSocket-Extensions`, and the
 connection opens without compression.
@@ -462,7 +467,7 @@ var answer *wlgows.PermessageDeflateConfig
 if invalid == nil {
 	for _, serverConfig := range config.PermessageDeflates {
 		if answer = wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil {
-			resp.Header.Set("Sec-WebSocket-Extensions", answer.Format())
+			resp.Header.Set("Sec-WebSocket-Extensions", answer.Format()) // set it yourself only here: this code does ServerHandShake's work
 			break
 		}
 	}
@@ -483,8 +488,7 @@ conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIs
 
 - **`NewConn` checks nothing.** A connection whose handshake broke a rule, or
   the wrong `PeerIsClient` or agreement, breaks the protocol from the first frame.
-- **Its error** comes only from a writer under 14 bytes: it is flushed before it
-  is replaced, and that flush can fail.
+- **Its error** is a write error, from flushing a `writer` smaller than 14 bytes.
 - **A struct literal panics.** A `Conn` carries unexported dependencies, so
   build one with `NewConn` only.
 
@@ -492,27 +496,10 @@ conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIs
 
 With a `Conn` in hand, the rest is reading and sending:
 
-```go
-listener := conn.NewStandardListener() // ping, pong, close and reserved opcodes answered for you
-
-config := listener.GetConfig()
-config.Text = func(frames wlgows.DataFrames) {
-	conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
-}
-listener.SetConfig(config)
-
-go conn.StartPingLoop(30*time.Second, nil) // heartbeat; ends itself
-
-if err := listener.Listen(); err != nil {
-	if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-		conn.SendClose(payload)
-	}
-}
-```
-
-- **Reading:** [LISTENER.md](./LISTENER.md) — hooks, limits, what
-  each error means, [noticing a dead peer](./LISTENER.md#it-has-no-pingpong-liveness),
-  and reading one frame at a time.
+- **Reading:** [READING.md](./READING.md) — the bytes of a message, size
+  limits, errors, and compressed messages.
+- **The Listener:** [LISTENER.md](./LISTENER.md) — hooks, limits, what each
+  error means, and [noticing a dead peer](./LISTENER.md#it-has-no-pingpong-liveness).
 - **Sending:** [SENDING.md](./SENDING.md) — [which call to use](./SENDING.md#choosing-a-call),
   streaming a large message, [pinging on an interval](./SENDING.md#pinging-on-an-interval),
   the write buffer, and locks.

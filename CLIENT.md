@@ -15,7 +15,7 @@ handshake, subprotocols and compression.
 - [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
 
-Reading is in [LISTENER.md](./LISTENER.md), sending in
+Reading is in [READING.md](./READING.md), sending in
 [SENDING.md](./SENDING.md), and the server side in
 [SERVER.md](./SERVER.md).
 
@@ -25,7 +25,7 @@ Reading is in [LISTENER.md](./LISTENER.md), sending in
 does not run the handshake, so you can still add headers to the request first.
 
 ```go
-// Either bounds the TCP connect and the TLS handshake; the earlier one wins.
+// Both limit the TCP connect and the TLS handshake. The shorter one applies.
 ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 defer cancel()
 dialer := &net.Dialer{Timeout: 15 * time.Second}
@@ -36,7 +36,8 @@ if err != nil {
 defer netConn.Close()
 ```
 
-- **The URL** is `ws://` or `wss://`. `http://` and `https://` work the same.
+- **The URL** is `ws://` or `wss://`. `http://` and `https://` work the same as
+  `ws://` and `wss://`.
   Without a port, `ws://` dials 80 and `wss://` dials 443 (RFC 6455 3).
 - **The context** bounds the TCP connect and, for `wss://`, the TLS handshake.
   It stops mattering once `DialContext` returns. To bound the WebSocket
@@ -87,14 +88,10 @@ if err != nil {
 
 - **`reader`** must be the one you go on to read frames from. Reading the answer
   may pull the start of the first frame into it.
-- **`writer`** is what every frame is sent through. A client masks a copy of
-  each payload in it, so its size decides how many socket writes a large
-  message takes. See [Memory: the write buffer](./SENDING.md#memory-the-write-buffer).
-  The handshake request itself goes straight to `netConn`.
+- **`writer`** is what every frame is sent through. Its size decides how many
+  socket writes a large message takes. See [Memory: the write buffer](./SENDING.md#memory-the-write-buffer).
 - **`config`** is what the handshake offers. `ClientHandShakeConfig{}` offers
   nothing and runs a plain handshake. See [The config](#the-config).
-
-The `Conn` comes back masking: a client masks every frame it sends (5.1).
 
 ### The config
 
@@ -108,14 +105,17 @@ The `Conn` comes back masking: a client masks every frame it sends (5.1).
 ```go
 config := wlgows.ClientHandShakeConfig{
 	Subprotocols:       []string{"chat.v2", "chat.v1"},
-	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		{ServerNoContextTakeover: true, ClientNoContextTakeover: true},
+	},
 }
 conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, config)
 ```
 
-Each field is added on a line of its own, after the lines already in
-`request`, which are sent as they are. Setting the same header by hand and in
-the config is not recommended unless you know what you are doing.
+Each field is added on its own line, after any line of the same header
+already in `request`. Your own lines are sent as they are. Setting the same
+header by hand and in the config is not recommended unless you know what you
+are doing.
 
 ### Adding headers
 
@@ -137,6 +137,7 @@ one, and adds what `config` asks for.
 | Outcome | `conn` | `resp` | `err` |
 |---|---|---|---|
 | Upgraded | the `Conn` | the 101 | `nil` |
+| `request` is `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
 | The request URL has no host | `nil` | `nil` | `ErrUrlHostEmpty` |
 | `config` has an offer wlgows refuses — see [Compression](#compression-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateUnsupported` or `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 | The request could not be sent | `nil` | `nil` | why |
@@ -147,37 +148,40 @@ one, and adds what `config` asks for.
 `conn` is `nil` whenever `err` is not. A refusal comes back as
 `ErrHandshakeResponseStatusCodeInvalid`, and `resp.StatusCode` and `resp.Body`
 say why. The other ways an answer can be wrong, each a sentinel for
-`errors.Is`:
+`errors.Is`. `ClientHandShake` closes the connection for every error in this
+table:
 
-| Error | The answer | Closes the connection |
-|---|---|---|
-| `ErrHandshakeResponseProtoInvalid` | is a 101 that is not HTTP/1.1 | yes |
-| `ErrHandshakeResponseConnectionHeaderInvalid` | has no `Upgrade` token in `Connection` | yes |
-| `ErrHandshakeResponseUpgradeHeaderInvalid` | has no `websocket` token in `Upgrade` | yes |
-| `ErrHandshakeResponseAcceptHeaderMissing` | has no `Sec-WebSocket-Accept` | yes |
-| `ErrHandshakeResponseAcceptHeaderMismatch` | has a `Sec-WebSocket-Accept` that does not match the key sent | yes |
-| `ErrHandshakeResponseSubprotocolRepeated` | has the `Sec-WebSocket-Protocol` header more than once — see [Subprotocols](#subprotocols) | yes |
-| `ErrHandshakeResponseSubprotocolMultiple` | has more than one `Sec-WebSocket-Protocol` value on one line — see [Subprotocols](#subprotocols) | yes |
-| `ErrHandshakeResponseSubprotocolNotOffered` | has a `Sec-WebSocket-Protocol` you did not offer — see [Subprotocols](#subprotocols) | yes |
-| `ErrHandshakeResponseExtensionNotOffered` | accepts permessage-deflate twice, or in a way no offer allows — see [Compression](#compression-permessage-deflate) | yes |
-| `ErrHandshakeResponseDeflateParamsInvalid` | has a permessage-deflate param RFC 7692 7 forbids — see [Compression](#compression-permessage-deflate) | yes |
+| Error | The answer |
+|---|---|
+| `ErrHandshakeResponseProtoInvalid` | is a 101 that is not HTTP/1.1 |
+| `ErrHandshakeResponseConnectionHeaderInvalid` | has no `Upgrade` token in `Connection` |
+| `ErrHandshakeResponseUpgradeHeaderInvalid` | has no `websocket` token in `Upgrade` |
+| `ErrHandshakeResponseAcceptHeaderMissing` | has no `Sec-WebSocket-Accept` |
+| `ErrHandshakeResponseAcceptHeaderMismatch` | has a `Sec-WebSocket-Accept` that does not match the key sent |
+| `ErrHandshakeResponseSubprotocolRepeated` | has the `Sec-WebSocket-Protocol` header more than once — see [Subprotocols](#subprotocols) |
+| `ErrHandshakeResponseSubprotocolMultiple` | has more than one `Sec-WebSocket-Protocol` value on one line — see [Subprotocols](#subprotocols) |
+| `ErrHandshakeResponseSubprotocolNotOffered` | has a `Sec-WebSocket-Protocol` you did not offer — see [Subprotocols](#subprotocols) |
+| `ErrHandshakeResponseExtensionNotOffered` | accepts permessage-deflate twice, or in a way no offer allows — see [Compression](#compression-permessage-deflate) |
+| `ErrHandshakeResponseDeflateParamsInvalid` | has a permessage-deflate param RFC 7692 7 forbids — see [Compression](#compression-permessage-deflate) |
 
-**Who closes the connection.** RFC 6455 4.1 answers some broken responses with
-"Fail the WebSocket Connection", which means close it (7.1.7). For those, the
-"yes" rows above, `ClientHandShake` closes `netConn` before it returns the
-error. The error is the report 7.1.7 allows. Every other error leaves `netConn`
-open, and closing it is yours: a failed send or read, and a status other than 101, which 4.1 says to handle as plain HTTP, such as a
-redirect or a 401.
+**Who closes the connection.** For some broken answers, RFC 6455 4.1 and
+RFC 7692 5 say to "Fail the WebSocket Connection", which means close it
+(RFC 6455 7.1.7). For those, every error in the table above,
+`ClientHandShake` closes `netConn` before it returns, and reports the failure
+to you through the returned error. Every other error leaves `netConn` open, and you must close it.
+Examples are a failed send or read, and a status other than 101. RFC 6455 4.1
+says to handle a status other than 101 as plain HTTP, such as a redirect or a
+401.
 
-**Unless you have a better reason not to, we recommend closing the connection on every handshake error.** After any of
-them, it can never become a WebSocket. For a status other than 101, read `resp`
-first if you want, then close: following a redirect or retrying with
+**We recommend closing it on every handshake error.** After an error, the
+connection can never become a WebSocket. For a status other than 101, read
+`resp` first if you want, then close: following a redirect or retrying with
 credentials takes a new connection. `defer netConn.Close()` right after dialing
 covers every case. On a connection `ClientHandShake` already closed, the second
 close only returns `net.ErrClosed`.
 
-`ClientMustFailConnection(err)` tells the two apart: `true` for the "yes"
-rows. Use it to know whether the connection is already closed, or, if you
+`ClientMustFailConnection(err)` tells the two apart: `true` for every error in
+the table above. Use it to know whether the connection is already closed, or, if you
 [run the handshake yourself](#running-the-handshake-yourself), to know when to
 close it.
 
@@ -201,7 +205,8 @@ config := wlgows.ClientHandShakeConfig{Subprotocols: []string{"chat.v2", "chat.v
 
 The order is only a hint. The server decides. A `Sec-WebSocket-Protocol` you
 set on `request` yourself is sent too, and counts as offered. A value already
-there is not added again.
+there is not added again. Setting it by hand is not recommended: use
+`config.Subprotocols`.
 
 ### Checking the answer
 
@@ -220,9 +225,8 @@ No `Sec-WebSocket-Protocol` header means the server picked none (4.2.2), and
 passes. An empty header is different: the server sent something, just something
 invalid, so it fails as `ErrHandshakeResponseSubprotocolNotOffered`.
 
-Both are a 4.1 Fail, so `ClientHandShake` closes the connection before it
-returns, and `conn` is `nil`. The WebSocket connection was never established, so
-7.1.7 asks for no close frame.
+All three are a 4.1 Fail, so `ClientHandShake` closes the connection before it
+returns, and `conn` is `nil`.
 
 ```go
 config := wlgows.ClientHandShakeConfig{Subprotocols: []string{"chat.v2", "chat.v1"}}
@@ -250,8 +254,9 @@ then close (7.1.2):
 
 ```go
 if resp.Header.Get("Sec-WebSocket-Protocol") == "" {
-	conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.ClosePolicyViolation, Reason: "subprotocol chat.v2 required"})
-	netConn.Close() // the server does not speak chat.v2 or chat.v1; a client SHOULD first wait briefly for the server to close (5.5.1)
+	conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.ClosePolicyViolation, Reason: "subprotocol chat.v2 or chat.v1 required"})
+	// The server picked none. A client SHOULD first wait briefly for the server to close (RFC 6455 5.5.1).
+	netConn.Close()
 	return
 }
 ```
@@ -268,11 +273,18 @@ Each item in `config.PermessageDeflates` is one offer, most preferred first.
 What each field means is in [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#permessagedeflateconfig).
 Sending deflated once it is agreed is in [SENDING.md](./SENDING.md#compression-permessage-deflate).
 
+**We recommend sending without context, on both sides.** Then a connection
+keeps almost no compression memory between messages. The numbers are in
+[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#per-connection).
+Use the same config in the server's list:
+
 ```go
 config := wlgows.ClientHandShakeConfig{
 	PermessageDeflates: []wlgows.PermessageDeflateConfig{
-		{ClientNoContextTakeover: true, ServerNoContextTakeover: true}, // first choice
-		{}, // fallback: plain permessage-deflate
+		{
+			ServerNoContextTakeover: true, // the server sends without context
+			ClientNoContextTakeover: true, // the client sends without context
+		},
 	},
 }
 ```
@@ -300,7 +312,7 @@ fails the connection (RFC 7692 5):
 | The server answers with | Error |
 |---|---|
 | permessage-deflate twice | `ErrHandshakeResponseExtensionNotOffered` |
-| `client_max_window_bits`, which wlgows never offers | `ErrHandshakeResponseExtensionNotOffered` |
+| `client_max_window_bits=N`, which wlgows never offers | `ErrHandshakeResponseExtensionNotOffered` |
 | params no single offer allows, such as a `server_max_window_bits` above the offer's, or no `server_no_context_takeover` or `server_max_window_bits` when the offer asked for it (RFC 7692 7.1.1.1, 7.1.2.1) | `ErrHandshakeResponseExtensionNotOffered` |
 | an invalid entry | `ErrHandshakeResponseDeflateParamsInvalid` |
 
@@ -311,17 +323,18 @@ fails the connection (RFC 7692 5):
 agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request) // agreed is nil when the server declined
 ```
 
-`agreed` is what both sides follow, not a copy of the answer. If an offer that
-allows the answer has `client_no_context_takeover`, `agreed` has it too, even
-when the answer leaves it out. That offer was the client's promise
+`agreed` is a `*PermessageDeflateConfig`: what both sides follow, not a copy
+of the answer. If an offer that allows the answer has
+`client_no_context_takeover`, `agreed` has it too, even when the answer
+leaves it out. That offer was the client's promise
 (RFC 7692 7.1.1.2), and the answer does not say which offer it took.
 
 ## Running the handshake yourself
 
 **Not recommended. Only do this if you know what you are doing.**
 `ClientHandShake` runs these steps in this order, and closes the connection
-when RFC 6455 says to. When you run them yourself, a step you skip or reorder
-breaks the protocol, and nothing warns you.
+when RFC 6455 or RFC 7692 says to. When you run them yourself, a step you skip
+or reorder breaks the protocol, and nothing warns you.
 
 ```go
 reader := bufio.NewReader(netConn)
@@ -367,8 +380,7 @@ conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIs
 
 - **`NewConn` checks nothing.** A connection whose handshake broke a rule, or
   the wrong `PeerIsClient` or agreement, breaks the protocol from the first frame.
-- **Its error** comes only from a writer under 14 bytes: it is flushed before it
-  is replaced, and that flush can fail.
+- **Its error** is a write error, from flushing a `writer` smaller than 14 bytes.
 - **A struct literal panics.** A `Conn` carries unexported dependencies, so
   build one with `NewConn` only.
 
@@ -376,27 +388,10 @@ conn, err := wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIs
 
 With a `Conn` in hand, the rest is reading and sending:
 
-```go
-listener := conn.NewStandardListener() // ping, pong, close and reserved opcodes answered for you
-
-config := listener.GetConfig()
-config.Text = func(frames wlgows.DataFrames) {
-	conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
-}
-listener.SetConfig(config)
-
-go conn.StartPingLoop(30*time.Second, nil) // heartbeat; ends itself
-
-if err := listener.Listen(); err != nil {
-	if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-		conn.SendClose(payload)
-	}
-}
-```
-
-- **Reading:** [LISTENER.md](./LISTENER.md) — hooks, limits, what
-  each error means, [noticing a dead peer](./LISTENER.md#it-has-no-pingpong-liveness),
-  and reading one frame at a time.
+- **Reading:** [READING.md](./READING.md) — the bytes of a message, size
+  limits, errors, and compressed messages.
+- **The Listener:** [LISTENER.md](./LISTENER.md) — hooks, limits, what each
+  error means, and [noticing a dead peer](./LISTENER.md#it-has-no-pingpong-liveness).
 - **Sending:** [SENDING.md](./SENDING.md) — [which call to use](./SENDING.md#choosing-a-call),
   streaming a large message, [pinging on an interval](./SENDING.md#pinging-on-an-interval),
   the write buffer, and locks.

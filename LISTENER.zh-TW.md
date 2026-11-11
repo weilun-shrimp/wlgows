@@ -2,63 +2,75 @@
 
 # Listener
 
-`Listener` 替你跑 read loop。它讀取 frame、擋下 RFC 6455 不允許的 frame、把分段的
-message 組回來，再依 opcode 呼叫你的 hook。保留的 opcode 會交給你的 `Unknown` hook。
+`Listener` 替你跑 read loop。它會讀取 frame、擋下 RFC 6455 不允許的 frame、把同一個
+message 的 frame 組起來，再依 frame 的種類呼叫你的 hook。
 
-它依 RFC 檢查 frame，但不決定要怎麼處理。那由你的 hook 決定。
+它會依 RFC 檢查 frame，但不決定要怎麼處理。這由你的 hook 決定。
+
+取得 `Conn` 的方法見 [SERVER.zh-TW.md](./SERVER.zh-TW.md) 與
+[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)。傳送見 [SENDING.zh-TW.md](./SENDING.zh-TW.md)。
+讀取 message 的內容見 [READING.zh-TW.md](./READING.zh-TW.md)。
 
 ## Contents
 
 - [Quick start](#quick-start) — 從頭到尾處理一條連線
-- [標準 Listener](#標準-listener) — `conn.NewStandardListener()`：它設定了什麼，以及如何在它之上擴充
+- [標準 Listener](#標準-listener) — `conn.NewStandardListener()`：它設定了什麼，以及怎麼擴充它
 - [純 Listener 不會替你做的三件事](#純-listener-不會替你做的三件事) — [關閉](#它不會關閉連線) · [寫出](#它不會寫出任何東西) · [存活偵測](#它沒有-ping-pong-存活偵測)
-- [Configuration](#configuration) — `SetConfig`、`GetConfig`，以及哪一項一定要設對
-- [Hooks](#hooks) — 哪種 frame 會交給哪個 hook，以及 RFC 要求你做什麼 · [不複製地讀取 text：`unsafe`](#不複製地讀取-textunsafe)
-- [Errors](#errors) — 四種 error，以及哪幾種要回 close frame · [1. frame 違反規則](#1-某個-frame-違反規則) · [2. 連線斷了](#2-連線斷了) · [3. 使用方式錯誤](#3-listener-使用方式錯誤) · [4. 其他 error](#4-其他-error) · [整理起來](#整理起來)
-- [暫停與重新開始](#暫停與重新開始) — 結束一次執行，再重新開始
-- [不用 Listener 讀取](#不用-listener-讀取) — `GetNextFrameHeader` 與 `ReadFramePayload`，一次一個 frame；不建議
-- [記憶體與 read buffer](#記憶體與-read-buffer)
+- [Configuration](#configuration) — `NewListenerConfig`、`SetConfig`，以及上限
+- [Hooks](#hooks) — 哪種 frame 交給哪個 hook，以及 RFC 要求你做什麼
+- [Errors](#errors) — 四種 error，以及哪幾種要回 close frame · [1. 某個 frame 違反規則](#1-某個-frame-違反規則) · [2. 連線斷了](#2-連線斷了) · [3. Listener 用錯了](#3-listener-用錯了) · [4. 其他 error](#4-其他-error) · [完整的處理方式](#完整的處理方式)
+- [暫停與繼續](#暫停與繼續) — 結束一次執行，再繼續
 - [Concurrency](#concurrency) — 只用一個讀取者
-
-取得 `Conn` 的方法見 [SERVER.zh-TW.md](./SERVER.zh-TW.md) 與
-[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)，傳送見
-[SENDING.zh-TW.md](./SENDING.zh-TW.md)。
 
 ## Quick start
 
-`conn` 是一條已經完成 handshake 的 `*wlgows.Conn`，可以來自
-[server](./SERVER.zh-TW.md#handshake) 端或 [client](./CLIENT.zh-TW.md#handshake) 端。
-這裡用的是 server 端的。它處理一條連線，以及 `Listen` 每一種回傳結果。`Pong` 刻意
-不設：5.5.3 不要求回應 pong，而 nil hook 什麼都不做。
+`conn` 是完成 handshake 後的 `*wlgows.Conn`。這個例子是 server 端的。程式會處理一條連線，
+以及 `Listen` 所有可能的回傳結果。
 
-`SetConfig` 一次傳入完整的設定，什麼時候都可以呼叫：`Listen` 之前、兩次執行之間，
-或在 hook 裡面都可以。
+`readMessage` 與 `maxMessageSize` 來自
+[READING 的 Quick start](./READING.zh-TW.md#quick-start)。`readMessage` 讀出一個
+message 的內容；如果對方壓縮了這個 message，它也會解壓縮。
 
 ```go
 func handleConn(conn *wlgows.Conn) {
-	defer conn.Close() // 要由你關閉：Listener 不會關任何東西
+	defer conn.Close() // Listener 不會關閉任何東西，所以由你關閉
 
-	listener := wlgows.NewListener(conn)
+	listener := wlgows.NewListener(conn, wlgows.NewListenerConfig{
+		PeerIsClient:                  true, // 我們是 server，所以對方是 client
+		PermessageDeflateAgreedConfig: conn.GetPermessageDeflateAgreedConfig(),
+	})
+
+	buf := make([]byte, maxMessageSize) // 所有 message 共用一個 buffer
+
 	listener.SetConfig(wlgows.ListenerConfig{
-		PeerIsClient:      true,             // 我們是 server，所以對方會 mask
-		MaxDataFramesSize: 10 * 1024 * 1024, // 每個 message 最多 10 MB
+		MaxDataFramesSize: 10 * 1024 * 1024, // 每個 message 最多 10 MB，以收到時的大小計算
 		MaxFrameSize:      10 * 1024 * 1024, // 單一 frame，包含 header
 		MaxDataFrameCount: 4000,             // 見 Configuration
 		FrameReadTimeout:  60 * time.Second,
 
 		Text: func(frames wlgows.DataFrames) {
-			log.Printf("text: %s", frames.String())
+			message, err := readMessage(conn, frames, buf)
+			if err != nil {
+				listener.PauseListen(err) // Listen 會回傳 err
+				return
+			}
+			log.Printf("text: %s", message)
 		},
 		Binary: func(frames wlgows.DataFrames) {
-			log.Printf("binary: %d bytes", frames.ByteLen())
+			message, err := readMessage(conn, frames, buf)
+			if err != nil {
+				listener.PauseListen(err)
+				return
+			}
+			log.Printf("binary: %d bytes", len(message))
 		},
 		Ping: func(frame *wlgows.Frame) {
-			conn.SendPong(frame.PayloadData) // 5.5.2、5.5.3：回一個 pong，payload 原樣帶回
+			conn.SendPong(frame.PayloadData) // 5.5.2、5.5.3：回一個 pong，payload 相同
 		},
 		Close: func(frame *wlgows.Frame) {
 			payload, _ := frame.GetClosePayload() // Listener 已經檢查過了
-			conn.SendClose(payload)               // 5.5.1：回一個 close，然後停止讀取
-			listener.PauseListen(nil)             // nil：對方已經說明原因，Listen 回傳 nil
+			conn.SendClose(payload)               // 5.5.1：回一個 close，然後停止
+			listener.PauseListen(nil)             // nil：Listen 回傳 nil
 		},
 		Unknown: func(frame *wlgows.Frame) {
 			// 5.2 保留的 opcode：回 close 1002，然後停止。
@@ -67,47 +79,56 @@ func handleConn(conn *wlgows.Conn) {
 		},
 	})
 
-	// 會一直等，直到讀取失敗、有 frame 違反規則，或有人呼叫 PauseListen。
+	// 一直等到讀取失敗、有 frame 違反規則，或有人呼叫 PauseListen。
 	switch err := listener.Listen(); {
-	// PauseListen(nil)：這裡只有 Close hook 會這樣呼叫，代表對方關閉了連線，
-	// 沒有其他要處理的。
+	// PauseListen(nil)。這裡只有 Close hook 會這樣呼叫：對方關閉了連線。
 	case err == nil:
 
-	// 還沒讀任何 byte 就回傳了，所以和這條連線無關。
+	// 還沒讀任何 byte 就回傳了。連線本身沒有問題。
 	case errors.Is(err, wlgows.ErrListenerConnIsNil),
 		errors.Is(err, wlgows.ErrListenerIsListening):
 		log.Println("listener misuse:", err)
 
-	// 有 frame 違反規則、socket 斷了，或是無法判斷原因的 error。只有第一種會拿到
-	// payload，socket 斷了就沒有東西可以回給對方。
+	// 有 frame 或 message 違反規則、連線斷了，或其他原因。只有第一種會拿到
+	// close payload。
 	default:
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-			conn.SendClose(payload) // 用它回一個 close，接著由 defer 關閉連線
+			conn.SendClose(payload) // 如果 hook 已經送過 close，這裡什麼都不做（ErrCloseAlreadySent）
 		}
 		log.Println("closing:", err)
 	}
 }
 ```
 
-Listener 從不寫出也不關閉，所以上面每一個 `Send*` 都是你自己呼叫的。
-`conn.NewStandardListener()` 會替你設好相同作用的 hook 與上限：見
-[標準 Listener](#標準-listener)。`PauseListen` 結束這次執行，`Listen` 會回傳你給的原因。
+Listener 從不寫出，也從不關閉。上面每一個 `Send*` 都是你自己呼叫的。`Pong` 刻意不設：
+5.5.3 不要求回應 pong，而 nil hook 什麼都不做。
+
+`conn.NewStandardListener()` 會替你設好相同的 hook 與上限。見
+[標準 Listener](#標準-listener)。
 
 ## 標準 Listener
 
-`conn.NewStandardListener()` 已經回應了 RFC 6455 要求讀取端回應的每一種 frame。
-關閉連線，以及針對 `Listen` 回傳的 error 送出 close frame，仍由你負責。從這裡開始，
-加上你的 message hook 即可：
+`conn.NewStandardListener()` 已經回應了 RFC 6455 要求讀取端回應的每一種 frame。你還要
+做兩件事：關閉連線，以及針對 `Listen` 回傳的 error 送出 close frame。
+
+從這裡開始，再加上你的 message hook：
 
 ```go
 listener := conn.NewStandardListener()
+
+buf := make([]byte, maxMessageSize) // 所有 message 共用一個 buffer
 
 config := listener.GetConfig() // 從它設好的設定開始：SetConfig 會整個取代
 config.MaxDataFramesSize = 10 * 1024 * 1024
 config.MaxFrameSize = 10 * 1024 * 1024
 config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
 config.Text = func(frames wlgows.DataFrames) {
-	log.Print(frames.String())
+	message, err := readMessage(conn, frames, buf) // 來自 READING 的 Quick start
+	if err != nil {
+		listener.PauseListen(err)
+		return
+	}
+	log.Printf("text: %s", message)
 }
 listener.SetConfig(config)
 
@@ -118,19 +139,20 @@ err := listener.Listen()
 
 | 項目 | 設為 | 作用 |
 |---|---|---|
-| `PeerIsClient` | `conn` 的另一端 | 正確預期對方的 mask（5.1） |
-| `Ping` | `conn.RFC6455PingHook` | 用帶著相同 payload 的 pong 回應（5.5.2、5.5.3） |
+| `PeerIsClient` | 依 `conn` 是 server 或 client 自動設定 | 預期對方用正確的 mask（5.1） |
+| `PermessageDeflateAgreedConfig` | handshake 談好的設定 | 讓 Listener 接受帶有 RSV1 的壓縮 message（[RFC 7692](./PERMESSAGE_DEFLATE.zh-TW.md)） |
+| `Ping` | `conn.RFC6455PingHook` | 回一個 payload 相同的 pong（5.5.2、5.5.3） |
 | `Pong` | `conn.RFC6455PongHook` | 什麼都不做：pong 不需要回應（5.5.3） |
-| `Close` | `conn.RFC6455CloseHook(listener)` | 回送 close（除非這一端先送了），再以 `nil` 停止 `Listen`（5.5.1） |
-| `Unknown` | `conn.RFC6455UnknownHook(listener)` | 送出 1002 的 close，再以 `ErrReservedOpcode` 停止 `Listen`（5.2、7.4.1） |
-| `MaxDataFramesSize` | `StandardMaxDataFramesSize`，4 KB | 超過的 message 會讓 `Listen` 以 error 結束，`StandardClosePayloadFor` 會把它對應到 1009 |
-| `MaxFrameSize` | `StandardMaxFrameSize`，4 KB | 單一 frame，包含 header；要和大小一起調高，否則只有一個 frame 的較大 message 會被拒絕 |
-| `MaxDataFrameCount` | `StandardMaxDataFrameCount`，16 | 由大小推算而來，所以兩者要一起調高 |
-| `FrameReadTimeout` | `StandardFrameReadTimeout`，60 秒 | 會切斷閒置的對方，所以 ping 的間隔請在 30 秒以內 |
+| `Close` | `conn.RFC6455CloseHook(listener)` | 回送相同的 close，除非這一端先送過。然後以 `nil` 停止 `Listen`（5.5.1） |
+| `Unknown` | `conn.RFC6455UnknownHook(listener)` | 送出 close code 1002 的 close frame，然後以 `ErrReservedOpcode` 停止 `Listen`（5.2、7.4.1） |
+| `MaxDataFramesSize` | `StandardMaxDataFramesSize`，4 KB | 更大的 message 會讓 `Listen` 以 error 結束。`StandardClosePayloadFor` 把它對應到 1009 |
+| `MaxFrameSize` | `StandardMaxFrameSize`，4 KB | 單一 frame，包含 header。要和 `MaxDataFramesSize` 一起調高，否則只有一個 frame 的大 message 會被拒絕 |
+| `MaxDataFrameCount` | `StandardMaxDataFrameCount`，16 | 由 `MaxDataFramesSize` 算出來，所以兩者要一起調高 |
+| `FrameReadTimeout` | `StandardFrameReadTimeout`，60 秒 | 對方 60 秒都沒送東西時，結束 `Listen`。請每 30 秒以內送一次 ping |
 
-留給你的：`Text`、`Binary` 或 `Data` hook，以及 `Listen` 返回後關閉連線。
+留給你的：`Text`、`Binary` 或 `Data` hook，以及 `Listen` 回傳後關閉連線。
 
-**每一項都可以改。** 想在標準 hook 上加東西，就把它留下來，在你的 hook 裡呼叫它：
+**每一項都可以改。** 想在標準 hook 上加東西，先把它存到變數，再從你自己的 hook 呼叫它：
 
 ```go
 standardClose := config.Close
@@ -141,106 +163,129 @@ config.Close = func(frame *wlgows.Frame) {
 }
 ```
 
-這些 hook 都有匯出，所以 `wlgows.NewListener(conn)` 可以只用其中幾個，例如
+這些 hook 都是 exported 的。用 `wlgows.NewListener` 建立的 Listener 也可以使用它們，例如
 `Ping: conn.RFC6455PingHook`。
 
 ## 純 Listener 不會替你做的三件事
 
-純 Listener 是 `wlgows.NewListener(conn)` 建立、沒有 hook 的 Listener。標準
-Listener 的 hook 會替你做第二件事。第一件與第三件一律由你負責。
+純 Listener 是指用 `wlgows.NewListener` 建立、沒有設任何 hook 的 Listener。標準
+Listener 的 hook 會替你處理寫出。關閉與存活偵測永遠要你自己做。
 
 ### 它不會關閉連線
 
-不論是 close frame、error、超過上限的 message 或不認識的 opcode，它都只會返回，
-由**你**來關閉。
+收到 close frame、發生 error、message 超過上限、遇到未知的 opcode，它都不會關閉連線。
+它只會回傳，由**你**關閉。
 
-RFC 6455 5.5.1 要求兩端在不同時間關閉。server MUST 在交換 close frame 後立刻關閉。
-client SHOULD 等 server 先關。Listener 不知道自己是哪一端，所以關閉交給你。
+RFC 6455 5.5.1 要求兩端在不同時間關閉。server MUST 在 close frame 之後馬上關閉。
+client SHOULD 等 server 先關閉。Listener 不知道自己在哪一端，所以由你的程式關閉。
 
-client 要等的話，在交換 close frame 之後繼續讀取，並設定 deadline，直到讀取失敗再
-關閉。在 TLS 連線上呼叫 `netConn.Close()` 也會結束 TLS session，這正是 7.1.1 要求的。
+client 要等的話：在 close frame 之後繼續讀取，並設一個 deadline，直到讀取失敗，再關閉。
+在 TLS 連線上呼叫 `conn.Close()` 也會結束 TLS session，這是 7.1.1 的要求。
 
 ### 它不會寫出任何東西
 
-不回 pong、不回 close、不做 echo。quick start 裡的每一個 `Send*` 都是你的。
+不回 pong、不回 close、不 echo。Quick start 裡的每一個 `Send*` 都是你的程式自己呼叫的。
 
-所以**沒有 hook 的 Listener 什麼都不回應**。對方會一直等不到 pong；保留的 opcode
-會被丟掉而繼續讀取，但 5.2 規定這時要讓連線失敗。
+所以**沒有 hook 的 Listener 什麼都不回應**。對方會一直等不到 pong。保留的 opcode 會被
+丟掉，Listener 繼續讀取，但依 5.2，這時應該讓連線失敗。
 
 ### 它沒有 ping pong 存活偵測
 
-`Ping` 和 `Pong` hook 只告訴你收到了 frame。斷線的對方和安靜的對方看起來一樣，
-所以你需要自己的計時器：
+`Ping` 與 `Pong` hook 只告訴你有 frame 到了。對方已經斷線，和對方只是沒送東西，看起來一模一樣。
+要發現對方斷線，你需要自己的計時器：
 
-- 定期送出 ping：[`StartPingLoop`](./SENDING.zh-TW.md#定期送出-ping) 會替你做
-- 收到**任何** pong 就重設 deadline，不要比對 payload
-- deadline 到了還沒收到 pong，就當作對方已經斷線，關閉連線
+- 固定間隔送 ping：[`StartPingLoop`](./SENDING.zh-TW.md#定期送出-ping) 會幫你做
+- 收到**任何** pong 就重設 deadline，不管它的 payload
+- deadline 到了還沒收到 pong，代表對方已經不在了：關閉連線
 
-在 `Pong` hook 中記錄時間，超過你的期限就關閉連線：
+在 `Pong` hook 記下時間，deadline 到了就關閉：
 
 ```go
 var lastPong atomic.Value // time.Time
 config.Pong = func(*wlgows.Frame) { lastPong.Store(time.Now()) }
 ```
 
-不要比對 payload。RFC 6455 允許對方主動送 pong（5.5.3），也允許只回最新的那個
-ping（5.5.3）。任何 pong 都證明對方還在。
+不要檢查 payload。RFC 6455 5.5.3 允許對方送出沒人要求的 pong，也允許收到多個 ping 時，
+只回應最後一個。收到任何 pong，就代表對方還在。
 
-`FrameReadTimeout` 處理不了這件事。它只在**時限內沒有讀完一整個 frame**時觸發，所以持續送
-資料卻不理 ping 的對方仍然看起來正常。
+`FrameReadTimeout` 不負責這件事。它只在*時間內沒有收到一個完整的 frame* 時結束
+`Listen`。對方只送資料、從不回 ping，看起來還是活著的。
 
 ## Configuration
 
-`SetConfig` 在 lock 下複製整個 `ListenerConfig`，從任何 goroutine 或 hook 裡呼叫都
-安全。設定裡沒有連線：`NewListener` 時就固定了。
+Listener 有兩份設定：
 
-每一項設定，以及沒設定時的行為：
+| 設定 | 由誰設定 | 能不能改 |
+|---|---|---|
+| `NewListenerConfig` | `wlgows.NewListener(conn, config)` | 不能：Listener 存在期間都固定 |
+| `ListenerConfig` | `listener.SetConfig(config)` | 能：任何時候、任何 goroutine 都可以 |
 
-| 項目 | 型別 | 零值 | |
+### `NewListenerConfig`
+
+| 項目 | 零值 | 說明 |
+|---|---|---|
+| `PeerIsClient` | 對方是 **server** | 對方是不是 client。這會決定對方的 frame 該不該有 mask（5.1） |
+| `PermessageDeflateAgreedConfig` | 沒有談好 permessage-deflate | 傳入 `conn.GetPermessageDeflateAgreedConfig()` |
+
+**`PeerIsClient` 一定要設對。** 它的零值表示對方是 server。server 沒設的話，會拒絕
+client 送來的每一個 frame。
+
+**記得傳入 `PermessageDeflateAgreedConfig`。** 它是 nil 時，壓縮的 message 帶有
+RSV1，Listener 會以 `ErrReservedBitsSet` 拒絕。
+
+`conn.NewStandardListener()` 會從連線設好這兩項。
+
+### `ListenerConfig`
+
+`SetConfig` 會加 lock，複製整份 `ListenerConfig`。你可以在 `Listen` 之前、兩次執行之間，
+或在 hook 裡呼叫它。
+
+| 項目 | 型別 | 零值 | 說明 |
 |---|---|---|---|
-| `PeerIsClient` | `bool` | 對方是 **server** | 對方是哪一端，決定 masking 的規則（5.1） |
-| `MaxDataFramesSize` | `uint64` | 不限制 | 單一 message 所有 data frame 的 byte 上限（包含 header），每讀到一個 header 就檢查一次 |
-| `MaxDataFrameCount` | `uint64` | 不限制 | 單一 message 最多可以由幾個 frame 組成 |
-| `MaxFrameSize` | `uint64` | 不限制 | 單一 data frame 或保留 opcode frame 的 byte 上限（包含 header），讀到 header 時就檢查 |
-| `FrameReadTimeout` | `time.Duration` | 不逾時 | 每個 frame 各自計時，每次讀取前重新設定 |
-| `Ping` | `func(*Frame)` | 直接丟掉 | [5.5.2、5.5.3](#hooks)：回一個 pong，payload 原樣帶回 |
-| `Pong` | `func(*Frame)` | 直接丟掉 | [5.5.3](#hooks)：不需要回應，所以設為 nil 就符合規範 |
-| `Close` | `func(*Frame)` | 直接丟掉 | [5.5.1](#hooks)：回一個 close（這一端已送過就不用），然後 `PauseListen` |
-| `Text` | `func(DataFrames)` | 直接丟掉 | 完整的 message，已經確認是 UTF-8 |
-| `Binary` | `func(DataFrames)` | 直接丟掉 | 完整的 message，內容可以是任意 byte |
-| `Data` | `func(*Frame)` | 改由 `Text`/`Binary` 組裝 | [每個 data frame 直接交給你](#hooks)，不保留任何東西 |
-| `Unknown` | `func(*Frame)` | 直接丟掉 | [5.2](#hooks) 保留的 opcode：回 1002，然後停止 |
+| `MaxDataFramesSize` | `uint64` | 沒有上限 | 一個 message 所有 frame 收到時的總 byte 數，包含 header。每讀到一個 header 就檢查一次 |
+| `MaxDataFrameCount` | `uint64` | 沒有上限 | 一個 message 最多幾個 frame |
+| `MaxFrameSize` | `uint64` | 沒有上限 | 一個 data frame 或保留 opcode frame 的 byte 數，包含 header。讀到它的 header 時就檢查 |
+| `FrameReadTimeout` | `time.Duration` | 沒有 timeout | 讀取一個 frame 的時間上限 |
+| `Ping` | `func(*Frame)` | frame 被丟掉 | [5.5.2、5.5.3](#hooks)：回一個 payload 相同的 pong |
+| `Pong` | `func(*Frame)` | frame 被丟掉 | [5.5.3](#hooks)：不需要回應，所以 nil 也沒問題 |
+| `Close` | `func(*Frame)` | frame 被丟掉 | [5.5.1](#hooks)：除非這一端送過，否則回一個 close，然後 `PauseListen` |
+| `Text` | `func(DataFrames)` | message 被丟掉 | 一個完整的 text message |
+| `Binary` | `func(DataFrames)` | message 被丟掉 | 一個完整的 binary message |
+| `Data` | `func(*Frame)` | 使用 `Text` 與 `Binary` | [每一個 data frame](#data-hook)，一個都不保留 |
+| `Unknown` | `func(*Frame)` | frame 被丟掉 | [5.2](#hooks) 保留的 opcode：回 1002，然後停止 |
 
-**它會取代全部設定。** 沒填的欄位會變成零值，所以只改一項時，要先把設定讀回來：
+**它會整個取代。** 沒填的項目會變成零值。只想改一項，先取出目前的設定：
 
 ```go
-config := listener.GetConfig() // 目前使用中的設定的複本
+config := listener.GetConfig() // 目前使用中的設定的副本
 config.MaxDataFrameCount = 4000
 listener.SetConfig(config)
 ```
 
-hook 改設定也是這樣做。新設定從下一個 frame 開始生效。
+在 hook 裡改設定也是一樣。新設定從下一個 frame 開始生效，不影響目前這個。
 
-沒有必填的項目，零值都能運作。但 `PeerIsClient` 一定要設對：它的零值代表對方是
-server，所以沒設它的 server 會拒絕 client 的每一個 frame。
+每個零值都能用，但**一定要設 `MaxDataFramesSize` 與 `MaxFrameSize`。** 一個 10 byte
+的 header 可以宣稱 10 GB 的 payload。沒有上限的話，就會配置 10 GB 的記憶體。保留
+opcode 的 frame 只受 `MaxFrameSize` 限制。
 
-一定要設 `MaxDataFramesSize` 與 `MaxFrameSize`。10 byte 的 header 就能宣稱 10 GB
-的 payload，沒有上限就會配置 10 GB 的記憶體。保留 opcode 的 frame 只受
-`MaxFrameSize` 限制。
+`MaxDataFramesSize` 算的是收到時的 byte 數。壓縮的 message 解壓縮後可能大很多。要限制
+解壓縮後的大小，見 [限制大小](./READING.zh-TW.md#限制大小)。
 
-**`MaxDataFrameCount` 怎麼設。** 分段由對方決定，所以從你接受的最小 fragment 來算：
+**怎麼選 `MaxDataFrameCount`。** 一個 message 分成幾個 frame 是對方決定的。從你接受的
+最小 frame 算起：
 
-	MaxDataFrameCount = MaxDataFramesSize / 你預期的最小 fragment
+	MaxDataFrameCount = MaxDataFramesSize / 你接受的最小 frame
 
-10 MB、每段 4 KB 是 2560 個 frame，設 4000 還有餘裕。寧可設高。設太高影響不大，
-因為 `MaxDataFramesSize` 已經限制了記憶體。設太低會拒絕合法的 message，而且查不出
-原因。之所以需要它，是因為空的 fragment 只佔 2 byte 的上限，卻要一整個 `Frame` 的
-記憶體。
+10 MB 分成 4 KB 的 frame 是 2560 個，所以 4000 還有餘裕。寧可設高，不要設低。設太高
+代價很小，因為 `MaxDataFramesSize` 已經限制了記憶體。設太低會拒絕正常的 message。
 
-**設了 `Data` 時，byte 上限要用整個 message 來算**，不是單一 frame。見
-[Hooks](#hooks) 裡的 `Data`。
+為什麼要限制數量：一個空的 frame 只佔 `MaxDataFramesSize` 2 byte（client 送來的是
+6 byte），卻要佔用一整個 `Frame` 的記憶體。
 
-每一項的完整說明在它的 doc 裡：
+**用 `Data` hook 時，`MaxDataFramesSize` 要容得下整個 stream**，而不是一個 frame。
+見 [Data hook](#data-hook)。
+
+每一項的完整說明：
 
 ```bash
 go doc github.com/weilun-shrimp/wlgows/v7.ListenerConfig
@@ -248,151 +293,92 @@ go doc github.com/weilun-shrimp/wlgows/v7.ListenerConfig
 
 ## Hooks
 
-hook 在 read loop 裡一次執行一個。hook 執行時 **loop 會停住**，不會讀任何 frame，
-連 ping 也一樣。慢的工作請交給 goroutine 或 queue。hook 不會同時執行，所以 message
-會依序抵達（5.4）。
+hook 在 read loop 裡一次只跑一個。hook 執行時，**read loop 會停下來等它跑完**：
+不會讀任何 frame，ping 也不會。慢的工作請交給 goroutine 或 queue。hook 從不同時執行，所以 message 依序
+到達（5.4）。
 
-hook 設為 nil，那種 frame 就會直接丟掉。
+nil hook 會丟掉它的 frame。
 
-| hook | 收到什麼 | RFC 要求你做什麼 |
+| Hook | 收到 | 要你做什麼 |
 |---|---|---|
-| `Ping` | 一個 frame | 5.5.2、5.5.3：MUST 回一個 pong，payload 原樣帶回；如果已經收到 close 就不用 |
+| `Ping` | 一個 frame | 5.5.2、5.5.3：MUST 回一個 payload 相同的 pong，除非已經收到 close |
 | `Pong` | 一個 frame | 5.5.3：不需要回應 |
-| `Close` | 一個 frame | 5.5.1：如果這一端還沒送過 close，MUST 回一個 close；之後關閉連線。`Frame.GetClosePayload` 會解出 status code 和 reason，兩者都已經檢查過。client 不能把 reason 顯示給使用者 |
-| `Text` | 完整的 message | 不用做什麼：payload 已經確認是合法的 UTF-8（5.6、8.1） |
-| `Binary` | 完整的 message | 不用做什麼：內容可以是任意 byte |
-| `Data` | 一個 data frame | **使用時要小心。** 你要自己注意 FIN；text message 也要自己檢查 5.6 的 UTF-8，不合法就回 1007。只適合大到放不進記憶體的 message，其他情況請用 `Text` 或 `Binary` |
-| `Unknown` | 一個 frame | 5.2 保留的 opcode，屬於 protocol error：回 1002，然後關閉連線 |
+| `Close` | 一個 frame | 5.5.1：除非這一端已經送過，否則 MUST 回一個 close，然後關閉。`Frame.GetClosePayload` 會給你 status code 與 reason，兩者都已經檢查過。client 不可以把 reason 顯示給使用者 |
+| `Text` | 一個完整的 message | 用 [`DataFramesReader`](./READING.zh-TW.md#dataframesreader) 讀取 |
+| `Binary` | 一個完整的 message | 用 [`DataFramesReader`](./READING.zh-TW.md#dataframesreader) 讀取 |
+| `Data` | 一個 data frame | **小心使用。** 見 [Data hook](#data-hook) |
+| `Unknown` | 一個 frame | 5.2 保留的 opcode。這是 protocol error：回 1002 並關閉 |
 
-`Text` 和 `Binary` 收到組好的完整 message。夾在 fragment 之間的 control frame 會交給
-自己的 hook，不會影響 message。
+### `Text` 與 `Binary`
 
-text message 交給 `Text` 前會檢查 UTF-8（5.6）。檢查的是**組好之後**的內容，因為
-frame 可能切在字元中間。`Binary` 不檢查。
+`Text` 與 `Binary` 收到的是一個完整的 message，型別是 `DataFrames`：這個 message 的
+每一個 frame，依序排好。夾在 message 兩個 frame 中間的 control frame 會交給它自己的
+hook，不會打斷這個 message。
 
-`Data` 取代組裝。每個 data frame 直接交給它，不保留，`Text` 和 `Binary` 都不會
-執行。只在 message 大到放不進記憶體，或要轉送串流時使用。放得進記憶體的 message
-請交給 `Text` 或 `Binary`，它們會處理其餘的事。
+用 `conn.DataFramesReader(frames)` 讀出內容。它會把 payload 接起來、解壓縮壓縮過的
+message，並檢查 text 是不是合法的 UTF-8。見 [READING.zh-TW.md](./READING.zh-TW.md)。
 
-用 `Data` 時，FIN 與 UTF-8 都要自己檢查，因為單一 frame 無法檢查。continuation
-frame 沒有型別，所以要用 `Listener.GetCurrentMsgOpcode` 確認 message 是不是 text。
-上限仍然有效，空的 frame 也會送來。請在兩個 message 之間設定 `Data`。
+text 的 UTF-8 檢查（5.6）：
 
-把 message 直接寫進磁碟。不論多大，記憶體用量都不會增加：
+| text message 是 | 由誰檢查 |
+|---|---|
+| 沒有壓縮 | Listener，在 `Text` 執行之前 |
+| 有壓縮 | `DataFramesReader`，在解壓縮之後 |
 
-```go
-out, err := os.Create("./received.bin")
-if err != nil {
-	return err
-}
-defer out.Close()
+Listener 檢查的是**整個 message**，而不是每個 frame，因為一個 frame 可能在某個字元的
+中間結束。`Binary` 不做 UTF-8 檢查。
 
-listener := wlgows.NewListener(conn)
-listener.SetConfig(wlgows.ListenerConfig{
-	PeerIsClient:      true,
-	MaxDataFramesSize: 2 * 1024 * 1024 * 1024, // 整個 message 一起計算，所以要用整個串流的大小
-	MaxFrameSize:      64 * 1024,              // 單一 frame，讓每次讀取都很小
-	FrameReadTimeout:  60 * time.Second,
+### Data hook
 
-	Data: func(frame *wlgows.Frame) {
-		// 只接受 binary。text message 必須在組好的內容上檢查 5.6，所以要先確認
-		// opcode。
-		if listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
-			// 拒絕它：回 close 1003，或依照你的協定處理。
-			listener.PauseListen(errors.New("peer streamed text"))
-			return
-		}
-		if _, err := out.Write(frame.PayloadData); err != nil {
-			listener.PauseListen(err) // 是你的磁碟出錯，不是對方的問題
-			return
-		}
-		if frame.FIN { // 只有 FIN 能判斷 message 結束了
-			log.Println("message complete")
-		}
-	},
-	Ping: func(frame *wlgows.Frame) {
-		conn.SendPong(frame.PayloadData) // 5.5.2、5.5.3：回一個 pong，payload 原樣帶回
-	},
-	Close: func(frame *wlgows.Frame) {
-		payload, _ := frame.GetClosePayload()
-		conn.SendClose(payload) // 5.5.1：回一個 close，然後停止
-		listener.PauseListen(nil)
-	},
-	Unknown: conn.RFC6455UnknownHook(listener), // 5.2：保留的 opcode 要讓連線失敗
-})
+設了 `Data` 之後，Listener 不會把 frame 組成 message。每一個 data frame 直接交給
+`Data`，一個都不保留，`Text` 與 `Binary` 也不會執行。只在 message 大到放不進記憶體時
+才用它。放得下的 message，請用 `Text` 或 `Binary`。
 
-// 不管是讀取失敗、frame 違反規則，還是上面的 PauseListen，都會在這裡結束。
-return listener.Listen()
-```
+用 `Data` 時，你的程式要多做這些事：
 
-這裡要注意 `MaxDataFramesSize`。它涵蓋整個 message，所以必須容納整個串流，這也
-讓單一 frame 能用掉全部上限，所以也要設定 `MaxFrameSize`：它限制每個
-frame，message 仍然可以很長。
+- 注意 `frame.FIN`。沒有其他東西會標出 message 的結尾。
+- continuation frame 不會標示 message 是 text 還是 binary。要知道是哪一種，請呼叫
+  `listener.GetCurrentMsgOpcode()`。
+- 呼叫 `listener.IsCurrentMsgDeflated()` 確認 message 有沒有壓縮。
+- 自己檢查 text 的 UTF-8。單一 frame 無法單獨檢查。
+- 上限仍然有效，空的 frame 也還是會收到。
+- 在兩個 message 之間設定 `Data`，不要在 message 進行中設定。
 
-[`stream_server`](./example/stream_server/main.go) 是完整範例：逐個 frame 接收檔案
-並計算 hash。
+`MaxDataFramesSize` 涵蓋整個 message，所以要容得下整個 stream。這樣一來，單一 frame
+也可能用掉整個上限。所以也要設 `MaxFrameSize`：它限制每個 frame 的大小。
 
-**收到 close frame 之後就不要再讀。** RFC 6455 1.4（非規範性章節）說明收到 close
-之後收到的 data 都應丟棄。
-Listener 在 `Close` 之後會繼續讀，所以你的 `Close` hook 要呼叫 `PauseListen`，否則之後
-的 message 仍會交給 `Text` 或 `Binary`。
+壓縮與沒壓縮的例子都在
+[大型 message：Data hook](./READING.zh-TW.md#大型-messagedata-hook)。
 
-### 不複製地讀取 text：`unsafe`
+### 收到 close frame 後停止讀取
 
-**只有在你完全清楚自己在做什麼時才使用。**
-[傳送說明](./SENDING.zh-TW.md#更快更省記憶體用-unsafe-送出-string)裡的警告這裡同樣
-適用。不確定的話，請用 `frames.String()`，只多一次複製。
-
-wlgows 讀完後從不寫入 payload，而且每個 frame 有自己的 payload。所以單一 frame 的
-message 可以不複製就轉成 string：
-
-```go
-config.Text = func(frames wlgows.DataFrames) {
-	if len(frames) != 1 {
-		handle(frames.String()) // 有分段：要組起來本來就得複製
-		return
-	}
-	payload := frames[0].PayloadData
-	handle(unsafe.String(unsafe.SliceData(payload), len(payload)))
-}
-```
-
-1 MB 的 message，`frames.String()` 約 60 µs，配置 1 MB。`unsafe` 約 2 ns，不配置，
-所以 message 只存一份，不是兩份。
-
-- **只用於單一 frame 的 message。** 有分段的必須組起來，`frames.String()` 一次配置
-  就組好。
-- **之後絕對不要寫入 `payload`**，否則 string 也會變。Go 假設 string 不會變，用它當
-  key 的 map 就會出錯。
-- **這個 string 會讓整個 payload 留在記憶體。** 只想留大 message 的一小段時，請用
-  `strings.Clone` 複製。
-- 在 `Text` 執行之前，這些 byte 已經確認是合法的 UTF-8。
-
-binary message 不需要 `unsafe`：`frames[0].PayloadData` 本來就是 `[]byte`。只要不寫入它。
+RFC 6455 1.4（非規範性）說，對方會丟掉 close 之後收到的任何資料。Listener 在 `Close`
+之後還會繼續讀取，所以你的 `Close` hook 一定要呼叫 `PauseListen`。不呼叫的話，之後的
+message 還是會送到 `Text` 或 `Binary`。
 
 ## Errors
 
-`PauseListen(nil)` 之後，如果沒有其他錯誤，`Listen` 回傳 `nil`。`PauseListen(err)`
-會讓 `Listen` 回傳 `err`，所以你可以說明停止的原因，例如關機。以第一次 pause 為準，
-之後的會被忽略。
+呼叫 `PauseListen(nil)` 之後，如果沒有其他問題，`Listen` 回傳 `nil`。
+`PauseListen(err)` 會讓 `Listen` 回傳 `err`，讓你說明停止的原因，例如服務要關閉。
+第一次暫停才算數，之後的會被忽略。
 
-pause 常伴隨讀取失敗，因為關閉連線才能叫醒卡住的讀取。這時兩個 error 會**合併**
-回傳，`errors.Is` 兩個都找得到。所以 error 不是 nil，不一定是對方的錯。
+暫停之後，你常常會關閉連線，好結束卡住的讀取。這時讀取也會失敗。`Listen` 會把兩個
+error **合併**回傳，`errors.Is` 兩個都找得到。所以有 error 不一定代表對方做錯了什麼。
 
-`StandardClosePayloadFor` 不認得你自己的 error。除非你先轉換，否則它回傳 `nil`，
-也就是下面的第 4 種。
+`StandardClosePayloadFor` 不認得你自己的 error，對它們會回傳 `nil`（見第 4 種）。如果你的
+error 需要 close code，請在呼叫 `StandardClosePayloadFor` 之前先自己判斷。
 
-其他 error 來自這個 package。`io.EOF` 不是正常結束：對方**沒有**送 close frame 就
-斷開了 TCP 連線，7.4.1 稱為 1006。
+`io.EOF` 不代表正常關閉。它表示對方**沒有**送 close frame 就斷了 TCP 連線。7.4.1 把這
+叫做 1006。
 
-這些 error 分成四種，各需要不同的處理。
+error 分成四種，每一種要用不同的方式處理。
 
 ### 1. 某個 frame 違反規則
 
-對方違反了 RFC 6455。回一個 close frame，然後關閉連線。`StandardClosePayloadFor`
-就是 7.4.1 的這張對照表：
+對方違反了 RFC 6455。回一個 close frame，然後關閉。`StandardClosePayloadFor` 依 7.4.1
+給出 close code：
 
-| error | 回應的 status code |
+| Error | Close code |
 |---|---|
 | `ErrReservedBitsSet` | 1002 |
 | `ErrFrameNotMasked`、`ErrFrameMasked` | 1002 |
@@ -408,179 +394,89 @@ pause 常伴隨讀取失敗，因為關閉連線才能叫醒卡住的讀取。�
 | `ErrFrameByteLengthExceeded` | 1009 |
 | `ErrDataFrameCountExceeded` | 1009 |
 
-**發生任何一個之後，都不要再讀。** 7.1.7 規定連線失敗之後不能再處理對方送來的
-任何資料；其中有些情況下，被拒絕的 frame 只讀了一部分，下一次讀取會從它中間開始。
-寫入仍然可以，所以 close frame 送得出去。
+讀取 message 也可能失敗：`ErrInvalidUTF8`（1007）、`ErrInflateDataInvalid`（1007）或
+`ErrSizeLimitExceeded`（1009）。你的 hook 把它們交給 `PauseListen`，`Listen` 就會回傳
+它們。`StandardClosePayloadFor` 也認得它們。見 [READING 的 Errors](./READING.zh-TW.md#errors)。
+
+**遇到這些 error 後，絕對不要再讀取。** 7.1.7 規定連線失敗後，不可以再處理對方送來的
+任何東西。而且其中幾種發生時，被拒絕的 frame 只讀了一部分，下一次讀取會從它的中間開始。
+寫出還是可以的，所以 close frame 送得出去。
 
 ### 2. 連線斷了
 
 `io.EOF`、`io.ErrUnexpectedEOF`、`os.ErrDeadlineExceeded`、`net.ErrClosed`、
-connection reset。它們來自 socket，對方沒有違反規則，也沒有對象可送 close frame。
-7.4.1 稱為 **1006** 並禁止送出，所以記錄下來並關閉。
+connection reset。這些來自 socket，對方沒有違反任何規則。已經沒有對象可以送 close frame
+了。7.4.1 把這叫做 **1006**，並且禁止把它送出去。所以記下 log，然後關閉。
 
-讀取逾時是你自己的 `FrameReadTimeout`，不是對方的錯。socket 通常還能寫，所以你
+read timeout 來自你自己設的 `FrameReadTimeout`，不是對方的錯。連線通常還能寫出，所以你
 *可以*先送 1000 或 1001。這由你決定，所以 `StandardClosePayloadFor` 回傳 `nil`。
 
-### 3. Listener 使用方式錯誤
+### 3. Listener 用錯了
 
-`ErrListenerConnIsNil`：Listener 不是用 `NewListener` 建立的，沒有連線。
-`ErrListenerIsListening`：已有一個 `Listen` 在跑時又開始了第二個。兩者都在讀取前回傳。
+- `ErrListenerConnIsNil`：呼叫 `NewListener` 時，傳進去的 `conn` 是 nil。
+- `ErrListenerIsListening`：一個 `Listen` 還在執行時，又開始了第二個。
 
-**遇到這兩種不要關閉連線。** 可能有另一個 `Listen` 正常地在用它。這是程式碼的 bug，
-請修掉。
+兩者都在讀取任何東西之前就回傳。
+
+**遇到這兩種，不要關閉連線。** 遇到 `ErrListenerIsListening` 時，另一個 `Listen` 還在
+這條連線上執行。這些是你程式裡的 bug，請修正它們。
 
 ### 4. 其他 error
 
-自訂 `net.Conn`、TLS 層或 mock 回傳的一般 error。這個 package 無法判斷是誰的錯。
+來自你自己的 `net.Conn`、TLS 層或 mock 的一般 error。這個 package 無法判斷是誰的錯。
 
-請當成第 2 種：關閉連線，什麼都不送。7.1.7 對送 close frame 只是 SHOULD，所以不送
-並不違規，而送 1002 會冤枉可能沒做錯的對方。要送的話，1011 表示問題出在這一端。如果你知道自己的 error 代表什麼，請在
-`StandardClosePayloadFor` **之前**自己轉換，它對這種 error 回傳 `nil`。
+當成第 2 種處理：關閉，什麼都不送。7.1.7 說 close frame SHOULD 送出，不是 MUST，所以
+不送並不違反規則。送出 1002 會怪罪一個可能沒做錯任何事的對方。如果你想送一個，1011 表示
+問題出在這一端。如果你知道自己的 error 代表什麼，請在呼叫 `StandardClosePayloadFor`
+**之前**，自己把它對應到 close code。
 
-### 整理起來
+### 完整的處理方式
 
-`StandardClosePayloadFor` 只對第 1 種回傳 payload，其他回傳 `nil`。`nil` 只代表
-「不送 close frame」。第 2、4 種仍要關閉連線，第 3 種則不能關閉：
+`StandardClosePayloadFor` 對第 1 種回傳 payload，對其他回傳 `nil`。`nil` 只代表「不送
+close frame」。第 2 和第 4 種還是要關閉連線。第 3 種不可以關閉：
 
 ```go
 err := listener.Listen()
 switch {
-case err == nil: // PauseListen(nil)，不需要回應
+case err == nil: // PauseListen(nil)：沒有要回應的
 
 case errors.Is(err, wlgows.ErrListenerConnIsNil),
 	errors.Is(err, wlgows.ErrListenerIsListening):
-	log.Printf("listener misuse: %v", err) // 第 3 種：不要動這條連線
+	log.Printf("listener misuse: %v", err) // 第 3 種：不要關閉這條連線
 
 default:
 	if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
-		// 第 1 種：關閉之前，先用它回應
+		// 第 1 種：關閉之前先送出它
 	}
-	// 第 1、2、4 種都要關閉連線（7.1.7：不論哪一端都 MUST 關閉）。這兩個呼叫都由你來做。
+	// 第 1、2、4 種都要關閉連線。對第 1 種來說，7.1.7 規定這是 MUST。
+	// 送出與關閉都由你的程式呼叫。
 }
 ```
 
-`Reason` 是空的。想告訴對方原因，就在送出前自己填。
+payload 裡的 `Reason` 是空的。想告訴對方原因，請在送出前設定 `Reason`。
 
 保留的 opcode（5.2）會交給 `Unknown` hook，不會交給 `Listen`。標準的 hook 會回 1002，
-並以 `ErrReservedOpcode` 停止。用你自己的 hook 時，這兩件事都由你處理。hook 是 nil
-時會直接丟掉，和其他 nil hook 一樣。
+並以 `ErrReservedOpcode` 停止。用你自己的 hook 時，這兩件事都由你的程式做。nil hook 會
+把它丟掉，和其他 nil hook 一樣。
 
-## 暫停與重新開始
+## 暫停與繼續
 
-`PauseListen(err)` 結束這次執行，`Listen` 回傳 `err`。傳 `nil` 就是不帶 error
-地停止。從任何 goroutine 呼叫都安全，沒有在 listen 時它什麼都不做。
+`PauseListen(err)` 結束這次執行，`Listen` 回傳 `err`。傳 `nil` 可以不帶 error 停止。
+任何 goroutine 都可以呼叫它。`Listen` 沒在執行時，呼叫它不會有任何作用。
 
-pause 在**兩個 frame 之間**生效，因為 loop 停在 `GetNextFrameHeader` 裡等資料。對方
-一直不送資料時，讀取會卡住，只有關閉連線能讓它停下。
+Listener 只在**兩個 frame 之間**才會發現暫停。在等待下一個 frame 的期間，暫停還不會
+生效。如果對方都不送東西，讀取會一直卡住。只有關閉連線才能讓它結束。
 
-再次 `Listen` 會從停下的地方繼續。組到一半的 message 會保留，所以可以在中間改設定，
-不會漏掉 frame。
-
-## 不用 Listener 讀取
-
-**不建議這麼做。只有在你有比 Listener 更好的理由時才使用。** Listener 會替你回應與
-擋下 RFC 6455 要求讀取端處理的事。不用它，這些全都由你負責，漏掉任何一條規則都會
-破壞協定。即使是大到放不進記憶體的 message 也不需要這麼做：`Data` hook 就能一次一個
-frame 地串流處理。
-
-讀一個 frame 要分兩步。`conn.GetNextFrameHeader()` 回傳只有 header、沒有 payload
-的 frame，讓你在配置任何記憶體之前先判斷它的大小。接著 `conn.ReadFramePayload(frame)`
-讀取 payload。兩步都要在 `conn.LockRead()` 之下進行，讓其他讀取者無法在中間插入。
-message 由你自行組合：
-
-```go
-var frames wlgows.DataFrames
-for {
-	conn.LockRead()
-	frame, err := conn.GetNextFrameHeader()
-	if err == nil && frame.GetDeclaredPayloadSize() > 10*1024*1024 {
-		err = errors.New("frame too large") // 還沒配置任何記憶體
-	}
-	if err == nil {
-		err = conn.ReadFramePayload(frame)
-	}
-	conn.UnlockRead()
-	if err != nil {
-		return err
-	}
-	if !wlgows.IsDataOpcode(frame.Opcode) {
-		continue // control frame：自己回應；保留 opcode 則依 5.2 讓連線失敗
-	}
-	frames = append(frames, frame)
-	if frame.FIN {
-		break
-	}
-}
-```
-
-這樣一來，Listener 做的每件事都由你負責。其中一部分有 helper 可以直接呼叫：
-
-| 工作 | Helper |
-|---|---|
-| 用 pong 回應 ping（5.5.2） | `conn.RFC6455PingHook(frame)` |
-| 依 error 選出 close code（7.4.1） | `wlgows.StandardClosePayloadFor(err)` |
-
-其他都沒有 helper。`RFC6455CloseHook` 與 `RFC6455UnknownHook` 需要一個 Listener
-才能停止。回應 close 由你負責，以下檢查也是：保留位元、mask 方向、保留的 opcode、control frame 規則、
-fragment 順序、上限、text 的 UTF-8，以及 close payload。
-
-`DataFrames` 只在你需要時才組合：
-
-| 呼叫 | 回傳 |
-|---|---|
-| `frames.String()` | 串接後的 payload，型別為 `string` |
-| `frames.Bytes()` | 串接後的 payload，是一份新的 `[]byte`，可自由使用 |
-| `frames.ByteLen()` | 串接後的大小，單位為 **byte**，完全不配置記憶體 |
-
-`String` 與 `Bytes` 都會串接所有 fragment，所以被切開的字元也能完整還原。`ByteLen` 算的是 byte
-不是字元：`"中文字"` 是 9，不是 3。
-
-只有第一個 frame 有 opcode，continuation frame 是 0：
-
-```go
-switch frames[0].Opcode {
-case wlgows.OpcodeText:   // 0x1
-case wlgows.OpcodeBinary: // 0x2
-}
-```
-
-## 記憶體與 read buffer
-
-frame 經由你交給 handshake 的 `*bufio.Reader` 讀取。`bufio.NewReader(netConn)` 每條
-連線 4096 byte。任何大小都可以，小一點能省記憶體，只慢一點點：
-
-```go
-reader := bufio.NewReaderSize(netConn, 16) // 16 是下限：小於 16 會被 bufio 調整為 16
-```
-
-16 就夠了：最長的 frame header 是 14 byte（2 + 8 長度 + 4 mask），仍能一次讀完。
-更大的 buffer 只是讓小 payload 一起讀進來。大 payload 不論 buffer 多大都要另外讀。
-
-記憶體隨連線數增加：
-
-| | 16 byte | 4096 byte（預設） |
-|---|---|---|
-| 每條連線 | 16 B | 4096 B |
-| 1,000 條連線 | 約 16 KB | 約 4 MB |
-| 100,000 條連線 | 約 1.6 MB | 約 400 MB |
-
-讀取次數隨連續到達的 frame 數增加：
-
-| | 16 byte | 4096 byte（預設） |
-|---|---|---|
-| 一個 10 B 的 frame | 1 次讀取 | 1 次讀取 |
-| 連續 100 個 10 B 的 frame（共 1000 B） | 約 63 次讀取 | 最少 1 次讀取 |
-| 一個 1 MB 的 frame | payload 不經過 buffer，兩者相同 | payload 不經過 buffer，兩者相同 |
-
-100 個 frame 那一列假設資料都已到達。對方慢時差距會縮小。
-
-一整條閒置連線的用量，見
-[最小的連線](./SENDING.zh-TW.md#最小的連線)。
+再呼叫一次 `Listen`，會從停下的地方繼續。還沒收齊所有 frame 的 message 會保留下來，所以
+你可以在中間改設定，不會漏掉 frame。
 
 ## Concurrency
 
-**只用一個 goroutine 讀取。** lock 能避免兩個讀取者混到 byte，但它們仍會各自拿到
-零散的 frame。Listener 就是一個讀取者，所以它執行時不要自己讀取 frame。
+**只從一個 goroutine 讀取 frame。** lock 可以避免兩個讀取者把 byte 混在一起，但每個讀取
+者拿到的 frame 還是隨機的。Listener 本身就是一個讀取者，所以它在執行時，不要自己讀取
+frame。
 
-`conn.Read` 來自內嵌的 `net.Conn`，會略過 lock。請透過 Listener，或
-在 `LockRead` 之下用 `GetNextFrameHeader` 與 `ReadFramePayload` 讀取。
+`conn.Read` 來自內嵌的 `net.Conn`，不會經過 lock。請透過 Listener 讀取 frame。
+
+不用 Listener 讀取，以及 read buffer 的記憶體，見
+[READING.zh-TW.md](./READING.zh-TW.md#不用-listener-讀取)。

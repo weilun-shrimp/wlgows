@@ -295,6 +295,9 @@ Reading inside the `Text` and `Binary` hooks, as in the
 When the peer agreed to no context takeover, each message stands alone. Closing
 early is then safe.
 
+To know how compression uses your memory, and how much, see
+[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#memory).
+
 ## Large messages: the Data hook
 
 The `Text` and `Binary` hooks get a whole message, so it must fit in memory.

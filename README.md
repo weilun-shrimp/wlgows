@@ -11,7 +11,7 @@ The Quick Start below is a working echo server. `conn.NewStandardListener()`
 answers ping, pong and close for you. When you need more, you can stream a
 message larger than memory, handle each frame yourself, ping on your own
 schedule, or build a frame by hand. You run the handshake yourself, and every
-rule RFC 6455 gives you is documented.
+rule from RFC 6455 and RFC 7692 is documented.
 
 **Correctness first.** We want the fastest code, but only when it stays correct
 and safe: no `unsafe`, and no skipped bounds checks. Your own code may go
@@ -28,6 +28,7 @@ further if you know what you are doing. See
 - **Listener** — a read loop that validates against RFC 6455 and routes frames to your hooks
 - **Frame-level control** — build and send your own frames when you need to
 - **Streaming** — send a message larger than memory, fragment by fragment
+- **Compression** — permessage-deflate (RFC 7692), on both sides. See [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md)
 - **Memory in your hands** — hand each connection its own write buffer, from 14 bytes up, and swap it at any time. Pick the frame size on every send. See [SENDING.md](./SENDING.md#you-are-in-control)
 - **Keepalive** — ping on an interval, with a payload you choose per ping
 - **Concurrent sending** — lock-guarded, and control frames are never stuck behind a long message
@@ -36,7 +37,7 @@ further if you know what you are doing. See
 
 - [Installation](#installation)
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client)
-- [Guides](#guides) — server, client, reading, sending, benchmarks
+- [Guides](#guides) — server, client, reading, the Listener, sending, compression, benchmarks
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
 - [Coming from v6](#coming-from-v6)
 - [Testing](#testing)
@@ -59,12 +60,27 @@ above; the package name is still `wlgows`, so call sites read `wlgows.DialContex
 package main
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/weilun-shrimp/wlgows/v7"
 )
+
+const maxMessageSize = 10 * 1024 * 1024 // 10 MB
+
+// readMessage returns the bytes of one message, up to maxMessageSize. It
+// decompresses a compressed message and checks text as UTF-8. For a larger
+// message, it returns ErrSizeLimitExceeded. See READING.md.
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close() // always close it
+	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxMessageSize))
+}
 
 func main() {
 	server := &http.Server{
@@ -96,17 +112,21 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ping, pong, close and reserved opcodes already answered, masking settled
-	// from which side this connection is.
+	// Ping, pong, close and reserved opcodes already answered.
 	listener := conn.NewStandardListener()
 
 	// SetConfig replaces all of it, so start from what the standard hooks left.
 	config := listener.GetConfig()
-	config.MaxDataFramesSize = 10 * 1024 * 1024
-	config.MaxFrameSize = 10 * 1024 * 1024
-	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
+	config.MaxDataFramesSize = maxMessageSize
+	config.MaxFrameSize = maxMessageSize
+	config.MaxDataFrameCount = maxMessageSize / 256
 	config.Text = func(frames wlgows.DataFrames) {
-		conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}) // echo
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		conn.SendText(message, wlgows.SendDataConfig{}) // echo
 	}
 	listener.SetConfig(config)
 
@@ -129,14 +149,13 @@ Gin engine with your own `http.Server`, since Gin's `Run` sets no timeout. See
 
 ### Client
 
-You never set masking: the `Conn` knows which side it is.
-
 ```go
 package main
 
 import (
 	"bufio"
 	"context"
+	"io"
 	"log"
 	"net"
 	"time"
@@ -144,10 +163,25 @@ import (
 	"github.com/weilun-shrimp/wlgows/v7"
 )
 
+const maxMessageSize = 10 * 1024 * 1024 // 10 MB
+
+// readMessage returns the bytes of one message, up to maxMessageSize. It
+// decompresses a compressed message and checks text as UTF-8. For a larger
+// message, it returns ErrSizeLimitExceeded. See READING.md.
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close() // always close it
+	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxMessageSize))
+}
+
 func main() {
-	// DialContext only connects and builds the request — running the handshake
-	// is yours, so you can still add headers to request before it goes out. ctx
-	// and dialer each bound the connect; the earlier one wins. See CLIENT.md.
+	// DialContext only connects and builds the request. You run the handshake
+	// yourself, so you can still add headers to `request` before it is sent.
+	// ctx and dialer both limit the TCP connect and the TLS handshake. The
+	// shorter one applies. See CLIENT.md.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	dialer := &net.Dialer{Timeout: 15 * time.Second}
@@ -157,7 +191,7 @@ func main() {
 	}
 	defer netConn.Close()
 
-	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see LISTENER.md to shrink it
+	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see READING.md to shrink it
 	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 4096 bytes/conn; see SENDING.md
 	if err != nil {
 		panic(err)
@@ -166,11 +200,16 @@ func main() {
 	listener := conn.NewStandardListener()
 
 	config := listener.GetConfig() // what the standard hooks left
-	config.MaxDataFramesSize = 10 * 1024 * 1024
-	config.MaxFrameSize = 10 * 1024 * 1024
-	config.MaxDataFrameCount = 10 * 1024 * 1024 / 256
+	config.MaxDataFramesSize = maxMessageSize
+	config.MaxFrameSize = maxMessageSize
+	config.MaxDataFrameCount = maxMessageSize / 256
 	config.Text = func(frames wlgows.DataFrames) {
-		log.Println("received:", frames.String())
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		log.Printf("received: %s", message)
 	}
 	listener.SetConfig(config)
 
@@ -196,9 +235,11 @@ none (RFC 6455 5.1).
 | Guide | What is in it |
 |---|---|
 | **[SERVER.md](./SERVER.md)** | Accepting a connection, the handshake and its refusals, HTTP hijacking from `net/http` or Gin, TLS, subprotocols |
-| **[CLIENT.md](./CLIENT.md)** | Dialing, TLS, the handshake, adding headers, subprotocols |
-| **[LISTENER.md](./LISTENER.md)** | Reading: hooks, limits, errors, noticing a dead peer, one frame at a time, the read buffer |
+| **[CLIENT.md](./CLIENT.md)** | Dialing, TLS, the handshake, adding headers, subprotocols, compression |
+| **[READING.md](./READING.md)** | Reading a message: limiting its size, errors and their close codes, compressed messages, one frame at a time, the read buffer |
+| **[LISTENER.md](./LISTENER.md)** | The read loop: the standard Listener, hooks, limits, errors, noticing a dead peer, pausing |
 | **[SENDING.md](./SENDING.md)** | Sending: whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks |
+| **[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md)** | Compression: each config field, context takeover, memory, compressing large data yourself |
 | **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket and gobwas/ws: every number, and why each loss stays |
 
 ## Examples
@@ -241,8 +282,9 @@ yourself: the hooks.
 ## Coming from v6
 
 v7 reads frame headers straight from your `bufio.Reader`, so a frame allocates
-only itself and its payload. It also renames the Listener's limits. Other `Conn`
-code is unchanged. These no longer compile:
+only itself and its payload. It also renames the Listener's limits. Sending,
+the handshakes, `NewConn` and `NewListener` now take a config. These no longer
+compile:
 
 | v6 | v7 |
 |---|---|
@@ -257,8 +299,20 @@ code is unchanged. These no longer compile:
 | `ListenerConfig{MaxMsgPayloadByteLen: n}` | `ListenerConfig{MaxDataFramesSize: n, MaxFrameSize: n}` |
 | `wlgows.ErrMsgFrameCountExceeded` | `wlgows.ErrDataFrameCountExceeded` |
 | `wlgows.Frames`, `func(frames wlgows.Frames)` hooks | `wlgows.DataFrames`, `func(frames wlgows.DataFrames)` |
+| `frames.String()`, `frames.Bytes()` | `reader, err := conn.DataFramesReader(frames)`, then `defer reader.Close()`, then `io.ReadAll(wlgows.NewSizeLimitReader(reader, maxSize))`, with `maxSize` the largest message you accept. The reader decompresses a compressed message and checks text as UTF-8. See [READING.md](./READING.md) |
+| `conn.SendText(data, chunkSize)`, also `SendBinary` | `conn.SendText(data, wlgows.SendDataConfig{ChunkSize: chunkSize})` |
+| `conn.SendData(opcode, payload, chunkSize)` | `conn.SendData(opcode, payload, wlgows.SendDataConfig{ChunkSize: chunkSize})` |
+| `conn.StartLongDataTransmission(opcode)` | `conn.StartLongDataTransmission(opcode, wlgows.StartLongDataTransmissionConfig{})` |
+| `conn.TransmitData(data)`, also `EndLongDataTransmission` | `conn.TransmitData(data, wlgows.TransmitDataConfig{})` |
+| `wlgows.NewConn(netConn, reader, writer, maskSendFrame)` | `wlgows.NewConn(netConn, reader, writer, wlgows.NewConnConfig{PeerIsClient: ...})`. The meaning is the opposite: v6 passed `true` on a client, v7 passes `true` on a server |
+| `wlgows.NewListener(conn)` | `wlgows.NewListener(conn, wlgows.NewListenerConfig{PeerIsClient: ..., PermessageDeflateAgreedConfig: ...})`. Set `PeerIsClient` to `true` on a server. If it is wrong, every frame fails with `ErrFrameMasked` or `ErrFrameNotMasked`. `PermessageDeflateAgreedConfig` is `nil` when compression was not agreed |
+| `wlgows.UpgradeRequest(request)` | `wlgows.UpgradeRequest(request, wlgows.ClientHandShakeConfig{})` |
 | `wlgows.ServerHandShake(netConn, reader, writer, request)` | `wlgows.ServerHandShake(netConn, reader, writer, request, wlgows.ServerHandShakeConfig{})` |
+| `wlgows.ClientHandShake(netConn, reader, writer, request)` | `wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})` |
 | your own `ListenerConn` with `GetNextFrame(max)` | `LockRead()`, `UnlockRead()`, `GetNextFrameHeader()` and `ReadFramePayload(frame)`, as `*Conn` has them |
+
+`wlgows.Dial(url, tlsConfig)` still works. `DialContext` is new: it also takes
+a context and a `*net.Dialer`. See [CLIENT.md](./CLIENT.md#dialing).
 
 Behaviour that changes without a compile error:
 
@@ -284,11 +338,14 @@ Behaviour that changes without a compile error:
   `Sec-WebSocket-Protocol` never offered, as RFC 6455 4.1 asks, and
   `ErrHandshakeResponseSubprotocolMultiple` for more than one value. In v6 both
   were accepted.
-- **`ClientHandShake` closes the connection on a response RFC 6455 4.1 fails.**
-  A wrong `Upgrade`, `Connection`, `Sec-WebSocket-Accept` or
-  `Sec-WebSocket-Protocol` closes `netConn` before the error returns (7.1.7).
-  Other errors still leave it to you. In v6 none closed it. A `defer
-  netConn.Close()` keeps working: a second close only returns `net.ErrClosed`.
+- **`ClientHandShake` closes the connection when RFC 6455 4.1 or RFC 7692 5
+  says to fail it.** For example, a wrong `Upgrade`, `Connection`,
+  `Sec-WebSocket-Accept`, `Sec-WebSocket-Protocol` or
+  `Sec-WebSocket-Extensions` closes `netConn` before the error returns
+  (RFC 6455 7.1.7). Other errors leave it open, and you close it. The full
+  list is in [What it returns](./CLIENT.md#what-it-returns). In v6 none closed
+  it. A `defer netConn.Close()` keeps working: a second close only returns
+  `net.ErrClosed`.
 - **The 101 response no longer sends `Sec-WebSocket-Version`.** RFC 6455 4.2.2
   does not list it there; the server sends it back only when refusing a
   version, with a 426. A client that wrongly required it on a 101 now fails.

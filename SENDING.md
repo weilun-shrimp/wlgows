@@ -27,6 +27,7 @@ as 14 bytes per connection. See
 
 - [You are in control](#you-are-in-control)
 - [Choosing a call](#choosing-a-call)
+- [Configuration](#configuration) — `SendDataConfig`, `StartLongDataTransmissionConfig`, `TransmitDataConfig`
 - [Whole messages](#whole-messages) — `SendText`, `SendBinary`, `SendData`
 - [Streaming](#streaming) — `Start`, `TransmitData`, `End`, `Release`
 - [Compression (permessage-deflate)](#compression-permessage-deflate) — [streaming deflated](#streaming-deflated) · [context takeover](#context-takeover) · [the result buffer](#memory-the-result-buffer)
@@ -39,8 +40,8 @@ as 14 bytes per connection. See
 - [Pinging on an interval](#pinging-on-an-interval) — `StartPingLoop` and `Loop`
 
 Getting a `Conn` is in [SERVER.md](./SERVER.md) and
-[CLIENT.md](./CLIENT.md), and reading in
-[LISTENER.md](./LISTENER.md).
+[CLIENT.md](./CLIENT.md). Reading is in [READING.md](./READING.md). The
+Listener is in [LISTENER.md](./LISTENER.md).
 
 ## Choosing a call
 
@@ -51,10 +52,49 @@ Getting a `Conn` is in [SERVER.md](./SERVER.md) and
 | A message whose opcode you pick at run time, like an echo | `SendData(opcode, payload, config)` |
 | A message too large to hold in memory | `StartLongDataTransmission` → `TransmitData` → `EndLongDataTransmission`, with `ReleaseLongDataTransmission` deferred |
 | A close, ping or pong | `SendClose(payload)`, `SendPing(payloadData)`, `SendPong(payloadData)` |
-| A frame you built yourself | `SendFrame(frame)` |
+| A frame you built yourself (low level, not recommended) | `SendFrame(frame)` |
 
 You never set masking. A client masks every frame and a server masks none
 (RFC 6455 5.1), and the `Conn` already knows which side it is.
+
+## Configuration
+
+Every send of a data message takes a config. Its zero value works, except when
+you deflate.
+
+### `SendDataConfig`
+
+For `SendText`, `SendBinary` and `SendData`:
+
+| Field | Type | Zero value | What it does |
+|---|---|---|---|
+| `ChunkSize` | `int` | 0: one frame | The payload bytes of each frame. See [Whole messages](#whole-messages). |
+| `DeflateIfAgreed` | `bool` | `false` | Deflates this message, if permessage-deflate was agreed in the handshake. If not, the message is sent as is (RFC 7692 5). You choose per message (RFC 7692 6). |
+| `DeflateLevel` | `int` | 0, `flate.NoCompression` | The `compress/flate` level. See below. |
+
+**Always set `DeflateLevel` when you deflate.**
+
+- It is a `compress/flate` level, from `flate.HuffmanOnly` (-2) to
+  `flate.BestCompression` (9). `flate.BestSpeed` is a fair default.
+- Its zero value is `flate.NoCompression`. The message is then marked deflated
+  but stored as it is, a few bytes larger.
+- A level outside the range is refused with `ErrDeflateLevelInvalid`. Nothing is
+  sent, even when nothing would be deflated.
+- It can change from one message to the next.
+
+### `StartLongDataTransmissionConfig` and `TransmitDataConfig`
+
+A stream splits the same choices in two:
+
+| Config | Field | Zero value | What it does |
+|---|---|---|---|
+| `StartLongDataTransmissionConfig` | `DeflateIfAgreed` | `false` | Decides once, at Start, whether the whole message is deflated. |
+| `TransmitDataConfig` | `DeflateLevel` | 0, `flate.NoCompression` | The level of each chunk, including End's. |
+
+Set `DeflateLevel` as for `SendDataConfig`. It can change from chunk to chunk.
+
+A stream has no `ChunkSize`: each `TransmitData` call is one frame. See
+[Streaming](#streaming) and [Streaming deflated](#streaming-deflated).
 
 ## Whole messages
 
@@ -62,7 +102,7 @@ You never set masking. A client masks every frame and a server masks none
 conn.SendText([]byte("hello"), wlgows.SendDataConfig{})                  // one frame
 conn.SendBinary(data, wlgows.SendDataConfig{ChunkSize: 4 * 1024})        // frames of 4 KB
 conn.SendData(wlgows.OpcodeText, []byte("abc"), wlgows.SendDataConfig{}) // like SendText, without the UTF-8 check
-conn.SendData(frames[0].Opcode, frames.Bytes(), wlgows.SendDataConfig{}) // echo back what arrived
+conn.SendData(frames[0].Opcode, message, wlgows.SendDataConfig{})        // echo in a Text or Binary hook: message from readMessage (READING.md)
 ```
 
 `ChunkSize` is the payload of each frame, in bytes:
@@ -171,20 +211,21 @@ config.ChunkSize = 4 * 1024
 conn.SendBinary(data, config) // frames of 4 KB of the deflated bytes
 ```
 
-- **Always set `DeflateLevel`.** It is a `compress/flate` level, from
-  `flate.HuffmanOnly` (-2) to `flate.BestCompression` (9). Its zero value is
-  `flate.NoCompression`: the message is marked deflated but stored as it is, a
-  few bytes larger. `flate.BestSpeed` is a fair default. A level outside the
-  range is refused with `ErrDeflateLevelInvalid` before anything is sent, even
-  when nothing would be deflated.
+- **Always set `DeflateLevel`.** Its zero value stores the message as it is.
+  See [`SendDataConfig`](#senddataconfig).
 - **`ChunkSize` cuts the deflated bytes**, not your message. The whole message
   is deflated first, then split into frames.
-- **Ask only where it pays.** Deflate adds a few bytes of its own, so a short
-  message can come out longer, and it costs CPU. You decide per message.
+- **Ask only where it pays.** Deflate adds about 6 bytes of its own, and it
+  costs CPU. Usually do not deflate a message under about 128 bytes, or data
+  that is already compressed (images, zip, video). You decide per message.
 - **Control frames are never deflated** (RFC 7692 6), and `SendFrame` never
   deflates.
 
 ### Streaming deflated
+
+> **Not recommended.** For large data, compress it yourself before you send
+> it, not deflate. See
+> [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#large-data-compress-it-yourself).
 
 Start decides once for the whole message. The level is per chunk:
 
@@ -224,31 +265,36 @@ for {
 ### Context takeover
 
 The handshake decides it and wlgows follows it (RFC 7692 7.1.1). You set
-nothing when sending. What it costs a `Conn`:
+nothing when sending.
 
-| This side sends | Kept between messages |
-|---|---|
-| With context | a `compress/flate` writer, about 1 MB, and the last 32 to 64 KB sent |
-| Without context | nothing. A whole message borrows a writer shared by all connections; a stream uses one of its own, freed at End |
-
-With context, keep the level steady: a new level builds a new writer, about
-1 MB.
+To know how compression uses your memory, and how much, see
+[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#memory).
 
 ### Memory: the result buffer
 
-The deflated bytes are held in a result buffer of the `Conn`. It keeps the size
-of the largest deflated result since it was last freed, for the life of the
-connection, and nothing frees it for you:
+A compressed message is first written to a result buffer in the `Conn`. The
+buffer keeps its memory after the send, and nothing frees it for you.
+
+How big it grows:
+
+- **A whole message** (`SendText`, `SendBinary`, `SendData`): the whole message
+  compressed. One 50 MB message can leave about 50 MB behind.
+- **A stream:** one chunk compressed. With 4 KB chunks it stays about 4 KB,
+  however big the message.
+
+**After a large compressed message, free it** if you want that memory back:
 
 ```go
-if conn.DeflaterResultBufferCap() > 1024*1024 { // 1 MB
-	conn.ReleaseDeflaterResultBuffer()
+conn.SendBinary(bigData, config)
+
+if conn.DeflaterResultBufferCap() > 1024 * 1024 { // more than 1 MB held
+	conn.ReleaseDeflaterResultBuffer() // the next compressed message starts small again
 }
 ```
 
-`ReleaseDeflaterResultBuffer` waits for a data message being sent, so never
-call it between your own Start and Release. `DeflaterResultBufferCap` waits
-only for a deflate in progress.
+- `DeflaterResultBufferCap` tells you how many bytes it holds.
+- `ReleaseDeflaterResultBuffer` frees it. It waits for a data message being
+  sent, so never call it between your own Start and Release.
 
 ## Memory: the write buffer
 
@@ -256,8 +302,21 @@ Every frame a `Conn` sends goes through one write buffer: the `*bufio.Writer`
 you hand it when it is built. Its size is the buffer's size:
 
 ```go
-serverConn, _, err := wlgows.ServerHandShake(netConn, reader, bufio.NewWriterSize(netConn, 16*1024), request, wlgows.ServerHandShakeConfig{}) // 16 KB
-clientConn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{})              // bufio's 4096
+serverConn, _, err := wlgows.ServerHandShake(
+	netConn,
+	reader,
+	bufio.NewWriterSize(netConn, 16*1024), // 16 KB
+	request,
+	wlgows.ServerHandShakeConfig{},
+)
+
+clientConn, _, err := wlgows.ClientHandShake(
+	netConn,
+	reader,
+	bufio.NewWriter(netConn), // bufio's 4096
+	request,
+	wlgows.ClientHandShakeConfig{},
+)
 ```
 
 - **It must write to the same connection.** Build it on `netConn`.
@@ -363,9 +422,9 @@ goroutine running `Listen`. The `net.Conn` and the OS socket are not counted.
 | Reader 16, writer 14, plus `StartPingLoop` | ~9 KB | ~900 MB |
 
 At the smallest sizes the buffers are 30 bytes. The reader's side is in
-[Memory: the read buffer](./LISTENER.md#memory-the-read-buffer). Most of
-what is left is goroutine stacks: about 4 KB for `Listen`, and about 3 KB more
-for each `StartPingLoop`. wlgows cannot shrink those. What you can do:
+[Memory: the connection's read buffer](./READING.md#memory-the-connections-read-buffer).
+Most of what is left is goroutine stacks: about 4 KB for `Listen`, and about
+3 KB more for each `StartPingLoop`. wlgows cannot shrink those. What you can do:
 
 - **Swap to a small writer while the connection is quiet**, as above.
 - **Ping from one goroutine, not one per connection.** `SendPing` is safe from
@@ -373,9 +432,10 @@ for each `StartPingLoop`. wlgows cannot shrink those. What you can do:
   stalled peer blocks that loop, so give each connection a write deadline.
 - **Skip the copy of each message.** With `unsafe`, a message is held once
   instead of twice — see [sending](#faster-and-less-memory-sending-a-string-with-unsafe)
-  and [reading](./LISTENER.md#reading-text-without-a-copy-unsafe).
+  and [reading](./READING.md#text-unsafe).
 - **Stream a large message.** The `Data` hook holds one frame at a time instead
-  of the whole message — see [LISTENER.md](./LISTENER.md#hooks).
+  of the whole message — see
+  [Large messages: the Data hook](./READING.md#large-messages-the-data-hook).
 
 ## Choosing a chunk size
 
@@ -421,7 +481,7 @@ Measured on a 1 MB text message:
 |---|---|---|
 | `conn.SendText([]byte(text), wlgows.SendDataConfig{})` | ~80–110 µs | 1 MB |
 | `conn.SendText(payload, wlgows.SendDataConfig{})`, through `unsafe` | ~23 µs | 0.3 KB |
-| `conn.SendBinary(payload, wlgows.SendDataConfig{})`, through `unsafe` | ~1.3 µs | 0.3 KB |
+| `conn.SendBinary(payload, wlgows.SendDataConfig{})`: the same bytes, no UTF-8 check | ~1.3 µs | 0.3 KB |
 
 `[]byte(text)` copies the string. Of the 23 µs left, about 20 µs is `SendText`'s
 UTF-8 check.
@@ -441,7 +501,7 @@ The rules:
   `SendFrame`.
 
 Receiving has the same trick the other way round: see
-[Reading text without a copy](./LISTENER.md#reading-text-without-a-copy-unsafe).
+[Text: `unsafe`](./READING.md#text-unsafe).
 
 ## When a send fails
 
@@ -508,6 +568,9 @@ before they return. RFC 6455 caps a control payload at 125 bytes (5.5). A close
 code that may not be sent, or a `Reason` that is not UTF-8, is refused (7.4,
 5.5.1). Only one close goes out; a ping or pong still goes out after it (5.5.2). For pinging on
 an interval, see [Pinging on an interval](#pinging-on-an-interval).
+
+**Low level. Not recommended.** Use `SendText`, `SendBinary`, `SendData`,
+`SendClose`, `SendPing` or `SendPong` instead.
 
 `SendFrame` writes a frame you built with `NewFrame`, flushed before it returns.
 It settles what the `Conn` knows and leaves the rest to you:
