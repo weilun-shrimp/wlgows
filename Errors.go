@@ -170,10 +170,9 @@ var (
 	// It wraps compress/flate's error — answer with close code 1007.
 	ErrInflateDataInvalid = errors.New("compressed message does not inflate")
 
-	// ErrInflatedSizeExceeded is a message past the size you allow. Nothing in
-	// this package returns it: pass it to StandardClosePayloadFor for close
-	// code 1009.
-	ErrInflatedSizeExceeded = errors.New("inflated data exceeds the size allowed")
+	// ErrSizeLimitExceeded is a message past the size you allow, from
+	// NewSizeLimitReader's Read or ReadMessageInto. Answer with close code 1009.
+	ErrSizeLimitExceeded = errors.New("message exceeds the size limit")
 
 	// ErrInflateFramesTokenStale is a token from StartInflateDataFrames whose
 	// message ended, or another message's token.
@@ -307,7 +306,7 @@ the codes an endpoint may use to name each one. This is that table:
 	ErrInflateDataInvalid                         -> 1007 CloseInvalidFramePayloadData
 	ErrFrameByteLengthExceeded,
 	ErrDataFrameCountExceeded,
-	ErrInflatedSizeExceeded                       -> 1009 CloseMessageTooBig
+	ErrSizeLimitExceeded                          -> 1009 CloseMessageTooBig
 	every other violation a frame can commit      -> 1002 CloseProtocolError
 
 Reason is left empty. What to tell the peer about your own internals is a policy
@@ -349,7 +348,7 @@ func StandardClosePayloadFor(err error) *ClosePayload {
 
 	case errors.Is(err, ErrFrameByteLengthExceeded),
 		errors.Is(err, ErrDataFrameCountExceeded),
-		errors.Is(err, ErrInflatedSizeExceeded):
+		errors.Is(err, ErrSizeLimitExceeded):
 		return &ClosePayload{StatusCode: CloseMessageTooBig}
 
 	case errors.Is(err, ErrReservedBitsSet),

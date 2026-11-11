@@ -23,9 +23,7 @@ ErrInflateDataInvalid from Read. For a peer that keeps its context:
   - Closed before io.EOF, close the connection: the next message may inflate
     to wrong bytes with no error.
 
-To limit the size, read through io.LimitReader(reader, max+1). More than max
-bytes read: the message is too big, close the connection with 1009 (RFC 6455
-7.4.1), as StandardClosePayloadFor(ErrInflatedSizeExceeded) gives.
+To limit the size, read with ReadMessageInto or through NewSizeLimitReader.
 
 A text message that is not UTF-8 returns ErrInvalidUTF8 in place of io.EOF
 (RFC 6455 8.1). Frames that are not one message (RFC 6455 5.4) make
@@ -96,8 +94,12 @@ func (c *Conn) StartInflateDataFrames() int64 {
 
 /*
 PutDeflatedDataFrame puts the next frame of token's message. After the FIN
-frame, nothing more goes in. A token whose message ended returns
-ErrInflateFramesTokenStale.
+frame, nothing more goes in: a later put returns io.EOF or does nothing. A
+token whose message ended returns ErrInflateFramesTokenStale.
+
+To stop a message early, put a FIN frame with no payload. A waiting
+PullInflatedBytes then returns, with an error or with bytes that are not the
+whole message. Then call EndInflateDataFrames.
 */
 func (c *Conn) PutDeflatedDataFrame(token int64, f *Frame) error {
 	return c.contextInflater.putDeflatedFrame(token, f)

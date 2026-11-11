@@ -1,11 +1,15 @@
 package wlgows
 
 import (
+	"bufio"
+	"bytes"
+	"compress/flate"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"testing"
+	"time"
 )
 
 // fakeFuncInflater runs its funcs, so a test can record each call. It is a
@@ -301,6 +305,53 @@ func TestEndInflateDataFrames(t *testing.T) {
 			}
 		})
 	}
+}
+
+// As PutDeflatedDataFrame's doc promises for stopping a message early.
+func TestInflateDataFramesStoppedEarly(t *testing.T) {
+	t.Run("a FIN frame stops a goroutine pull that waits for more", func(t *testing.T) {
+		var deflated_buffer bytes.Buffer
+		writer, _ := flate.NewWriter(&deflated_buffer, flate.BestCompression)
+		writer.Write([]byte("hello"))
+		writer.Flush() // the first part of a message: the rest never comes
+
+		net_conn := newFakeConn(nil)
+		conn, _ := NewConn(net_conn, bufio.NewReader(net_conn), bufio.NewWriter(net_conn), NewConnConfig{})
+		token := conn.StartInflateDataFrames()
+		if err := conn.PutDeflatedDataFrame(token, &Frame{PayloadData: deflated_buffer.Bytes()}); err != nil {
+			t.Fatalf("PutDeflatedDataFrame = %v, want nil", err)
+		}
+
+		first := make(chan string, 1)
+		second := make(chan struct{})
+		go func() {
+			buf := make([]byte, 64)
+			n, err := conn.PullInflatedBytes(token, buf)
+			first <- fmt.Sprintf("%q, %v", buf[:n], err)
+			// Nothing more put: it waits. It may return an error or bytes that
+			// are not the whole message: only that it returns matters.
+			conn.PullInflatedBytes(token, buf)
+			close(second)
+		}()
+
+		if got := <-first; got != `"hello", <nil>` {
+			t.Fatalf("first pull = %s, want \"hello\", <nil>", got)
+		}
+		select {
+		case <-second:
+			t.Fatalf("the second pull returned before the FIN frame: it did not wait")
+		case <-time.After(10 * time.Millisecond): // still waiting. correctly.
+		}
+		if err := conn.PutDeflatedDataFrame(token, &Frame{FIN: true}); err != nil {
+			t.Fatalf("PutDeflatedDataFrame FIN = %v, want nil", err)
+		}
+		select {
+		case <-second:
+		case <-time.After(time.Second):
+			t.Fatalf("the pull still waits after a FIN frame")
+		}
+		conn.EndInflateDataFrames(token)
+	})
 }
 
 func TestPeerNoContextTakeover(t *testing.T) {
