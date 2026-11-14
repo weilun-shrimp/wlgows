@@ -160,7 +160,7 @@ request.Header.Set("Authorization", "Bearer "+token)
 | `ErrHandshakeResponseSubprotocolRepeated` | `Sec-WebSocket-Protocol` header 出現不只一次 —— 見 [Subprotocols](#subprotocols) |
 | `ErrHandshakeResponseSubprotocolMultiple` | `Sec-WebSocket-Protocol` 同一行有不只一個值 —— 見 [Subprotocols](#subprotocols) |
 | `ErrHandshakeResponseSubprotocolNotOffered` | `Sec-WebSocket-Protocol` 不是你提出的值 —— 見 [Subprotocols](#subprotocols) |
-| `ErrHandshakeResponseExtensionNotOffered` | 接受了兩次 permessage-deflate，或接受的方式沒有任何提議允許 —— 見 [壓縮](#壓縮-permessage-deflate) |
+| `ErrHandshakeResponseExtensionNotOffered` | 有你沒提出的 extension、接受了兩次 permessage-deflate，或接受的方式沒有任何提議允許 —— 見 [壓縮](#壓縮-permessage-deflate) |
 | `ErrHandshakeResponseDeflateParamsInvalid` | 有 RFC 7692 7 禁止的 permessage-deflate 參數 —— 見 [壓縮](#壓縮-permessage-deflate) |
 
 **誰來關閉連線。** 對某些不正確的回應，RFC 6455 4.1 與 RFC 7692 5 要求「Fail the
@@ -295,19 +295,24 @@ client 永遠可以使用 15 bit。
 server 會接受其中一個提議，或一個都不接受。回應中沒有 permessage-deflate 不是 error：
 連線照樣建立，只是不壓縮。沒有任何提議允許的回應，或帶有
 [不合法項目](./PERMESSAGE_DEFLATE.zh-TW.md#不合法的項目)的回應，會中斷連線
-（RFC 7692 5）：
+（RFC 6455 4.1、RFC 7692 5）：
 
 | server 回傳 | Error |
 |---|---|
+| 你沒提出的 extension（RFC 6455 4.1） | `ErrHandshakeResponseExtensionNotOffered` |
 | 兩次 permessage-deflate | `ErrHandshakeResponseExtensionNotOffered` |
 | `client_max_window_bits=N`，wlgows 從不提出它 | `ErrHandshakeResponseExtensionNotOffered` |
 | 沒有任何一個提議允許的參數，例如比提議更大的 `server_max_window_bits`，或提議要求了 `server_no_context_takeover` 或 `server_max_window_bits` 卻沒有回傳（RFC 7692 7.1.1.1、7.1.2.1） | `ErrHandshakeResponseExtensionNotOffered` |
 | 不合法的項目 | `ErrHandshakeResponseDeflateParamsInvalid` |
 
-`ClientHandShake` 不會回傳協商結果。請用 `ValidateHandShakeResponseDeflate` 取得：
+如果你自己在 request 的 header 裡提出 permessage-deflate 以外的 extension，server 在
+回應裡接受它時，client 不會把它當成錯誤。wlgows 不懂那個 extension，要怎麼照它的規則
+處理由你負責。
+
+`ClientHandShake` 不會回傳協商結果。請用 `ValidateHandShakeResponseExtensions` 取得：
 
 ```go
-agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request) // server 拒絕時 agreed 是 nil
+agreed, err := wlgows.ValidateHandShakeResponseExtensions(resp, request) // server 拒絕時 agreed 是 nil
 ```
 
 `agreed` 是一個 `*PermessageDeflateConfig`：雙方都遵守的內容，不是回應的複本。
@@ -338,7 +343,7 @@ resp, err := wlgows.ReadHandShakeResponse(reader, request)
 if err != nil {
 	return err
 }
-// 4. 檢查回應：RFC 6455 4.1、subprotocol，再來是 permessage-deflate。
+// 4. 檢查回應：RFC 6455 4.1、subprotocol，再來是 extension。
 if err := wlgows.ValidateHandShakeResponse(resp, request.Header.Get("Sec-WebSocket-Key")); err != nil {
 	if wlgows.ClientMustFailConnection(err) {
 		netConn.Close() // RFC 6455 7.1.7
@@ -351,10 +356,10 @@ if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil
 	}
 	return err
 }
-agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request)
+agreed, err := wlgows.ValidateHandShakeResponseExtensions(resp, request)
 if err != nil {
 	if wlgows.ClientMustFailConnection(err) {
-		netConn.Close() // RFC 7692 5
+		netConn.Close() // RFC 6455 7.1.7
 	}
 	return err
 }

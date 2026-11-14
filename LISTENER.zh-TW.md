@@ -413,7 +413,8 @@ read timeout 來自你自己設的 `FrameReadTimeout`，不是對方的錯。連
 
 ### 3. Listener 用錯了
 
-- `ErrListenerConnIsNil`：呼叫 `NewListener` 時，傳進去的 `conn` 是 nil。
+- `ErrListenerConnIsNil`：Listener 沒有連線。可能是呼叫 `NewListener` 時傳進去的
+  `conn` 是 nil，或 Listener 是自己手動建立的。
 - `ErrListenerIsListening`：一個 `Listen` 還在執行時，又開始了第二個。
 
 兩者都在讀取任何東西之前就回傳。

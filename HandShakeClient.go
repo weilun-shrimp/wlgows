@@ -26,9 +26,11 @@ the start of the first frame. w is the Conn's writer, see NewConn.
 config adds subprotocols and the permessage-deflate offer to req, see
 ClientHandShakeConfig.
 
-A response RFC 6455 4.1 says to fail closes c before the error returns (7.1.7).
-Any other error, such as a status other than 101, leaves c open for you to
-close. ClientMustFailConnection(err) tells the two apart.
+A response the client must fail closes c before the error returns (RFC 6455
+7.1.7): RFC 6455 4.1 for the handshake headers, the subprotocol and an
+extension not offered, and RFC 7692 5 for the permessage-deflate answer. Any
+other error, such as a status other than 101, leaves c open for you to close.
+ClientMustFailConnection(err) tells the two apart.
 */
 func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ClientHandShakeConfig) (*Conn, *http.Response, error) {
 	return clientHandShake(c, r, w, req, config, clientHandShakeDI{
@@ -37,7 +39,7 @@ func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 		readHandShakeResponse:                ReadHandShakeResponse,
 		validateHandShakeResponse:            ValidateHandShakeResponse,
 		validateHandShakeResponseSubprotocol: ValidateHandShakeResponseSubprotocol,
-		validateHandShakeResponseDeflate:     ValidateHandShakeResponseDeflate,
+		validateHandShakeResponseExtensions:  ValidateHandShakeResponseExtensions,
 		newConn:                              NewConn,
 	})
 }
@@ -71,7 +73,7 @@ type clientHandShakeDI struct {
 	readHandShakeResponse                func(r *bufio.Reader, req *http.Request) (*http.Response, error)
 	validateHandShakeResponse            func(res *http.Response, sec_websocket_key string) error
 	validateHandShakeResponseSubprotocol func(res *http.Response, req *http.Request) error
-	validateHandShakeResponseDeflate     func(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error)
+	validateHandShakeResponseExtensions  func(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error)
 	newConn                              func(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig) (*Conn, error)
 }
 
@@ -98,7 +100,7 @@ func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 		}
 		return nil, res, err
 	}
-	agreed_deflate_config, err := di.validateHandShakeResponseDeflate(res, req)
+	agreed_deflate_config, err := di.validateHandShakeResponseExtensions(res, req)
 	if err != nil {
 		if ClientMustFailConnection(err) {
 			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
@@ -344,26 +346,37 @@ func ValidateHandShakeResponseSubprotocol(res *http.Response, req *http.Request)
 }
 
 /*
-ValidateHandShakeResponseDeflate checks the server's permessage-deflate answer
-in Sec-WebSocket-Extensions, and that one offer in req allows it (RFC 7692 5,
-7.1). It returns what both sides follow: the answer, plus the client's own
-promises from the offers. It returns nil when the server declined deflate.
+ValidateHandShakeResponseExtensions checks the server's
+Sec-WebSocket-Extensions. Each extension in it must be one req offered (RFC
+6455 4.1). The permessage-deflate answer must be valid, and one offer in req
+must allow it (RFC 7692 5, 7.1). It returns what both sides follow: the answer, plus the
+client's own promises from the offers. It returns nil when the server declined
+deflate.
+
+An extension other than permessage-deflate that you offered in req yourself
+passes when the server accepts it. wlgows does not speak it, so following it is
+up to you.
 */
-func ValidateHandShakeResponseDeflate(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error) {
-	return validateHandShakeResponseDeflate(res, req, validateHandShakeResponseDeflateDI{
+func ValidateHandShakeResponseExtensions(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error) {
+	return validateHandShakeResponseExtensions(res, req, validateHandShakeResponseExtensionsDI{
+		validateRespExtensionsOffered: validateRespExtensionsOffered,
 		validateRespDeflateExt:        validateRespDeflateExt,
 		validateRespDeflateExtWithReq: validateRespDeflateExtWithReq,
 	})
 }
 
-type validateHandShakeResponseDeflateDI struct {
+type validateHandShakeResponseExtensionsDI struct {
+	validateRespExtensionsOffered func(res *http.Response, req *http.Request) error
 	validateRespDeflateExt        func(res *http.Response) (server_config *PermessageDeflateConfig, err error)
 	validateRespDeflateExtWithReq func(server_config PermessageDeflateConfig, req *http.Request) (agreed_config PermessageDeflateConfig, err error)
 }
 
-// validateHandShakeResponseDeflate returns nil when the server declined
+// validateHandShakeResponseExtensions returns nil when the server declined
 // deflate.
-func validateHandShakeResponseDeflate(res *http.Response, req *http.Request, di validateHandShakeResponseDeflateDI) (agreed_config *PermessageDeflateConfig, err error) {
+func validateHandShakeResponseExtensions(res *http.Response, req *http.Request, di validateHandShakeResponseExtensionsDI) (agreed_config *PermessageDeflateConfig, err error) {
+	if err := di.validateRespExtensionsOffered(res, req); err != nil {
+		return nil, err
+	}
 	server_config, err := di.validateRespDeflateExt(res)
 	if err != nil || server_config == nil {
 		return nil, err
@@ -373,6 +386,22 @@ func validateHandShakeResponseDeflate(res *http.Response, req *http.Request, di 
 		return nil, err
 	}
 	return &agreed, nil
+}
+
+// validateRespExtensionsOffered checks that each extension in res is one req
+// offered. RFC 6455 4.1: the client must fail the connection on an extension
+// not present in its handshake.
+func validateRespExtensionsOffered(res *http.Response, req *http.Request) error {
+	var offeredNames []string
+	for _, extension := range parseExtensions(req.Header) {
+		offeredNames = append(offeredNames, extension.name)
+	}
+	for _, extension := range parseExtensions(res.Header) {
+		if !slices.Contains(offeredNames, extension.name) {
+			return fmt.Errorf("extension %q not offered: %w", extension.name, ErrHandshakeResponseExtensionNotOffered)
+		}
+	}
+	return nil
 }
 
 // validateRespDeflateExt reads the permessage-deflate entry of res. It returns

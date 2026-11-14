@@ -70,9 +70,11 @@ var (
 	// take an arbitrary subset of the frames.
 	ErrListenerIsListening = errors.New("listener is already listening")
 
-	// ErrListenerConnIsNil is a Listen on a Listener built by hand rather than by
-	// NewListener, so it has no connection. Reading from it would panic on the
-	// first frame instead of saying what is wrong.
+	// ErrListenerConnIsNil is a Listen on a Listener with no connection:
+	// NewListener was given a nil conn, or the Listener was built by hand.
+	// Reading from it would panic on the first frame instead of saying what is
+	// wrong. A nil *Conn is not caught: inside the ListenerConn interface it is
+	// not nil, so Listen panics on the first frame.
 	ErrListenerConnIsNil = errors.New("listener has no conn")
 
 	// ErrContinuationFrameWithoutMsg is a continuation frame with no fragmented
@@ -269,12 +271,13 @@ var (
 	ErrHandshakeResponseSubprotocolMultiple   = errors.New("handshake response Sec-WebSocket-Protocol has more than one value")
 	ErrHandshakeResponseSubprotocolNotOffered = errors.New("handshake response Sec-WebSocket-Protocol is not a value the client offered")
 
-	// The following are ValidateHandShakeResponseDeflate rejecting the server's
-	// permessage-deflate answer. RFC 7692 5 has the client fail the connection
-	// on each. ExtensionNotOffered is an answer no single offer allows, or
-	// permessage-deflate accepted twice. DeflateParamsInvalid is a param RFC
-	// 7692 7 forbids. DeflateUnsupported is a valid answer wlgows cannot follow
-	// (library choice).
+	// The following are ValidateHandShakeResponseExtensions rejecting the
+	// server's Sec-WebSocket-Extensions. The client fails the connection on each
+	// (RFC 6455 4.1, RFC 7692 5). ExtensionNotOffered is an extension the
+	// request did not offer, a permessage-deflate answer no single offer
+	// allows, or permessage-deflate accepted twice. DeflateParamsInvalid is a
+	// param RFC 7692 7 forbids. DeflateUnsupported is a valid answer wlgows
+	// cannot follow (library choice).
 	ErrHandshakeResponseExtensionNotOffered  = errors.New("handshake response Sec-WebSocket-Extensions is not what the client offered")
 	ErrHandshakeResponseDeflateParamsInvalid = errors.New("handshake response permessage-deflate params are invalid")
 	ErrHandshakeResponseDeflateUnsupported   = errors.New("handshake response permessage-deflate params are not supported")

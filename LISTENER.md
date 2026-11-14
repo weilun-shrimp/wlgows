@@ -441,7 +441,8 @@ first. You decide, so `StandardClosePayloadFor` returns `nil`.
 
 ### 3. You used the Listener wrong
 
-- `ErrListenerConnIsNil`: `NewListener` was called with a nil `conn`.
+- `ErrListenerConnIsNil`: the Listener has no connection. `NewListener` was
+  called with a nil `conn`, or the Listener was built by hand.
 - `ErrListenerIsListening`: a second `Listen` started while one was running.
 
 Both come back before anything is read.

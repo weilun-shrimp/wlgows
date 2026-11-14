@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestClientHandShake(t *testing.T) {
 				*order = append(*order, "validateSubprotocol")
 				return nil
 			},
-			validateHandShakeResponseDeflate: func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
+			validateHandShakeResponseExtensions: func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
 				*order = append(*order, "validateDeflate")
 				return nil, nil
 			},
@@ -158,7 +159,7 @@ func TestClientHandShake(t *testing.T) {
 		writer := bufio.NewWriter(netConn)
 		want := &Conn{}
 		agreed := &PermessageDeflateConfig{ServerNoContextTakeover: true}
-		di.validateHandShakeResponseDeflate = func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
+		di.validateHandShakeResponseExtensions = func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
 			return agreed, nil
 		}
 		var gotNetConn net.Conn
@@ -180,7 +181,7 @@ func TestClientHandShake(t *testing.T) {
 			t.Errorf("newConn(%v, %v, %v, _), want (the net.Conn, the bufio.Reader, the bufio.Writer, _)", gotNetConn, gotReader, gotWriter)
 		}
 		// A client's peer is a server, so this Conn masks (RFC 6455 5.1), and it
-		// follows the deflate agreement validateHandShakeResponseDeflate returned.
+		// follows the deflate agreement validateHandShakeResponseExtensions returned.
 		if wantConfig := (NewConnConfig{PeerIsClient: false, PermessageDeflate: agreed}); gotConfig != wantConfig {
 			t.Errorf("newConn config = %+v, want %+v", gotConfig, wantConfig)
 		}
@@ -1215,9 +1216,12 @@ func TestValidateHandShakeResponseSubprotocol(t *testing.T) {
 	}
 }
 
-func TestValidateHandShakeResponseDeflate(t *testing.T) {
-	base_di := func() validateHandShakeResponseDeflateDI {
-		return validateHandShakeResponseDeflateDI{
+func TestValidateHandShakeResponseExtensions(t *testing.T) {
+	base_di := func() validateHandShakeResponseExtensionsDI {
+		return validateHandShakeResponseExtensionsDI{
+			validateRespExtensionsOffered: func(*http.Response, *http.Request) error {
+				return nil
+			},
 			validateRespDeflateExt: func(*http.Response) (*PermessageDeflateConfig, error) {
 				return &PermessageDeflateConfig{}, nil
 			},
@@ -1245,9 +1249,9 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return want, nil
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(resp, request, di)
+		agreed_config, err := validateHandShakeResponseExtensions(resp, request, di)
 		if err != nil {
-			t.Fatalf("validateHandShakeResponseDeflate: %v", err)
+			t.Fatalf("validateHandShakeResponseExtensions: %v", err)
 		}
 		if agreed_config == nil || *agreed_config != want {
 			t.Errorf("agreed_config = %+v, want validateRespDeflateExtWithReq's config %+v", agreed_config, want)
@@ -1260,6 +1264,55 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 		}
 	})
 
+	t.Run("checks the extensions are offered first, with the response and the request", func(t *testing.T) {
+		resp := &http.Response{}
+		request := httptestRequest(t)
+		var steps []string
+		var gotResp *http.Response
+		var gotRequest *http.Request
+		di := base_di()
+		di.validateRespExtensionsOffered = func(givenResp *http.Response, givenRequest *http.Request) error {
+			steps = append(steps, "validateRespExtensionsOffered")
+			gotResp, gotRequest = givenResp, givenRequest
+			return nil
+		}
+		di.validateRespDeflateExt = func(*http.Response) (*PermessageDeflateConfig, error) {
+			steps = append(steps, "validateRespDeflateExt")
+			return &PermessageDeflateConfig{}, nil
+		}
+
+		if _, err := validateHandShakeResponseExtensions(resp, request, di); err != nil {
+			t.Fatalf("validateHandShakeResponseExtensions: %v", err)
+		}
+		if want := []string{"validateRespExtensionsOffered", "validateRespDeflateExt"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+		if gotResp != resp || gotRequest != request {
+			t.Error("validateRespExtensionsOffered did not get the response and the request")
+		}
+	})
+
+	t.Run("returns validateRespExtensionsOffered's error, no config, and checks nothing else", func(t *testing.T) {
+		wantErr := errors.New("validateRespExtensionsOffered error")
+		di := base_di()
+		di.validateRespExtensionsOffered = func(*http.Response, *http.Request) error {
+			return wantErr
+		}
+		di.validateRespDeflateExt = func(*http.Response) (*PermessageDeflateConfig, error) {
+			t.Error("validateRespDeflateExt was called")
+			return &PermessageDeflateConfig{}, nil
+		}
+		di.validateRespDeflateExtWithReq = func(PermessageDeflateConfig, *http.Request) (PermessageDeflateConfig, error) {
+			t.Error("validateRespDeflateExtWithReq was called")
+			return PermessageDeflateConfig{}, nil
+		}
+
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
+		if err != wantErr || agreed_config != nil {
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
+		}
+	})
+
 	t.Run("returns nil and no error when the server declined deflate", func(t *testing.T) {
 		di := base_di()
 		di.validateRespDeflateExt = func(*http.Response) (*PermessageDeflateConfig, error) { return nil, nil }
@@ -1267,9 +1320,9 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return PermessageDeflateConfig{}, errors.New("validateRespDeflateExtWithReq error")
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(&http.Response{}, httptestRequest(t), di)
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
 		if err != nil || agreed_config != nil {
-			t.Errorf("validateHandShakeResponseDeflate = (%+v, %v), want (nil, nil)", agreed_config, err)
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, nil)", agreed_config, err)
 		}
 	})
 
@@ -1283,9 +1336,9 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return PermessageDeflateConfig{}, errors.New("validateRespDeflateExtWithReq error")
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(&http.Response{}, httptestRequest(t), di)
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
 		if err != wantErr || agreed_config != nil {
-			t.Errorf("validateHandShakeResponseDeflate = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
 		}
 	})
 
@@ -1296,11 +1349,110 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return PermessageDeflateConfig{ServerNoContextTakeover: true}, wantErr
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(&http.Response{}, httptestRequest(t), di)
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
 		if err != wantErr || agreed_config != nil {
-			t.Errorf("validateHandShakeResponseDeflate = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
 		}
 	})
+}
+
+func TestValidateRespExtensionsOffered(t *testing.T) {
+	// Each string in reqExtensions and respExtensions is one
+	// Sec-WebSocket-Extensions line, of the request and of the response.
+	testCases := []struct {
+		name           string
+		reqExtensions  []string
+		respExtensions []string
+		wantErr        error
+	}{
+		{
+			name:           "nothing offered, nothing answered",
+			reqExtensions:  nil,
+			respExtensions: nil,
+			wantErr:        nil,
+		},
+		{
+			name:           "offered, nothing answered",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: nil,
+			wantErr:        nil,
+		},
+		{
+			name:           "offered permessage-deflate answered",
+			reqExtensions:  []string{"permessage-deflate; client_no_context_takeover"},
+			respExtensions: []string{"permessage-deflate"},
+			wantErr:        nil,
+		},
+		{
+			name:           "your own extension offered and answered",
+			reqExtensions:  []string{"x-other, permessage-deflate"},
+			respExtensions: []string{"x-other"},
+			wantErr:        nil,
+		},
+		{
+			name:           "both answered, offered on two lines",
+			reqExtensions:  []string{"x-other", "permessage-deflate"},
+			respExtensions: []string{"permessage-deflate, x-other"},
+			wantErr:        nil,
+		},
+		{
+			name:           "a quoted comma in a param stays in the param",
+			reqExtensions:  []string{"x-other"},
+			respExtensions: []string{`x-other; note="a,b"`},
+			wantErr:        nil,
+		},
+		{
+			name:           "nothing offered, permessage-deflate answered",
+			reqExtensions:  nil,
+			respExtensions: []string{"permessage-deflate"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "an extension not offered answered",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: []string{"x-other"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "an extension not offered after an offered one",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: []string{"permessage-deflate", "x-other; a=1"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "a name in another case is not offered",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: []string{"Permessage-Deflate"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "a name offered only as a param is not offered",
+			reqExtensions:  []string{"permessage-deflate; x-other"},
+			respExtensions: []string{"x-other"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := httptestRequest(t)
+			for _, reqExtension := range testCase.reqExtensions {
+				request.Header.Add("Sec-WebSocket-Extensions", reqExtension)
+			}
+			resp := &http.Response{Header: http.Header{}}
+			for _, respExtension := range testCase.respExtensions {
+				resp.Header.Add("Sec-WebSocket-Extensions", respExtension)
+			}
+
+			err := validateRespExtensionsOffered(resp, request)
+
+			if testCase.wantErr == nil && err != nil {
+				t.Errorf("validateRespExtensionsOffered: %v, want nil", err)
+			}
+			if testCase.wantErr != nil && !errors.Is(err, testCase.wantErr) {
+				t.Errorf("validateRespExtensionsOffered: %v, want %v", err, testCase.wantErr)
+			}
+		})
+	}
 }
 
 func TestValidateRespDeflateExt(t *testing.T) {
