@@ -334,6 +334,9 @@ Listener 的上限也改了名。傳送、兩邊的 handshake、`NewConn` 與 `N
   `Sec-WebSocket-Protocol` 不是提出過的值時，會回傳
   `ErrHandshakeResponseSubprotocolNotOffered`；不只一個值時，會回傳
   `ErrHandshakeResponseSubprotocolMultiple`。在 v6 中這兩種都會被接受。
+- **`ClientHandShake` 會拒絕 client 沒有提出的 extension。** 依 RFC 6455 4.1，
+  `Sec-WebSocket-Extensions` 裡有沒提出過的項目時，會回傳
+  `ErrHandshakeResponseExtensionNotOffered`。v6 完全不會讀這個 header。
 - **RFC 6455 4.1 或 RFC 7692 5 要求中斷連線時，`ClientHandShake` 會關閉連線。**
   例如 `Upgrade`、`Connection`、`Sec-WebSocket-Accept`、`Sec-WebSocket-Protocol` 或
   `Sec-WebSocket-Extensions` 不正確時，會在回傳 error 之前關閉 `netConn`

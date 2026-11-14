@@ -150,8 +150,8 @@ func TestListenerClaimListen(t *testing.T) {
 		}
 	})
 
-	// NewListener is the only thing that sets conn, so a Listener built by hand
-	// reaches here with nothing to read from.
+	// A Listener built by hand, or by NewListener with a nil conn, reaches here
+	// with nothing to read from.
 	t.Run("nil conn", func(t *testing.T) {
 		var steps []string
 		l := &Listener{configLocker: &sync.Mutex{}}

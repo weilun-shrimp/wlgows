@@ -346,6 +346,10 @@ Behaviour that changes without a compile error:
   `Sec-WebSocket-Protocol` never offered, as RFC 6455 4.1 asks, and
   `ErrHandshakeResponseSubprotocolMultiple` for more than one value. In v6 both
   were accepted.
+- **`ClientHandShake` refuses an extension the client did not offer.** It
+  returns `ErrHandshakeResponseExtensionNotOffered` for a
+  `Sec-WebSocket-Extensions` entry never offered, as RFC 6455 4.1 asks. In v6
+  the header was not read.
 - **`ClientHandShake` closes the connection when RFC 6455 4.1 or RFC 7692 5
   says to fail it.** For example, a wrong `Upgrade`, `Connection`,
   `Sec-WebSocket-Accept`, `Sec-WebSocket-Protocol` or

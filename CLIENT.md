@@ -166,7 +166,7 @@ table:
 | `ErrHandshakeResponseSubprotocolRepeated` | has the `Sec-WebSocket-Protocol` header more than once — see [Subprotocols](#subprotocols) |
 | `ErrHandshakeResponseSubprotocolMultiple` | has more than one `Sec-WebSocket-Protocol` value on one line — see [Subprotocols](#subprotocols) |
 | `ErrHandshakeResponseSubprotocolNotOffered` | has a `Sec-WebSocket-Protocol` you did not offer — see [Subprotocols](#subprotocols) |
-| `ErrHandshakeResponseExtensionNotOffered` | accepts permessage-deflate twice, or in a way no offer allows — see [Compression](#compression-permessage-deflate) |
+| `ErrHandshakeResponseExtensionNotOffered` | has an extension you did not offer, accepts permessage-deflate twice, or accepts it in a way no offer allows — see [Compression](#compression-permessage-deflate) |
 | `ErrHandshakeResponseDeflateParamsInvalid` | has a permessage-deflate param RFC 7692 7 forbids — see [Compression](#compression-permessage-deflate) |
 
 **Who closes the connection.** For some broken answers, RFC 6455 4.1 and
@@ -312,20 +312,25 @@ Without it, the client may always use 15 bits.
 The server accepts one offer, or none. No permessage-deflate in the answer is
 not an error: the connection opens without compression. An answer no offer
 allows, or one with an [invalid entry](./PERMESSAGE_DEFLATE.md#invalid-entries),
-fails the connection (RFC 7692 5):
+fails the connection (RFC 6455 4.1, RFC 7692 5):
 
 | The server answers with | Error |
 |---|---|
+| an extension you did not offer (RFC 6455 4.1) | `ErrHandshakeResponseExtensionNotOffered` |
 | permessage-deflate twice | `ErrHandshakeResponseExtensionNotOffered` |
 | `client_max_window_bits=N`, which wlgows never offers | `ErrHandshakeResponseExtensionNotOffered` |
 | params no single offer allows, such as a `server_max_window_bits` above the offer's, or no `server_no_context_takeover` or `server_max_window_bits` when the offer asked for it (RFC 7692 7.1.1.1, 7.1.2.1) | `ErrHandshakeResponseExtensionNotOffered` |
 | an invalid entry | `ErrHandshakeResponseDeflateParamsInvalid` |
 
+An extension other than permessage-deflate that you offer in the request header
+yourself is not an error when the server accepts it. wlgows does not speak it,
+so following it is up to you.
+
 `ClientHandShake` does not return what was agreed. Get it with
-`ValidateHandShakeResponseDeflate`:
+`ValidateHandShakeResponseExtensions`:
 
 ```go
-agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request) // agreed is nil when the server declined
+agreed, err := wlgows.ValidateHandShakeResponseExtensions(resp, request) // agreed is nil when the server declined
 ```
 
 `agreed` is a `*PermessageDeflateConfig`: what both sides follow, not a copy
@@ -358,7 +363,7 @@ resp, err := wlgows.ReadHandShakeResponse(reader, request)
 if err != nil {
 	return err
 }
-// 4. Check the answer: RFC 6455 4.1, the subprotocol, then permessage-deflate.
+// 4. Check the answer: RFC 6455 4.1, the subprotocol, then the extensions.
 if err := wlgows.ValidateHandShakeResponse(resp, request.Header.Get("Sec-WebSocket-Key")); err != nil {
 	if wlgows.ClientMustFailConnection(err) {
 		netConn.Close() // RFC 6455 7.1.7
@@ -371,10 +376,10 @@ if err := wlgows.ValidateHandShakeResponseSubprotocol(resp, request); err != nil
 	}
 	return err
 }
-agreed, err := wlgows.ValidateHandShakeResponseDeflate(resp, request)
+agreed, err := wlgows.ValidateHandShakeResponseExtensions(resp, request)
 if err != nil {
 	if wlgows.ClientMustFailConnection(err) {
-		netConn.Close() // RFC 7692 5
+		netConn.Close() // RFC 6455 7.1.7
 	}
 	return err
 }
