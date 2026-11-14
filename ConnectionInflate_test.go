@@ -16,11 +16,12 @@ import (
 // inflaterPipeSource, and a pointer so a test can tell which one it got. Set
 // the ones the code under test calls.
 type fakeFuncPipeSource struct {
-	readFunc     func(p []byte) (int, error)
-	readByteFunc func() (byte, error)
-	putFunc      func(data []byte) error
-	closeFunc    func(err error)
-	dropFunc     func()
+	readFunc                func(p []byte) (int, error)
+	readByteFunc            func() (byte, error)
+	putFunc                 func(data []byte) error
+	closeFunc               func(err error)
+	dropFunc                func()
+	getWaitingByteCountFunc func() int
 }
 
 func (s *fakeFuncPipeSource) Read(p []byte) (int, error) { return s.readFunc(p) }
@@ -28,6 +29,7 @@ func (s *fakeFuncPipeSource) ReadByte() (byte, error)    { return s.readByteFunc
 func (s *fakeFuncPipeSource) put(data []byte) error      { return s.putFunc(data) }
 func (s *fakeFuncPipeSource) close(err error)            { s.closeFunc(err) }
 func (s *fakeFuncPipeSource) drop()                      { s.dropFunc() }
+func (s *fakeFuncPipeSource) getWaitingByteCount() int   { return s.getWaitingByteCountFunc() }
 
 // fakeFuncFlateReaderPool runs its funcs, so a test can record each call. It is
 // a flateReaderPool. Set the ones the code under test calls.
@@ -813,6 +815,53 @@ func TestContextInflaterDropContext(t *testing.T) {
 	})
 }
 
+func TestContextInflaterDeflatedBytesWaiting(t *testing.T) {
+	var steps []string
+	base_inflater := func() *contextInflater {
+		steps = nil
+		return &contextInflater{
+			pipeSourceLocker: fakeFuncLocker{
+				lock:   func() { steps = append(steps, "lock") },
+				unlock: func() { steps = append(steps, "unlock") },
+			},
+			currentFramesToken: 7,
+			pipeSource: &fakeFuncPipeSource{getWaitingByteCountFunc: func() int {
+				steps = append(steps, "getWaitingByteCount")
+				return 5
+			}},
+		}
+	}
+
+	t.Run("returns pipeSource's count, locked", func(t *testing.T) {
+		if waiting := base_inflater().deflatedBytesWaiting(7); waiting != 5 {
+			t.Errorf("deflatedBytesWaiting = %d, want 5", waiting)
+		}
+		if want := []string{"lock", "getWaitingByteCount", "unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	t.Run("another message's token has none waiting", func(t *testing.T) {
+		if waiting := base_inflater().deflatedBytesWaiting(6); waiting != 0 {
+			t.Errorf("deflatedBytesWaiting = %d, want 0", waiting)
+		}
+		if want := []string{"lock", "unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+
+	t.Run("the token of a message that ended has none waiting", func(t *testing.T) {
+		inflater := base_inflater()
+		inflater.pipeSource = nil
+		if waiting := inflater.deflatedBytesWaiting(7); waiting != 0 {
+			t.Errorf("deflatedBytesWaiting = %d, want 0", waiting)
+		}
+		if want := []string{"lock", "unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+}
+
 func TestNewPipeSource(t *testing.T) {
 	t.Run("is empty and open, its cond on its locker", func(t *testing.T) {
 		source := newPipeSource().(*pipeSource)
@@ -837,6 +886,9 @@ func TestPipeSourcePut(t *testing.T) {
 		if len(source.pipe) != 2 || &source.pipe[0][0] != &first[0] || &source.pipe[1][0] != &second[0] {
 			t.Errorf("pipe %q, want the two payloads in order, not copied", source.pipe)
 		}
+		if source.waitingByteCount != 3 {
+			t.Errorf("waitingByteCount %d, want 3", source.waitingByteCount)
+		}
 	})
 
 	t.Run("closed, returns its err and adds nothing", func(t *testing.T) {
@@ -845,8 +897,8 @@ func TestPipeSourcePut(t *testing.T) {
 		if err := source.put([]byte("ab")); err != io.EOF {
 			t.Errorf("put = %v, want io.EOF", err)
 		}
-		if source.pipe != nil {
-			t.Errorf("pipe %q, want nothing added", source.pipe)
+		if source.pipe != nil || source.waitingByteCount != 0 {
+			t.Errorf("pipe %q, waitingByteCount %d, want nothing added", source.pipe, source.waitingByteCount)
 		}
 	})
 
@@ -964,6 +1016,15 @@ func TestPipeSourceDrop(t *testing.T) {
 		}
 	})
 
+	t.Run("has none waiting after", func(t *testing.T) {
+		source := newPipeSource().(*pipeSource)
+		source.put([]byte("abc"))
+		source.drop()
+		if source.waitingByteCount != 0 {
+			t.Errorf("waitingByteCount %d, want 0", source.waitingByteCount)
+		}
+	})
+
 	t.Run("frees pipe and keeps the err of a closed one", func(t *testing.T) {
 		source := newPipeSource().(*pipeSource)
 		source.put([]byte("ab"))
@@ -1042,6 +1103,9 @@ func TestPipeSourceRead(t *testing.T) {
 		if len(source.pipe) != 2 || string(source.pipe[0]) != "c" || string(source.pipe[1]) != "de" {
 			t.Errorf("pipe %q, want [\"c\" \"de\"]", source.pipe)
 		}
+		if source.waitingByteCount != 3 {
+			t.Errorf("waitingByteCount %d, want 3", source.waitingByteCount)
+		}
 	})
 
 	t.Run("reads one payload at most, and lets it go once read", func(t *testing.T) {
@@ -1056,6 +1120,9 @@ func TestPipeSourceRead(t *testing.T) {
 		}
 		if len(source.pipe) != 1 || string(source.pipe[0]) != "de" || pipe[0] != nil {
 			t.Errorf("pipe %q, its old front %q, want [\"de\"] and nil", source.pipe, pipe[0])
+		}
+		if source.waitingByteCount != 2 {
+			t.Errorf("waitingByteCount %d, want 2", source.waitingByteCount)
 		}
 	})
 
@@ -1132,6 +1199,9 @@ func TestPipeSourceReadByte(t *testing.T) {
 		if len(source.pipe) != 2 || string(source.pipe[0]) != "b" || string(source.pipe[1]) != "c" {
 			t.Errorf("pipe %q, want [\"b\" \"c\"]", source.pipe)
 		}
+		if source.waitingByteCount != 2 {
+			t.Errorf("waitingByteCount %d, want 2", source.waitingByteCount)
+		}
 	})
 
 	t.Run("lets a payload go once read", func(t *testing.T) {
@@ -1145,6 +1215,9 @@ func TestPipeSourceReadByte(t *testing.T) {
 		}
 		if len(source.pipe) != 1 || string(source.pipe[0]) != "b" || pipe[0] != nil {
 			t.Errorf("pipe %q, its old front %q, want [\"b\"] and nil", source.pipe, pipe[0])
+		}
+		if source.waitingByteCount != 1 {
+			t.Errorf("waitingByteCount %d, want 1", source.waitingByteCount)
 		}
 	})
 
@@ -1201,6 +1274,23 @@ func TestPipeSourceReadByte(t *testing.T) {
 		}
 		source := &pipeSource{locker: locker, cond: sync.NewCond(locker), pipe: [][]byte{[]byte("ab")}}
 		source.ReadByte()
+		if want := []string{"lock", "unlock"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+	})
+}
+
+func TestPipeSourceGetWaitingByteCount(t *testing.T) {
+	t.Run("returns waitingByteCount, locked", func(t *testing.T) {
+		var steps []string
+		locker := fakeFuncLocker{
+			lock:   func() { steps = append(steps, "lock") },
+			unlock: func() { steps = append(steps, "unlock") },
+		}
+		source := &pipeSource{locker: locker, cond: sync.NewCond(locker), waitingByteCount: 5}
+		if waiting := source.getWaitingByteCount(); waiting != 5 {
+			t.Errorf("getWaitingByteCount = %d, want 5", waiting)
+		}
 		if want := []string{"lock", "unlock"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
 		}

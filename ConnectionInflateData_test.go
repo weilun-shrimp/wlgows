@@ -22,6 +22,7 @@ type fakeFuncInflater struct {
 	pullInflatedBytesFunc       func(token int64, buf []byte) (int, error)
 	endInflateFramesFunc        func(token int64)
 	dropContextFunc             func(token int64)
+	deflatedBytesWaitingFunc    func(token int64) int
 }
 
 func (i fakeFuncInflater) inflateDataFramesReader(frames DataFrames) io.ReadCloser {
@@ -36,6 +37,9 @@ func (i fakeFuncInflater) pullInflatedBytes(token int64, buf []byte) (int, error
 }
 func (i fakeFuncInflater) endInflateFrames(token int64) { i.endInflateFramesFunc(token) }
 func (i fakeFuncInflater) dropContext(token int64)      { i.dropContextFunc(token) }
+func (i fakeFuncInflater) deflatedBytesWaiting(token int64) int {
+	return i.deflatedBytesWaitingFunc(token)
+}
 
 func TestDataFramesReaderFunc(t *testing.T) {
 	plain_reader := &fakeFuncReadCloser{}
@@ -226,6 +230,20 @@ func TestStartInflateDataFrames(t *testing.T) {
 		conn := &Conn{contextInflater: fakeFuncInflater{startInflateFramesFunc: func() int64 { return 7 }}}
 		if token := conn.StartInflateDataFrames(); token != 7 {
 			t.Errorf("StartInflateDataFrames = %d, want 7", token)
+		}
+	})
+}
+
+func TestDeflatedBytesWaiting(t *testing.T) {
+	t.Run("returns the inflater's count for token", func(t *testing.T) {
+		conn := &Conn{contextInflater: fakeFuncInflater{deflatedBytesWaitingFunc: func(token int64) int {
+			if token != 7 {
+				t.Errorf("deflatedBytesWaiting token %d, want 7", token)
+			}
+			return 5
+		}}}
+		if waiting := conn.DeflatedBytesWaiting(7); waiting != 5 {
+			t.Errorf("DeflatedBytesWaiting = %d, want 5", waiting)
 		}
 	})
 }

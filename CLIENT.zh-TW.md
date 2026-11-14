@@ -75,11 +75,16 @@ netConn, request, err := wlgows.DialContext(ctx, "wss://localhost:8001", dialer,
 ```go
 reader := bufio.NewReader(netConn)
 writer := bufio.NewWriter(netConn)
+// ClientHandShake 沒有設逾時。沒有這一行的話，只要 server 一直不回應，
+// 它就會一直卡住。
+netConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})
 if err != nil {
 	netConn.Close() // 每次 handshake 出錯都建議關閉
 	return
 }
+// 記得清掉，否則之後讀 frame 也會被它中斷。
+netConn.SetReadDeadline(time.Time{})
 ```
 
 - **`reader`** 必須是你之後讀取 frame 用的那一個。讀取回應時，可能會把第一個 frame

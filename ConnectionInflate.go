@@ -24,6 +24,7 @@ type inflaterPipeSource interface {
 	put(data []byte) error
 	close(err error)
 	drop()
+	getWaitingByteCount() int
 }
 
 // connNoContextInflater inflates a whole message from an empty window.
@@ -41,6 +42,7 @@ type connContextInflater interface {
 	pullInflatedBytes(token int64, buf []byte) (int, error)
 	endInflateFrames(token int64)
 	dropContext(token int64)
+	deflatedBytesWaiting(token int64) int
 }
 
 /*
@@ -390,6 +392,17 @@ func (c *contextInflater) dropContext(token int64) {
 	c.history = nil
 }
 
+// deflatedBytesWaiting is how many bytes of the open message's frames wait in
+// pipeSource. A stale token has none waiting: 0.
+func (c *contextInflater) deflatedBytesWaiting(token int64) int {
+	c.pipeSourceLocker.Lock()
+	defer c.pipeSourceLocker.Unlock()
+	if c.isStaleToken(token) {
+		return 0
+	}
+	return c.pipeSource.getWaitingByteCount()
+}
+
 // isStaleToken is whether token is not the open message's: it ended, or
 // another started. Hold pipeSourceLocker.
 func (c *contextInflater) isStaleToken(token int64) bool {
@@ -416,6 +429,8 @@ type pipeSource struct {
 	cond *sync.Cond
 	// The payloads put and not yet read, in order. None is empty.
 	pipe [][]byte
+	// The bytes in pipe not yet read.
+	waitingByteCount int
 	// What Read and ReadByte return once pipe is empty and nothing more will
 	// be put: io.EOF after the FIN frame, see close.
 	err error
@@ -439,6 +454,7 @@ func (s *pipeSource) put(data []byte) error {
 		return s.err
 	}
 	s.pipe = append(s.pipe, data)
+	s.waitingByteCount += len(data)
 	s.cond.Broadcast()
 	return nil
 }
@@ -461,6 +477,7 @@ func (s *pipeSource) drop() {
 	s.locker.Lock()
 	defer s.locker.Unlock()
 	s.pipe = nil
+	s.waitingByteCount = 0
 	if !s.isClosed() {
 		s.err = io.ErrClosedPipe
 	}
@@ -485,6 +502,7 @@ func (s *pipeSource) Read(p []byte) (int, error) {
 	}
 	n := copy(p, s.pipe[0])
 	s.pipe[0] = s.pipe[0][n:]
+	s.waitingByteCount -= n
 	if len(s.pipe[0]) == 0 {
 		s.pipe[0] = nil // Let GC to handle memory early.
 		s.pipe = s.pipe[1:]
@@ -504,9 +522,17 @@ func (s *pipeSource) ReadByte() (byte, error) {
 	}
 	b := s.pipe[0][0]
 	s.pipe[0] = s.pipe[0][1:]
+	s.waitingByteCount--
 	if len(s.pipe[0]) == 0 {
 		s.pipe[0] = nil // Let GC to handle memory early.
 		s.pipe = s.pipe[1:]
 	}
 	return b, nil
+}
+
+// getWaitingByteCount is waitingByteCount.
+func (s *pipeSource) getWaitingByteCount() int {
+	s.locker.Lock()
+	defer s.locker.Unlock()
+	return s.waitingByteCount
 }

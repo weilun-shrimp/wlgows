@@ -79,11 +79,16 @@ it against RFC 6455 4.1, and builds the `Conn`.
 ```go
 reader := bufio.NewReader(netConn)
 writer := bufio.NewWriter(netConn)
+// ClientHandShake sets no timeout. Without this, a server that never answers
+// holds it forever.
+netConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})
 if err != nil {
 	netConn.Close() // recommended on every handshake error
 	return
 }
+// Cleared, or it would cut off the frame reads too.
+netConn.SetReadDeadline(time.Time{})
 ```
 
 - **`reader`** must be the one you go on to read frames from. Reading the answer

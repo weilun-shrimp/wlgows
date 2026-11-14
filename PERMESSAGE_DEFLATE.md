@@ -145,10 +145,17 @@ nothing. This is why we recommend no context takeover on both sides. See
 - Not counted:
   - the result buffer, which grows to your largest compressed message, see
     [SENDING.md](./SENDING.md#memory-the-result-buffer);
-  - frames waiting to be read;
+  - with the Data hook, compressed frames put and not yet decompressed: up to
+    `MaxDataFramesSize`, see [READING.md](./READING.md#compressed);
   - a writer or reader taken from the pool while a message is sent or read.
 - While a stream is open, a connection that sends without context also holds a
   writer and a history, as in the "with context" rows.
+
+**Reading a large message with the Data hook.** While one compressed message is
+read, a connection holds about 104 KB: reader 40 + history 64, whether the peer
+keeps its context or not. Add the frames still waiting, see
+[READING.md](./READING.md#compressed). After the message, a peer without context
+leaves only the reader, 40 KB.
 
 ### Many connections
 

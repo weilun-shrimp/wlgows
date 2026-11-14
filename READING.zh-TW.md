@@ -342,24 +342,31 @@ return listener.Listen()
 
 ### 有壓縮
 
-壓縮過的 message 分四步解壓縮：
+壓縮過的 message 分四步解壓縮，另外有一個記憶體 helper：
 
 1. 第一個 frame 時，`token := conn.StartInflateDataFrames()`。
 2. 每個 frame 都 `conn.PutDeflatedDataFrame(token, frame)`。
 3. 用 `conn.PullInflatedBytes(token, buf)` 取得解壓縮後的 byte，直到 `io.EOF`。
 4. 最後 `conn.EndInflateDataFrames(token)`。一定要呼叫，出錯之後也一樣。
 
-在另一個 goroutine 裡 pull，frame 同時繼續進來。每個 frame 解壓縮完就會釋放，所以
-用到的記憶體很少。`PullInflatedBytes` 需要更多資料時，會等下一個 frame。
+在另一個 goroutine 裡 pull，frame 同時繼續進來。`PullInflatedBytes` 需要更多資料時，
+會等下一個 frame。
+
+**記憶體 helper：`conn.DeflatedBytesWaiting(token)`。** `PutDeflatedDataFrame` 不會
+等待。frame 進來的速度比 pull 寫出去還快時，這些 frame 會在記憶體裡排隊，每條連線最多
+到 `MaxDataFramesSize`：設成 2 GB 的話，十條連線可能就會吃掉 20 GB。
+`DeflatedBytesWaiting` 就是排隊中的 byte 數。每次 put 之後，只要它超過你設的上限，就
+先 sleep 一下再檢查。數字下降時不會通知你。
 
 下面把壓縮過的 binary message 寫進檔案：
 
 ```go
-var token int64
-// pullResult 告訴 hook pull 怎麼結束：整則 message 都寫完是 nil，否則是停下的
-// 原因。收到值也代表 pull 已經回傳，可以安全呼叫 EndInflateDataFrames。
+var inflateToken int64
+// inflatePullResultChan 告訴 hook pull 怎麼結束：整則 message 都寫完是 nil，
+// 否則是停下的原因。收到值也代表 pull 已經回傳，可以安全呼叫
+// EndInflateDataFrames。
 // 沒有進行中的 message 時，channel 本身是 nil。
-var pullResult chan error
+var inflatePullResultChan chan error
 
 config.Data = func(frame *wlgows.Frame) {
 	if !listener.IsCurrentMsgDeflated() || listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
@@ -367,31 +374,39 @@ config.Data = func(frame *wlgows.Frame) {
 		return
 	}
 	if frame.Opcode != wlgows.OpcodeContinuation { // 第一個 frame
-		token = conn.StartInflateDataFrames()
-		pullResult = make(chan error, 1) // 留 1 格：送出時不會卡住
-		go func(token int64, result chan<- error) {
-			result <- writeInflated(conn, token, out)
-		}(token, pullResult)
+		inflateToken = conn.StartInflateDataFrames()
+		inflatePullResultChan = make(chan error, 1) // 留 1 格：送出時不會卡住
+		go func(inflateToken int64, result chan<- error) {
+			result <- writeInflated(conn, inflateToken, out)
+		}(inflateToken, inflatePullResultChan)
 	}
-	if err := conn.PutDeflatedDataFrame(token, frame); err != nil {
+	if err := conn.PutDeflatedDataFrame(inflateToken, frame); err != nil {
 		listener.PauseListen(err)
 		return
 	}
 
 	if !frame.FIN {
+		// 排隊的太多：sleep 到完全沒有排隊為止。pull 一有結果就提早結束：對方在
+		// FIN 之前送了 deflate 的最後一個 block（BFINAL）時，之後的 byte 不會再被
+		// 讀取，這個數字就永遠不會降到 0。
+		if conn.DeflatedBytesWaiting(inflateToken) > maxDeflatedBytesWaiting { // 例如 1 MB
+			for conn.DeflatedBytesWaiting(inflateToken) > 0 && len(inflatePullResultChan) == 0 {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
 		select {
-		case err := <-pullResult: // pull 提早停了：太大，或資料不合法
-			conn.EndInflateDataFrames(token)
-			pullResult = nil
+		case err := <-inflatePullResultChan: // pull 提早停了：太大，或資料不合法
+			conn.EndInflateDataFrames(inflateToken)
+			inflatePullResultChan = nil
 			listener.PauseListen(err)
 		default:
 		}
 		return
 	}
 
-	err := <-pullResult // 整則 message 都放進去了：等 pull 結束
-	conn.EndInflateDataFrames(token)
-	pullResult = nil
+	err := <-inflatePullResultChan // 整則 message 都放進去了：等 pull 結束
+	conn.EndInflateDataFrames(inflateToken)
+	inflatePullResultChan = nil
 	if err != nil {
 		listener.PauseListen(err)
 	}
@@ -399,10 +414,10 @@ config.Data = func(frame *wlgows.Frame) {
 listener.SetConfig(config)
 
 err := listener.Listen()
-if pullResult != nil { // 在 message 中途停下
-	conn.PutDeflatedDataFrame(token, &wlgows.Frame{FIN: true}) // pull 會回傳
-	<-pullResult
-	conn.EndInflateDataFrames(token)
+if inflatePullResultChan != nil { // 在 message 中途停下
+	conn.PutDeflatedDataFrame(inflateToken, &wlgows.Frame{FIN: true}) // pull 會回傳
+	<-inflatePullResultChan
+	conn.EndInflateDataFrames(inflateToken)
 }
 return err
 ```
@@ -433,6 +448,8 @@ func writeInflated(conn *wlgows.Conn, token int64, out io.Writer) error {
 	}
 }
 ```
+
+[`stream_server`](./example/stream_server/main.go) 就是這樣做的，用的是真實的檔案和 1 MB 的上限。
 
 **在 message 中途停下。** `Listen` 在 FIN frame 之前就回傳時，pull 還在等下一個
 frame。放一個沒有 payload 的 FIN frame 進去，pull 就會回傳。等它回傳後，再呼叫

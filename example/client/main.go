@@ -1,9 +1,8 @@
 // An interactive client for the echo server. Type a line, it goes out as a text
 // message, and whatever comes back is printed. Type "exit" to close cleanly.
 //
-//	cd example
-//	go run ./echo     # in one terminal
-//	go run ./client   # in another
+//	cd example/echo && go run .     # in one terminal
+//	cd example/client && go run .   # in another
 //
 // Reading is a wlgows.Listener on its own goroutine, so pings are answered while
 // the main goroutine sits blocked on the keyboard. Only PeerIsClient differs
@@ -12,12 +11,11 @@ package main
 
 import (
 	"bufio"
+	"compress/flate"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -38,62 +36,74 @@ const (
 	dialTimeout   = 15 * time.Second
 	dialerTimeout = 15 * time.Second
 
+	// ClientHandShake sets no timeout, so a server that never answers the
+	// request would hold the client forever.
+	responseReadTimeout = 10 * time.Second
+
 	// A ping every interval, answered by the peer's pong (5.5.2). It only asks;
 	// deciding a silent peer is gone would be a deadline of our own.
 	pingInterval = 30 * time.Second
 )
 
-func main() {
-	fmt.Print("Please input the url (eg. ws://localhost:8001) :")
-	url, err := example_helpers.ReadUserInput()
+// readMessage returns the bytes of one message, up to maxDataFramesSize. It
+// decompresses a compressed message and checks text as UTF-8. For a larger
+// message, it returns ErrSizeLimitExceeded. See READING.md.
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
 	if err != nil {
-		fmt.Println("reading url:", err)
-		return
+		return nil, err
 	}
+	defer reader.Close() // always close it
+	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxDataFramesSize))
+}
 
-	fmt.Print("Please input the trust ca.crt path (eg. ./ca.crt), empty means no need :")
-	caPath, err := example_helpers.ReadUserInput()
+// Sent text is deflated when the handshake agreed permessage-deflate, and sent
+// as is otherwise. DeflateLevel must be set: its zero is flate.NoCompression.
+var sendDataConfig = wlgows.SendDataConfig{
+	DeflateIfAgreed: true,
+	DeflateLevel:    flate.DefaultCompression,
+}
+
+func main() {
+	clientConfig, err := example_helpers.ReadUserInputClientConfig()
 	if err != nil {
-		fmt.Println("reading ca path:", err)
+		fmt.Println("error: client config:", err)
 		return
-	}
-	var tlsConfig *tls.Config
-	if caPath != "" {
-		tlsConfig = loadCA(caPath)
 	}
 
 	// Either bounds the TCP connect and the TLS handshake; the earlier one wins.
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 	dialer := &net.Dialer{Timeout: dialerTimeout}
-	netConn, req, err := wlgows.DialContext(ctx, url, dialer, tlsConfig)
+	netConn, req, err := wlgows.DialContext(ctx, clientConfig.WebsocketUrl, dialer, clientConfig.TlsConfig)
 	if err != nil {
-		fmt.Println("dial:", err)
+		fmt.Println("error: dial:", err)
 		return
 	}
 	defer netConn.Close()
 
-	// Subprotocols (RFC 6455 4.1). To offer chat.v2 and require the server to
-	// pick it, uncomment this line and the check after the handshake. A list
-	// goes in one header: "chat.v2, chat.v1".
-	// req.Header.Set("Sec-WebSocket-Protocol", "chat.v2")
-
-	r := bufio.NewReader(netConn)
-	conn, _, err := wlgows.ClientHandShake(netConn, r, bufio.NewWriter(netConn), req, wlgows.ClientHandShakeConfig{})
+	reader := bufio.NewReader(netConn)
+	writer := bufio.NewWriter(netConn)
+	if err := netConn.SetReadDeadline(time.Now().Add(responseReadTimeout)); err != nil {
+		fmt.Println("error: setting response deadline:", err)
+		return
+	}
+	conn, resp, err := wlgows.ClientHandShake(netConn, reader, writer, req, clientConfig.HandShakeConfig)
 	if err != nil {
-		fmt.Println("handshake:", err)
+		fmt.Println("error: handshake:", err)
+		return
+	}
+	// Cleared, or it would cut off the frame reads too. The Listener sets its
+	// own deadline before each frame.
+	if err := netConn.SetReadDeadline(time.Time{}); err != nil {
+		fmt.Println("error: clearing response deadline:", err)
 		return
 	}
 
+	example_helpers.PrintAgreedDeflate(conn)
 	// The server answers with one value or none. A value never offered already
-	// failed the handshake above (4.1). Change the _ above to resp to use this.
-	// An empty answer means the server picked none. The connection is open, so
-	// start the closing handshake with a close frame before returning (7.1.2).
-	// if resp.Header.Get("Sec-WebSocket-Protocol") != "chat.v2" {
-	// 	fmt.Println("server did not pick chat.v2")
-	// 	conn.SendClose(&wlgows.ClosePayload{StatusCode: wlgows.ClosePolicyViolation, Reason: "subprotocol chat.v2 required"})
-	// 	return
-	// }
+	// failed the handshake above (RFC 6455 4.1).
+	example_helpers.PrintSubprotocol(resp.Header.Get("Sec-WebSocket-Protocol"))
 	fmt.Println("Client with server handshaked. Type a line to send it, or \"exit\" to quit.")
 
 	// Closed once, by whichever side finishes first: the reader when the server
@@ -115,10 +125,20 @@ func main() {
 	config.FrameReadTimeout = frameReadTimeout
 
 	config.Text = func(frames wlgows.DataFrames) {
-		fmt.Println("echo server return: ", frames.String())
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		fmt.Println("echo server return: ", string(message))
 	}
 	config.Binary = func(frames wlgows.DataFrames) {
-		fmt.Printf("echo server return %d binary bytes\n", frames.ByteLen())
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		fmt.Printf("echo server return %d binary bytes\n", len(message))
 	}
 
 	// The standard close hook answers and pauses; this only reports first.
@@ -150,7 +170,7 @@ func main() {
 			if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 				conn.SendClose(payload)
 			}
-			fmt.Println("reader stopping:", err)
+			fmt.Println("error: listen:", err)
 		}
 	}()
 
@@ -158,7 +178,7 @@ func main() {
 		for {
 			input, err := example_helpers.ReadUserInput()
 			if err != nil {
-				fmt.Println("reading input:", err)
+				fmt.Println("error: reading input:", err)
 				stop()
 				return
 			}
@@ -173,8 +193,8 @@ func main() {
 				fmt.Println("Client reader bye. Waiting for the server to close.")
 				return
 			}
-			if err := conn.SendText([]byte(input), wlgows.SendDataConfig{}); err != nil {
-				fmt.Println("send:", err)
+			if err := conn.SendText([]byte(input), sendDataConfig); err != nil {
+				fmt.Println("error: send:", err)
 				stop()
 				return
 			}
@@ -185,18 +205,4 @@ func main() {
 	// would spin a whole core doing nothing.
 	<-stopChan
 	fmt.Println("main process detect the stop sign. Bye.")
-}
-
-func loadCA(caPath string) *tls.Config {
-	caCert, err := os.ReadFile(caPath)
-	if err != nil {
-		panic(err)
-	}
-
-	caCertPool := x509.NewCertPool()
-	if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
-		panic("failed to append CA certificate")
-	}
-
-	return &tls.Config{RootCAs: caCertPool}
 }

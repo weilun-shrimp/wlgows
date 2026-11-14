@@ -360,7 +360,7 @@ it receives a file frame by frame and hashes it.
 
 ### Compressed
 
-A compressed message is decompressed in four steps:
+A compressed message is decompressed in four steps, with one helper for memory:
 
 1. `token := conn.StartInflateDataFrames()` on the first frame.
 2. `conn.PutDeflatedDataFrame(token, frame)` for each frame.
@@ -369,19 +369,25 @@ A compressed message is decompressed in four steps:
 4. `conn.EndInflateDataFrames(token)` at the end. Always call it, also after an
    error.
 
-Pull in another goroutine, while the frames still arrive. Each frame is let go
-once it is decompressed, so memory stays small. When `PullInflatedBytes` needs
-more, it waits for the next frame.
+Pull in another goroutine, while the frames still arrive. When
+`PullInflatedBytes` needs more, it waits for the next frame.
+
+**The memory helper: `conn.DeflatedBytesWaiting(token)`.** `PutDeflatedDataFrame`
+never waits. When frames arrive faster than the pull writes them, they wait in
+memory, up to `MaxDataFramesSize` on every connection: with 2 GB, ten
+connections may hold 20 GB. `DeflatedBytesWaiting` is how many bytes wait. After
+each put, while it is over your limit, sleep and check again. Nothing signals
+when it drops.
 
 This writes a compressed binary message to a file:
 
 ```go
-var token int64
-// pullResult tells the hook how the pull ended: nil when the whole message
-// was written, else why it stopped. A value also means the pull returned, so
-// EndInflateDataFrames is safe to call.
+var inflateToken int64
+// inflatePullResultChan tells the hook how the pull ended: nil when the whole
+// message was written, else why it stopped. A value also means the pull
+// returned, so EndInflateDataFrames is safe to call.
 // The channel itself is nil when no message is open.
-var pullResult chan error
+var inflatePullResultChan chan error
 
 config.Data = func(frame *wlgows.Frame) {
 	if !listener.IsCurrentMsgDeflated() || listener.GetCurrentMsgOpcode() != wlgows.OpcodeBinary {
@@ -389,31 +395,39 @@ config.Data = func(frame *wlgows.Frame) {
 		return
 	}
 	if frame.Opcode != wlgows.OpcodeContinuation { // the first frame
-		token = conn.StartInflateDataFrames()
-		pullResult = make(chan error, 1) // room for 1: the send never blocks
-		go func(token int64, result chan<- error) {
-			result <- writeInflated(conn, token, out)
-		}(token, pullResult)
+		inflateToken = conn.StartInflateDataFrames()
+		inflatePullResultChan = make(chan error, 1) // room for 1: the send never blocks
+		go func(inflateToken int64, result chan<- error) {
+			result <- writeInflated(conn, inflateToken, out)
+		}(inflateToken, inflatePullResultChan)
 	}
-	if err := conn.PutDeflatedDataFrame(token, frame); err != nil {
+	if err := conn.PutDeflatedDataFrame(inflateToken, frame); err != nil {
 		listener.PauseListen(err)
 		return
 	}
 
 	if !frame.FIN {
+		// Too much waits: sleep until none does. Stop early once the pull has
+		// a result: when the peer sends deflate's last block (BFINAL) before
+		// FIN, the bytes after it are never read, so the count never drops to 0.
+		if conn.DeflatedBytesWaiting(inflateToken) > maxDeflatedBytesWaiting { // for example 1 MB
+			for conn.DeflatedBytesWaiting(inflateToken) > 0 && len(inflatePullResultChan) == 0 {
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
 		select {
-		case err := <-pullResult: // the pull stopped early: too big, or not valid
-			conn.EndInflateDataFrames(token)
-			pullResult = nil
+		case err := <-inflatePullResultChan: // the pull stopped early: too big, or not valid
+			conn.EndInflateDataFrames(inflateToken)
+			inflatePullResultChan = nil
 			listener.PauseListen(err)
 		default:
 		}
 		return
 	}
 
-	err := <-pullResult // the whole message is put: wait for the pull to finish
-	conn.EndInflateDataFrames(token)
-	pullResult = nil
+	err := <-inflatePullResultChan // the whole message is put: wait for the pull to finish
+	conn.EndInflateDataFrames(inflateToken)
+	inflatePullResultChan = nil
 	if err != nil {
 		listener.PauseListen(err)
 	}
@@ -421,10 +435,10 @@ config.Data = func(frame *wlgows.Frame) {
 listener.SetConfig(config)
 
 err := listener.Listen()
-if pullResult != nil { // stopped in the middle of a message
-	conn.PutDeflatedDataFrame(token, &wlgows.Frame{FIN: true}) // the pull returns
-	<-pullResult
-	conn.EndInflateDataFrames(token)
+if inflatePullResultChan != nil { // stopped in the middle of a message
+	conn.PutDeflatedDataFrame(inflateToken, &wlgows.Frame{FIN: true}) // the pull returns
+	<-inflatePullResultChan
+	conn.EndInflateDataFrames(inflateToken)
 }
 return err
 ```
@@ -455,6 +469,9 @@ func writeInflated(conn *wlgows.Conn, token int64, out io.Writer) error {
 	}
 }
 ```
+
+[`stream_server`](./example/stream_server/main.go) does this with a real file
+and a 1 MB limit.
 
 **Stopping in the middle of a message.** When `Listen` returns before the FIN
 frame, the pull still waits for the next frame. Put a FIN frame with no

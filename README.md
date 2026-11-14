@@ -251,29 +251,37 @@ with all of them. The streaming pair runs on its own.
 |---|---|
 | [`hijack_http`](./example/hijack_http/main.go) | Echo server behind `net/http`, via `http.Hijacker` |
 | [`hijack_gin`](./example/hijack_gin/main.go) | The same server behind Gin, via `c.Writer.Hijack()`. `GET /ping` keeps answering JSON alongside the WebSocket |
-| [`echo`](./example/echo/main.go) | The same server over raw TCP, with `wlgows.Run` and `Accept`. Adds a timeout on the request, but no size limit |
-| [`client`](./example/client/main.go) | Interactive client. Type a line to send it, `exit` to close cleanly. Prompts for a CA path, so it speaks `wss://` too |
-| [`stream_server`](./example/stream_server/main.go) | Receives a streamed message frame by frame, straight to disk — the `Data` hook, for a message too large to hold |
+| [`echo`](./example/echo/main.go) | The same server over raw TCP, with `wlgows.Run` and `Accept`. Adds a timeout on the request, but no size limit. TLS comes from `crypto/tls` |
+| [`client`](./example/client/main.go) | Interactive client. Type a line to send it, `exit` to close cleanly |
+| [`stream_server`](./example/stream_server/main.go) | Receives a streamed message frame by frame, straight to disk — the `Data` hook, for a message too large to hold. Inflates a compressed message frame by frame too |
 | [`stream_client`](./example/stream_client/main.go) | Streams a file as one binary message, a chunk at a time |
 
-The examples are their own module, so they run from `example/`:
+Each example runs from its own folder. Start a server, then a client in
+another terminal:
 
 ```bash
-cd example
-go run ./echo      # or hijack_http, or hijack_gin
-go run ./client    # in another terminal, then type
+cd example/echo && go run .     # or hijack_http, or hijack_gin
+cd example/client && go run .   # then type
 ```
-
-The streaming pair prints a SHA-256 at each end, and the two match:
 
 ```bash
-cd example
-go run ./stream_server
-go run ./stream_client   # in another terminal, enter twice for README.md
+cd example/stream_server && go run .
+cd example/stream_client && go run .
 ```
 
-Both hijack servers ask for a certificate and key at startup. Press enter twice
-for `ws://`, or give paths for `wss://`.
+Each program asks a few questions at startup. Press enter to take the default.
+
+- **Compression** is the client's choice: the servers accept any mode it offers.
+- **Subprotocols:** the server picks the client's first offer that it speaks.
+  With no match, the connection opens without one.
+- **The stream client** can stop after a few chunks, to see how the server
+  handles a message that never ends.
+
+Both sides print what was agreed. After a whole file, the stream server sends
+its SHA-256 back, and the stream client checks it against what it sent.
+
+The certificate in `example/` is for testing only. Do not use it for anything
+real.
 
 Each example uses a [`Listener`](./LISTENER.md), which answers pings and
 closes and refuses bad frames. What is left in each file is the part you write

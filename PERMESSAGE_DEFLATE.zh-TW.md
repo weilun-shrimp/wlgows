@@ -133,10 +133,16 @@ wlgows 永遠不會同意用 8 到 14 bit 送出（函式庫的選擇）。兩�
 - 沒有算進去的：
   - result buffer，它會長到你最大的那則壓縮 message 的大小，見
     [SENDING.zh-TW.md](./SENDING.zh-TW.md#記憶體result-buffer)；
-  - 等著被讀的 frame；
+  - 使用 Data hook 時，已經 put 進去、但還沒解壓縮的 frame：最多到
+    `MaxDataFramesSize`，見 [READING.zh-TW.md](./READING.zh-TW.md#有壓縮)；
   - 送出或讀取 message 時，從 pool 暫時拿來的 writer 或 reader。
 - 串流進行中時，送出時沒有 context 的連線也會留著一個 writer 和歷史資料，就像「有
   context」那幾列。
+
+**用 Data hook 讀取大型 message。** 讀取一則壓縮過的 message 時，不管對方有沒有保留
+context，一條連線都會佔用約 104 KB：reader 40 + 歷史資料 64。另外還要加上還在排隊的
+frame，見 [READING.zh-TW.md](./READING.zh-TW.md#有壓縮)。讀完之後，如果對方沒有
+context，就只會留下 reader 的 40 KB。
 
 ### 大量連線
 

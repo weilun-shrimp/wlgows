@@ -247,29 +247,35 @@ func main() {
 |---|---|
 | [`hijack_http`](./example/hijack_http/main.go) | 掛在 `net/http` 之下的 echo server，使用 `http.Hijacker` |
 | [`hijack_gin`](./example/hijack_gin/main.go) | 同一支 server，改掛在 Gin 之下，使用 `c.Writer.Hijack()`。`GET /ping` 依然正常回傳 JSON，與 WebSocket 並存 |
-| [`echo`](./example/echo/main.go) | 同一支 server，直接用原始 TCP，使用 `wlgows.Run` 與 `Accept`。request 有加上逾時，但沒有大小上限 |
-| [`client`](./example/client/main.go) | 互動式 client。輸入一行文字即送出，輸入 `exit` 會正常關閉連線。啟動時會詢問 CA 路徑，因此也能連線 `wss://` |
-| [`stream_server`](./example/stream_server/main.go) | 逐一接收 streaming message 的 frame 並直接寫入磁碟。使用 `Data` hook，適合大到無法放進記憶體的 message |
+| [`echo`](./example/echo/main.go) | 同一支 server，直接用原始 TCP，使用 `wlgows.Run` 與 `Accept`。request 有加上逾時，但沒有大小上限。TLS 由 `crypto/tls` 提供 |
+| [`client`](./example/client/main.go) | 互動式 client。輸入一行文字即送出，輸入 `exit` 會正常關閉連線 |
+| [`stream_server`](./example/stream_server/main.go) | 逐一接收 streaming message 的 frame 並直接寫入磁碟。使用 `Data` hook，適合大到無法放進記憶體的 message。壓縮過的 message 也一樣逐個 frame 解壓縮 |
 | [`stream_client`](./example/stream_client/main.go) | 將一個檔案當作單一 binary message 串流送出，一次一個 chunk |
 
-範例是獨立的 module，所以要在 `example/` 底下執行：
+每個範例都在自己的資料夾裡執行。先啟動 server，再另開一個終端機啟動 client：
 
 ```bash
-cd example
-go run ./echo      # 或 hijack_http、hijack_gin
-go run ./client    # 另開一個終端機，然後開始輸入
+cd example/echo && go run .     # 或 hijack_http、hijack_gin
+cd example/client && go run .   # 然後開始輸入
 ```
-
-streaming 範例兩端各印出一個 SHA-256，兩者會一致：
 
 ```bash
-cd example
-go run ./stream_server
-go run ./stream_client   # 另開一個終端機，按兩次 Enter 就會傳送 README.md
+cd example/stream_server && go run .
+cd example/stream_client && go run .
 ```
 
-兩個 hijack server 啟動時會詢問憑證與金鑰。按兩次 Enter 用 `ws://`，輸入路徑用
-`wss://`。
+每支程式啟動時會問幾個問題，直接按 Enter 即可使用預設值。
+
+- **壓縮由 client 決定**：client 提議哪種模式，server 都會接受。
+- **Subprotocol**：server 會從 client 的提議中，挑第一個自己有支援的。都沒有支援
+  的話，連線一樣會建立，只是不使用 subprotocol。
+- **Stream client** 可以只送幾個 chunk 就停下來，看看 server 怎麼處理一則永遠不會
+  結束的 message。
+
+兩端都會印出協商結果。整個檔案送完後，stream server 會回傳它算出的 SHA-256，
+stream client 再拿來和自己送出的內容比對。
+
+`example/` 裡的憑證僅供測試，請勿用於正式環境。
 
 每個範例都使用 [`Listener`](./LISTENER.zh-TW.md)，它會回應 ping 與 close，
 並擋下不合法的 frame。每個檔案剩下的是你自己要寫的部分：hook。

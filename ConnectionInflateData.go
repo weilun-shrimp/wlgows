@@ -106,6 +106,23 @@ func (c *Conn) PutDeflatedDataFrame(token int64, f *Frame) error {
 }
 
 /*
+DeflatedBytesWaiting is how many bytes of token's frames are put and not yet
+read by the inflater. The memory held is at most this plus one frame: a frame
+read in part is freed only once read to its end. A token whose message ended
+has none waiting: 0.
+
+PutDeflatedDataFrame never waits, so on a fast peer and a slow pull this grows
+up to the message's MaxDataFramesSize. That is per connection: with a 2 GB
+MaxDataFramesSize, one connection may hold 2 GB, and ten may hold 20 GB. To
+hold less, check it after each put, and while it is over your limit, sleep and
+check again. Nothing signals when it drops: a pull may wait for the next frame
+without returning.
+*/
+func (c *Conn) DeflatedBytesWaiting(token int64) int {
+	return c.contextInflater.deflatedBytesWaiting(token)
+}
+
+/*
 PullInflatedBytes writes what is inflated so far into buf[:cap(buf)] from its
 start, and returns how many bytes it wrote. Pull until io.EOF.
 

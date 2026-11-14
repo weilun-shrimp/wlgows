@@ -3,16 +3,18 @@
 // handler's own goroutine and ordinary routes keep working beside it — GET /ping
 // still answers JSON.
 //
-//	cd example
-//	go run ./hijack_gin   # in one terminal
-//	go run ./client       # in another
+//	cd example/hijack_gin && go run .   # in one terminal
+//	cd example/client && go run .       # in another
 //
-// Set the cert paths that LoadServerTlsInfo reads to serve wss:// instead.
+// Answer y to the TLS prompt to serve wss:// instead. Empty paths use the
+// bundled ../server_fullchain.crt and ../server.key.
 package main
 
 import (
+	"compress/flate"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 	"unicode/utf8"
@@ -50,59 +52,83 @@ const (
 	maxHeaderBytes = 16 * 1024
 )
 
-func main() {
-	serverCrtPath, serverKeyPath, err := example_helpers.LoadServerTlsInfo()
+// readMessage returns the bytes of one message, up to maxDataFramesSize. It
+// decompresses a compressed message and checks text as UTF-8. For a larger
+// message, it returns ErrSizeLimitExceeded. See READING.md.
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
 	if err != nil {
-		fmt.Println("load server tls info:", err)
+		return nil, err
+	}
+	defer reader.Close() // always close it
+	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxDataFramesSize))
+}
+
+// Echoes are deflated when the handshake agreed permessage-deflate, and sent as
+// is otherwise. DeflateLevel must be set: its zero is flate.NoCompression.
+var sendDataConfig = wlgows.SendDataConfig{
+	DeflateIfAgreed: true,
+	DeflateLevel:    flate.DefaultCompression,
+}
+
+func main() {
+	serverConfig, err := example_helpers.ReadUserInputServerConfig()
+	if err != nil {
+		fmt.Println("error: server config:", err)
 		return
 	}
 
-	r := gin.Default()
-	r.GET("/ping", func(c *gin.Context) {
+	router := gin.Default()
+	router.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
-	r.GET("/", handler)
+	router.GET("/", func(c *gin.Context) {
+		handler(c, serverConfig.SupportedSubprotocols)
+	})
 
-	// Not r.Run: it serves with a default http.Server, which has no timeout.
+	// Not router.Run: it serves with a default http.Server, which has no timeout.
 	server := &http.Server{
 		Addr:              service,
-		Handler:           r,
+		Handler:           router,
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	fmt.Println("hijack_gin server listening on 0.0.0.0" + service + " (on windows, localhost" + service + ")")
-	if serverCrtPath != "" && serverKeyPath != "" {
+	if serverConfig.ServerCertPath != "" && serverConfig.ServerKeyPath != "" {
 		fmt.Println("tls mode — connect with wss://")
-		err = server.ListenAndServeTLS(serverCrtPath, serverKeyPath)
+		err = server.ListenAndServeTLS(serverConfig.ServerCertPath, serverConfig.ServerKeyPath)
 	} else {
 		fmt.Println("plain mode — connect with ws://")
 		err = server.ListenAndServe()
 	}
 	if err != nil {
-		fmt.Println("starting server:", err)
+		fmt.Println("error: starting server:", err)
 	}
 }
 
-func handler(c *gin.Context) {
-	// Subprotocols (RFC 6455 4.2.2). To require one, uncomment the block below
-	// and add "slices" to the imports. Refuse before Hijack, while Gin can still
-	// answer for you. To prefer chat.v2 without requiring it, uncomment only the
-	// last line: a client that did not offer it still connects, with no
-	// subprotocol.
-	handShakeConfig := wlgows.ServerHandShakeConfig{}
-	// if !slices.Contains(wlgows.RequestSubprotocols(c.Request), "chat.v2") {
-	// 	c.String(http.StatusBadRequest, "subprotocol chat.v2 required")
-	// 	return
-	// }
-	// handShakeConfig.Subprotocol = "chat.v2"
+func handler(c *gin.Context, supportedSubprotocols []string) {
+	handShakeConfig := wlgows.ServerHandShakeConfig{
+		// permessage-deflate (RFC 7692). One answer with every field zero
+		// accepts any offer this package can serve. Matching adds the offer's
+		// server_no_context_takeover (RFC 7692 7.1.1.1) and
+		// client_no_context_takeover (7.1.1.2), so the client picks the mode.
+		// An offer of server_max_window_bits under 15 is skipped (library
+		// choice). A client that offers nothing gets no compression.
+		PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
+
+		// Subprotocols (RFC 6455 4.2.2). When no offer is one the server
+		// speaks, this is "" and the connection opens without one.
+		Subprotocol: example_helpers.PickSubprotocol(wlgows.RequestSubprotocols(c.Request), supportedSubprotocols),
+	}
 
 	// gin.ResponseWriter is an http.Hijacker.
 	netConn, bufRW, err := c.Writer.Hijack()
 	if err != nil {
 		// Still an ordinary response: the hijack failed, so nothing was taken.
 		c.AbortWithError(http.StatusInternalServerError, errors.New("could not hijack connection"))
+		fmt.Println("error: hijack:", err)
 		return
 	}
 
@@ -114,13 +140,15 @@ func handler(c *gin.Context) {
 	// Pass bufRW.Reader, not a new reader: net/http may have buffered the start
 	// of the first frame in it.
 	// bufRW.Writer reuses net/http's writer; bufio.NewWriterSize(netConn, size) works too.
-	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, c.Request, handShakeConfig)
+	conn, resp, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, c.Request, handShakeConfig)
 	if err != nil {
-		fmt.Println("handshake:", err)
+		fmt.Println("error: handshake:", err)
 		return
 	}
 
 	fmt.Println("connected:", conn.RemoteAddr())
+	example_helpers.PrintAgreedDeflate(conn)
+	example_helpers.PrintSubprotocol(resp.Header.Get("Sec-WebSocket-Protocol"))
 
 	// Ping, pong, close and reserved opcodes are answered for you, and masking
 	// (5.1) is settled from which side this connection is.
@@ -137,21 +165,30 @@ func handler(c *gin.Context) {
 	// A whole message, assembled across every fragment. The payload is already
 	// checked as valid UTF-8 (5.6, 8.1).
 	config.Text = func(frames wlgows.DataFrames) {
-		text := frames.String()
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
 		fmt.Printf("text: frames=%d bytes=%d runes=%d: %s\n",
-			len(frames), frames.ByteLen(), utf8.RuneCountInString(text), text)
+			len(frames), len(message), utf8.RuneCount(message), message)
 
-		if err := conn.SendText(frames.Bytes(), wlgows.SendDataConfig{}); err != nil {
-			fmt.Println("echo text:", err)
+		if err := conn.SendText(message, sendDataConfig); err != nil {
+			fmt.Println("error: echo text:", err)
 		}
 	}
 
 	// Arbitrary bytes — 5.6 gives binary no encoding at all.
 	config.Binary = func(frames wlgows.DataFrames) {
-		fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), frames.ByteLen())
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		fmt.Printf("binary: frames=%d bytes=%d\n", len(frames), len(message))
 
-		if err := conn.SendBinary(frames.Bytes(), wlgows.SendDataConfig{}); err != nil {
-			fmt.Println("echo binary:", err)
+		if err := conn.SendBinary(message, sendDataConfig); err != nil {
+			fmt.Println("error: echo binary:", err)
 		}
 	}
 
@@ -187,6 +224,6 @@ func handler(c *gin.Context) {
 		if payload := wlgows.StandardClosePayloadFor(err); payload != nil {
 			conn.SendClose(payload)
 		}
-		fmt.Println("closing:", err)
+		fmt.Println("error: listen:", err)
 	}
 }
