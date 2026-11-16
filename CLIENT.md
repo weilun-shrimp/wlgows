@@ -301,13 +301,13 @@ is sent, so a misuse comes back as an error instead of going on the wire.
 
 | Config | Error |
 |---|---|
-| `ClientMaxWindowBitsEnabled` true | `ErrHandshakeRequestDeflateUnsupported` |
-| `ServerMaxWindowBits` not 0 or 8 to 15 (RFC 7692 7.1.2.1) | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
+| `ClientMaxWindowBitsEnabled` true, `ClientMaxWindowBits` 8 to 14 | `ErrHandshakeRequestDeflateUnsupported` |
+| `ServerMaxWindowBits`, or `ClientMaxWindowBits` with `ClientMaxWindowBitsEnabled`, not 0 or 8 to 15 (RFC 7692 7.1.2) | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 
-The first is a library choice. `client_max_window_bits` would let the server
-set the client's window under 15 bits, which wlgows cannot send with (see
+The first is a library choice. An offer of 8 to 14 tells the server the client
+will send with a window that small, and wlgows cannot (see
 [Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits)).
-Without it, the client may always use 15 bits.
+`ClientMaxWindowBits` 0 (no value) or 15 is sent.
 
 The server accepts one offer, or none. No permessage-deflate in the answer is
 not an error: the connection opens without compression. An answer no offer
@@ -318,9 +318,10 @@ fails the connection (RFC 6455 4.1, RFC 7692 5):
 |---|---|
 | an extension you did not offer (RFC 6455 4.1) | `ErrHandshakeResponseExtensionNotOffered` |
 | permessage-deflate twice | `ErrHandshakeResponseExtensionNotOffered` |
-| `client_max_window_bits=N`, which wlgows never offers | `ErrHandshakeResponseExtensionNotOffered` |
+| `client_max_window_bits=N` when no offer had it (RFC 7692 7.1.2.2) | `ErrHandshakeResponseExtensionNotOffered` |
 | params no single offer allows, such as a `server_max_window_bits` above the offer's, or no `server_no_context_takeover` or `server_max_window_bits` when the offer asked for it (RFC 7692 7.1.1.1, 7.1.2.1) | `ErrHandshakeResponseExtensionNotOffered` |
 | an invalid entry | `ErrHandshakeResponseDeflateParamsInvalid` |
+| `client_max_window_bits` under 15, which wlgows cannot send with (library choice) | `ErrHandshakeResponseDeflateUnsupported` |
 
 An extension other than permessage-deflate that you offer in the request header
 yourself is not an error when the server accepts it. wlgows does not speak it,

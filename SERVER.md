@@ -391,8 +391,7 @@ An offer does not allow a config when:
   [Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits));
 - the config limits the client under 15 bits, and the offer has no
   `client_max_window_bits`. The server may send that param only when it was
-  offered (RFC 7692 7.1.2.2). A wlgows client never offers it, so such a
-  config never fits a wlgows client.
+  offered (RFC 7692 7.1.2.2).
 
 When no config fits, the answer has no `Sec-WebSocket-Extensions`, and the
 connection opens without compression.

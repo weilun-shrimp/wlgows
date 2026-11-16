@@ -284,13 +284,13 @@ config := wlgows.ClientHandShakeConfig{
 
 | 設定 | Error |
 |---|---|
-| `ClientMaxWindowBitsEnabled` 為 true | `ErrHandshakeRequestDeflateUnsupported` |
-| `ServerMaxWindowBits` 不是 0 或 8 到 15（RFC 7692 7.1.2.1） | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
+| `ClientMaxWindowBitsEnabled` 為 true，`ClientMaxWindowBits` 為 8 到 14 | `ErrHandshakeRequestDeflateUnsupported` |
+| `ServerMaxWindowBits`，或 `ClientMaxWindowBitsEnabled` 為 true 時的 `ClientMaxWindowBits`，不是 0 或 8 到 15（RFC 7692 7.1.2） | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 
-第一種是函式庫的選擇。`client_max_window_bits` 會讓 server 能把 client 的 window 設在
-15 bit 以下，而 wlgows 無法用那麼小的 window 送出（見
-[15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）。不送它，
-client 永遠可以使用 15 bit。
+第一種是函式庫的選擇。client 提議 8 到 14 的 `client_max_window_bits`，等於告訴 server：
+client 會用這麼小的 window 送出，但 wlgows 做不到（見
+[15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）。
+`ClientMaxWindowBits` 為 0（不帶值）或 15 時，`client_max_window_bits` 就會送出。
 
 server 會接受其中一個提議，或一個都不接受。回應中沒有 permessage-deflate 不是 error：
 連線照樣建立，只是不壓縮。沒有任何提議允許的回應，或帶有
@@ -301,9 +301,10 @@ server 會接受其中一個提議，或一個都不接受。回應中沒有 per
 |---|---|
 | 你沒提出的 extension（RFC 6455 4.1） | `ErrHandshakeResponseExtensionNotOffered` |
 | 兩次 permessage-deflate | `ErrHandshakeResponseExtensionNotOffered` |
-| `client_max_window_bits=N`，wlgows 從不提出它 | `ErrHandshakeResponseExtensionNotOffered` |
+| `client_max_window_bits=N`，但沒有任何 client 提議包含它（RFC 7692 7.1.2.2） | `ErrHandshakeResponseExtensionNotOffered` |
 | 沒有任何一個提議允許的參數，例如比提議更大的 `server_max_window_bits`，或提議要求了 `server_no_context_takeover` 或 `server_max_window_bits` 卻沒有回傳（RFC 7692 7.1.1.1、7.1.2.1） | `ErrHandshakeResponseExtensionNotOffered` |
 | 不合法的項目 | `ErrHandshakeResponseDeflateParamsInvalid` |
+| 小於 15 的 `client_max_window_bits`，wlgows 無法用這麼小的 window 送出（函式庫的選擇） | `ErrHandshakeResponseDeflateUnsupported` |
 
 如果你自己在 request 的 header 裡提出 permessage-deflate 以外的 extension，server 在
 回應裡接受它時，client 不會把它當成錯誤。wlgows 不懂那個 extension，要怎麼照它的規則

@@ -27,7 +27,7 @@ limits references in both modes. server_max_window_bits and
 client_max_window_bits lower it for each sender (RFC 7692 7.1.2).
 
 wlgows sends with a 32 KB window only (library choice): Go's compress/flate
-cannot send with a smaller one, so a smaller one is declined.
+cannot send with a smaller one.
 */
 
 import (

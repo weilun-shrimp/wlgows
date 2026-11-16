@@ -60,10 +60,11 @@ type ClientHandShakeConfig struct {
 	// PermessageDeflates are permessage-deflate offers, in order of preference
 	// (RFC 7692 5). Each one is sent as one offer.
 	//
-	// ClientMaxWindowBitsEnabled returns ErrHandshakeRequestDeflateUnsupported
-	// (library choice). It would let the server set the client's window under
-	// 15 bits, and Go's compress/flate cannot send with a window that small.
-	// Without it the client may always use 15 bits.
+	// ClientMaxWindowBitsEnabled is sent with ClientMaxWindowBits 0 or 15.
+	// 8 to 14 returns ErrHandshakeRequestDeflateUnsupported (library choice):
+	// Go's compress/flate cannot send with a window under 15 bits. For the
+	// same reason, a server response under 15 fails the handshake with
+	// ErrHandshakeResponseDeflateUnsupported.
 	PermessageDeflates []PermessageDeflateConfig
 }
 
@@ -178,12 +179,18 @@ func addSubprotocols(req *http.Request, subprotocols []string) {
 func addReqDeflateOffers(req *http.Request, premsg_configs []PermessageDeflateConfig) error {
 	var offers []string
 	for _, premsg_config := range premsg_configs {
-		// Library choice: client_max_window_bits, with or without a value, lets
-		// the server answer 8 to 14 (RFC 7692 7.1.2.2). Go's compress/flate
-		// cannot keep a window under 15 bits, so the client would have to fail
-		// the connection. Without the param the client may always use 15.
 		if premsg_config.ClientMaxWindowBitsEnabled {
-			return fmt.Errorf("UpgradeRequest: ClientMaxWindowBitsEnabled: %w", ErrHandshakeRequestDeflateUnsupported)
+			bits := premsg_config.ClientMaxWindowBits
+			// RFC 7692 7.1.2.2: window bits are 8 to 15. 0 sends no value.
+			if bits != 0 && (bits < 8 || bits > 15) {
+				return fmt.Errorf("UpgradeRequest: client window bits %d: %w", bits, ErrHandshakeRequestDeflateWindowBitsInvalid)
+			}
+			// Library choice: an offer value is the most the client will use
+			// (RFC 7692 7.1.2.2). Go's compress/flate cannot keep a window
+			// under 15 bits, so 8 to 14 is a promise the client cannot keep.
+			if bits != 0 && bits < 15 {
+				return fmt.Errorf("UpgradeRequest: client window bits %d: %w", bits, ErrHandshakeRequestDeflateUnsupported)
+			}
 		}
 		// RFC 7692 7.1.2.1: window bits are 8 to 15. 0 is not sent.
 		if bits := premsg_config.ServerMaxWindowBits; bits != 0 && (bits < 8 || bits > 15) {
@@ -451,6 +458,10 @@ server_no_context_takeover, client_no_context_takeover and
 server_max_window_bits may be added without an offer (RFC 7692 7.1.1.1,
 7.1.1.2, 7.1.2.1).
 
+A client_max_window_bits under 15 that an offer allows returns
+ErrHandshakeResponseDeflateUnsupported (library choice): Go's compress/flate
+cannot send with a window that small.
+
 It returns server_config with the client's own promises added: a
 client_no_context_takeover from any offer that allows the response binds the
 client, even when the response leaves it out (RFC 7692 7.1.1.2).
@@ -488,14 +499,20 @@ func validateRespDeflateExtWithReq(server_config PermessageDeflateConfig, req *h
 		// downgrades for safety: if any offer that allows it had
 		// client_no_context_takeover, the client drops context. Dropping
 		// context is always safe for a sender. Keeping it could break a server
-		// that relied on the hint. Nothing later can change the result.
+		// that relied on the hint. No later offer can change this.
 		if offer.ClientNoContextTakeover {
 			agreed_config.ClientNoContextTakeover = true
-			return agreed_config, nil
+			break
 		}
 	}
 	if !allowed {
 		return PermessageDeflateConfig{}, fmt.Errorf("permessage-deflate response matches no offer: %w", ErrHandshakeResponseExtensionNotOffered)
+	}
+	// Library choice: the client must not send with a window larger than the
+	// response's (RFC 7692 7.1.2.2), and Go's compress/flate cannot keep one
+	// under 15 bits.
+	if agreed_config.ClientMaxWindowBitsEnabled && agreed_config.ClientMaxWindowBits < 15 {
+		return PermessageDeflateConfig{}, fmt.Errorf("client_max_window_bits %d: %w", agreed_config.ClientMaxWindowBits, ErrHandshakeResponseDeflateUnsupported)
 	}
 	return agreed_config, nil
 }
