@@ -1,0 +1,50 @@
+# The CI for master. It runs the tests and the Autobahn|Testsuite, and on a
+# push to master it publishes the Autobahn reports to GitHub Pages.
+#
+# A workflow file runs when an event in its on: happens. This file is the
+# only one here with push and pull_request in its on:. The other files have
+# on: workflow_call: they run only when a file calls them, as below. Their
+# jobs are part of this run, in the same row of the Actions tab.
+name: Master CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# What the GitHub token of each job may do: only read the repo. The pages job
+# asks for more below.
+permissions:
+  contents: read
+
+# Each job here calls one file. The jobs run at the same time, except pages.
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  autobahn_server:
+    uses: ./.github/workflows/autobahn_server.yml
+
+  autobahn_client:
+    uses: ./.github/workflows/autobahn_client.yml
+
+  pages:
+    # needs: waits for the three jobs above, and skips this job if one fails.
+    # if: skips this job on a pull request, so only a push to master publishes.
+    needs: [test, autobahn_server, autobahn_client]
+    if: github.event_name == 'push'
+    # What this job's GitHub token may do. A called file gets only what its
+    # caller allows, so the list is here. This list replaces the top-level
+    # permissions for this job, so it repeats contents: read.
+    # - contents: read lets checkout copy the repo, for .github/pages/.
+    # - pages: write lets deploy-pages publish the site to this repo's Pages.
+    # - id-token: write lets this job ask GitHub for an ID token: a short-lived,
+    #   signed proof that the run is from this repo, this workflow and master.
+    #   deploy-pages sends the ID token to Pages, and Pages checks it before
+    #   taking the site.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/master_pages.yml

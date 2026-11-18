@@ -1,0 +1,41 @@
+# Vets and tests the library, and vets the examples. master_ci.yml calls this
+# file.
+name: Test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    # Each job runs on a new virtual machine from GitHub. ubuntu-latest is not a
+    # plain Ubuntu: it is GitHub's own image, built on a recent Ubuntu LTS,
+    # with Docker, git and python already installed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # GitHub's own step. The machine does not have our code, so this step
+      # copies the repo into /home/runner/work/wlgows/wlgows
+      # ($GITHUB_WORKSPACE), the repo folder. It copies the pushed commit or,
+      # on a pull request, a test merge of the pull request into master.
+      - uses: actions/checkout@v5
+
+      # GitHub's own step. It installs Go on the machine, at the version in
+      # go.mod. It also saves the Go modules it downloads, so the next run does
+      # not download them again. The library downloads none, so the saved
+      # modules are the examples', listed in example/go.sum.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: example/go.sum
+
+      - name: Vet and test the library
+        run: |
+          go vet ./...
+          go test ./...
+
+      # example/ is its own module (example/go.mod), so ./... at the repo
+      # folder does not include it. go vet also builds the code, so this
+      # catches an example that no longer builds.
+      - name: Vet the examples
+        working-directory: example
+        run: go vet ./...

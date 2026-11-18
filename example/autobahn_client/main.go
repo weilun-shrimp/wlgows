@@ -160,7 +160,7 @@ func runCase(caseIndex int) {
 	}
 	listener.SetConfig(config)
 	if err := listen(conn, listener); err != nil {
-		fmt.Printf("error: case index %d: %v\n", caseIndex, err)
+		fmt.Printf("error: case index %d: listen: %v\n", caseIndex, err)
 	}
 }
 
