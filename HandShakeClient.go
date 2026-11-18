@@ -26,9 +26,11 @@ the start of the first frame. w is the Conn's writer, see NewConn.
 config adds subprotocols and the permessage-deflate offer to req, see
 ClientHandShakeConfig.
 
-A response RFC 6455 4.1 says to fail closes c before the error returns (7.1.7).
-Any other error, such as a status other than 101, leaves c open for you to
-close. ClientMustFailConnection(err) tells the two apart.
+A response the client must fail closes c before the error returns (RFC 6455
+7.1.7): RFC 6455 4.1 for the handshake headers, the subprotocol and an
+extension not offered, and RFC 7692 5 for the permessage-deflate answer. Any
+other error, such as a status other than 101, leaves c open for you to close.
+ClientMustFailConnection(err) tells the two apart.
 */
 func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Request, config ClientHandShakeConfig) (*Conn, *http.Response, error) {
 	return clientHandShake(c, r, w, req, config, clientHandShakeDI{
@@ -37,7 +39,7 @@ func ClientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 		readHandShakeResponse:                ReadHandShakeResponse,
 		validateHandShakeResponse:            ValidateHandShakeResponse,
 		validateHandShakeResponseSubprotocol: ValidateHandShakeResponseSubprotocol,
-		validateHandShakeResponseDeflate:     ValidateHandShakeResponseDeflate,
+		validateHandShakeResponseExtensions:  ValidateHandShakeResponseExtensions,
 		newConn:                              NewConn,
 	})
 }
@@ -58,10 +60,11 @@ type ClientHandShakeConfig struct {
 	// PermessageDeflates are permessage-deflate offers, in order of preference
 	// (RFC 7692 5). Each one is sent as one offer.
 	//
-	// ClientMaxWindowBitsEnabled returns ErrHandshakeRequestDeflateUnsupported
-	// (library choice). It would let the server set the client's window under
-	// 15 bits, and Go's compress/flate cannot send with a window that small.
-	// Without it the client may always use 15 bits.
+	// ClientMaxWindowBitsEnabled is sent with ClientMaxWindowBits 0 or 15.
+	// 8 to 14 returns ErrHandshakeRequestDeflateUnsupported (library choice):
+	// Go's compress/flate cannot send with a window under 15 bits. For the
+	// same reason, a server response under 15 fails the handshake with
+	// ErrHandshakeResponseDeflateUnsupported.
 	PermessageDeflates []PermessageDeflateConfig
 }
 
@@ -71,7 +74,7 @@ type clientHandShakeDI struct {
 	readHandShakeResponse                func(r *bufio.Reader, req *http.Request) (*http.Response, error)
 	validateHandShakeResponse            func(res *http.Response, sec_websocket_key string) error
 	validateHandShakeResponseSubprotocol func(res *http.Response, req *http.Request) error
-	validateHandShakeResponseDeflate     func(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error)
+	validateHandShakeResponseExtensions  func(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error)
 	newConn                              func(c net.Conn, r *bufio.Reader, w *bufio.Writer, config NewConnConfig) (*Conn, error)
 }
 
@@ -98,7 +101,7 @@ func clientHandShake(c net.Conn, r *bufio.Reader, w *bufio.Writer, req *http.Req
 		}
 		return nil, res, err
 	}
-	agreed_deflate_config, err := di.validateHandShakeResponseDeflate(res, req)
+	agreed_deflate_config, err := di.validateHandShakeResponseExtensions(res, req)
 	if err != nil {
 		if ClientMustFailConnection(err) {
 			c.Close() // the error is the report 7.1.7 allows; a failed close adds nothing to it
@@ -176,12 +179,18 @@ func addSubprotocols(req *http.Request, subprotocols []string) {
 func addReqDeflateOffers(req *http.Request, premsg_configs []PermessageDeflateConfig) error {
 	var offers []string
 	for _, premsg_config := range premsg_configs {
-		// Library choice: client_max_window_bits, with or without a value, lets
-		// the server answer 8 to 14 (RFC 7692 7.1.2.2). Go's compress/flate
-		// cannot keep a window under 15 bits, so the client would have to fail
-		// the connection. Without the param the client may always use 15.
 		if premsg_config.ClientMaxWindowBitsEnabled {
-			return fmt.Errorf("UpgradeRequest: ClientMaxWindowBitsEnabled: %w", ErrHandshakeRequestDeflateUnsupported)
+			bits := premsg_config.ClientMaxWindowBits
+			// RFC 7692 7.1.2.2: window bits are 8 to 15. 0 sends no value.
+			if bits != 0 && (bits < 8 || bits > 15) {
+				return fmt.Errorf("UpgradeRequest: client window bits %d: %w", bits, ErrHandshakeRequestDeflateWindowBitsInvalid)
+			}
+			// Library choice: an offer value is the most the client will use
+			// (RFC 7692 7.1.2.2). Go's compress/flate cannot keep a window
+			// under 15 bits, so 8 to 14 is a promise the client cannot keep.
+			if bits != 0 && bits < 15 {
+				return fmt.Errorf("UpgradeRequest: client window bits %d: %w", bits, ErrHandshakeRequestDeflateUnsupported)
+			}
 		}
 		// RFC 7692 7.1.2.1: window bits are 8 to 15. 0 is not sent.
 		if bits := premsg_config.ServerMaxWindowBits; bits != 0 && (bits < 8 || bits > 15) {
@@ -344,26 +353,37 @@ func ValidateHandShakeResponseSubprotocol(res *http.Response, req *http.Request)
 }
 
 /*
-ValidateHandShakeResponseDeflate checks the server's permessage-deflate answer
-in Sec-WebSocket-Extensions, and that one offer in req allows it (RFC 7692 5,
-7.1). It returns what both sides follow: the answer, plus the client's own
-promises from the offers. It returns nil when the server declined deflate.
+ValidateHandShakeResponseExtensions checks the server's
+Sec-WebSocket-Extensions. Each extension in it must be one req offered (RFC
+6455 4.1). The permessage-deflate answer must be valid, and one offer in req
+must allow it (RFC 7692 5, 7.1). It returns what both sides follow: the answer, plus the
+client's own promises from the offers. It returns nil when the server declined
+deflate.
+
+An extension other than permessage-deflate that you offered in req yourself
+passes when the server accepts it. wlgows does not speak it, so following it is
+up to you.
 */
-func ValidateHandShakeResponseDeflate(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error) {
-	return validateHandShakeResponseDeflate(res, req, validateHandShakeResponseDeflateDI{
+func ValidateHandShakeResponseExtensions(res *http.Response, req *http.Request) (agreed_config *PermessageDeflateConfig, err error) {
+	return validateHandShakeResponseExtensions(res, req, validateHandShakeResponseExtensionsDI{
+		validateRespExtensionsOffered: validateRespExtensionsOffered,
 		validateRespDeflateExt:        validateRespDeflateExt,
 		validateRespDeflateExtWithReq: validateRespDeflateExtWithReq,
 	})
 }
 
-type validateHandShakeResponseDeflateDI struct {
+type validateHandShakeResponseExtensionsDI struct {
+	validateRespExtensionsOffered func(res *http.Response, req *http.Request) error
 	validateRespDeflateExt        func(res *http.Response) (server_config *PermessageDeflateConfig, err error)
 	validateRespDeflateExtWithReq func(server_config PermessageDeflateConfig, req *http.Request) (agreed_config PermessageDeflateConfig, err error)
 }
 
-// validateHandShakeResponseDeflate returns nil when the server declined
+// validateHandShakeResponseExtensions returns nil when the server declined
 // deflate.
-func validateHandShakeResponseDeflate(res *http.Response, req *http.Request, di validateHandShakeResponseDeflateDI) (agreed_config *PermessageDeflateConfig, err error) {
+func validateHandShakeResponseExtensions(res *http.Response, req *http.Request, di validateHandShakeResponseExtensionsDI) (agreed_config *PermessageDeflateConfig, err error) {
+	if err := di.validateRespExtensionsOffered(res, req); err != nil {
+		return nil, err
+	}
 	server_config, err := di.validateRespDeflateExt(res)
 	if err != nil || server_config == nil {
 		return nil, err
@@ -373,6 +393,22 @@ func validateHandShakeResponseDeflate(res *http.Response, req *http.Request, di 
 		return nil, err
 	}
 	return &agreed, nil
+}
+
+// validateRespExtensionsOffered checks that each extension in res is one req
+// offered. RFC 6455 4.1: the client must fail the connection on an extension
+// not present in its handshake.
+func validateRespExtensionsOffered(res *http.Response, req *http.Request) error {
+	var offeredNames []string
+	for _, extension := range parseExtensions(req.Header) {
+		offeredNames = append(offeredNames, extension.name)
+	}
+	for _, extension := range parseExtensions(res.Header) {
+		if !slices.Contains(offeredNames, extension.name) {
+			return fmt.Errorf("extension %q not offered: %w", extension.name, ErrHandshakeResponseExtensionNotOffered)
+		}
+	}
+	return nil
 }
 
 // validateRespDeflateExt reads the permessage-deflate entry of res. It returns
@@ -422,6 +458,10 @@ server_no_context_takeover, client_no_context_takeover and
 server_max_window_bits may be added without an offer (RFC 7692 7.1.1.1,
 7.1.1.2, 7.1.2.1).
 
+A client_max_window_bits under 15 that an offer allows returns
+ErrHandshakeResponseDeflateUnsupported (library choice): Go's compress/flate
+cannot send with a window that small.
+
 It returns server_config with the client's own promises added: a
 client_no_context_takeover from any offer that allows the response binds the
 client, even when the response leaves it out (RFC 7692 7.1.1.2).
@@ -459,14 +499,20 @@ func validateRespDeflateExtWithReq(server_config PermessageDeflateConfig, req *h
 		// downgrades for safety: if any offer that allows it had
 		// client_no_context_takeover, the client drops context. Dropping
 		// context is always safe for a sender. Keeping it could break a server
-		// that relied on the hint. Nothing later can change the result.
+		// that relied on the hint. No later offer can change this.
 		if offer.ClientNoContextTakeover {
 			agreed_config.ClientNoContextTakeover = true
-			return agreed_config, nil
+			break
 		}
 	}
 	if !allowed {
 		return PermessageDeflateConfig{}, fmt.Errorf("permessage-deflate response matches no offer: %w", ErrHandshakeResponseExtensionNotOffered)
+	}
+	// Library choice: the client must not send with a window larger than the
+	// response's (RFC 7692 7.1.2.2), and Go's compress/flate cannot keep one
+	// under 15 bits.
+	if agreed_config.ClientMaxWindowBitsEnabled && agreed_config.ClientMaxWindowBits < 15 {
+		return PermessageDeflateConfig{}, fmt.Errorf("client_max_window_bits %d: %w", agreed_config.ClientMaxWindowBits, ErrHandshakeResponseDeflateUnsupported)
 	}
 	return agreed_config, nil
 }

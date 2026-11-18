@@ -79,8 +79,8 @@ func (l *Listener) claimListen() (chan error, error) {
 	if l.pauseChan != nil {
 		return nil, ErrListenerIsListening
 	}
-	// NewListener is the only thing that sets it, so nil means the Listener was
-	// built by hand. Reading from it would panic on the first frame.
+	// Nil when NewListener was given a nil conn, or the Listener was built by
+	// hand. Reading from it would panic on the first frame.
 	if l.conn == nil {
 		return nil, ErrListenerConnIsNil
 	}

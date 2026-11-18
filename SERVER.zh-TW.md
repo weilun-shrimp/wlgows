@@ -368,8 +368,7 @@ server 照你的順序逐一嘗試這些設定，採用 client 同意的第一�
 - 提議要求 server 的 window 小於 15 bit。wlgows 無法用這麼小的 window 送出（函式庫
   的選擇，見 [15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）；
 - 設定把 client 的 window 限制在小於 15 bit，而提議沒有 `client_max_window_bits`。server 只有在
-  提議包含這個參數時才能送出它（RFC 7692 7.1.2.2）。wlgows 的 client 從不提出它，所以
-  wlgows 的 client 永遠用不到這樣的設定。
+  提議包含這個參數時才能送出它（RFC 7692 7.1.2.2）。
 
 沒有任何設定符合時，回應沒有 `Sec-WebSocket-Extensions`，連線照樣建立，只是不壓縮。
 `resp.Header.Get("Sec-WebSocket-Extensions")` 就是送出的內容。

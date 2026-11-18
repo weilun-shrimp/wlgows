@@ -1,0 +1,83 @@
+# Runs the Autobahn|Testsuite on the wlgows client: Autobahn runs in Docker
+# as the server, and our client runs on a virtual machine from GitHub. See
+# example/AUTOBAHN.md. A failed or missing case fails the job.
+# master_ci.yml calls this file.
+name: Autobahn client
+
+on:
+  workflow_call:
+
+# Keep these the same as in autobahn_server.yml.
+env:
+  # The Autobahn Docker image, pinned by its digest so a new release cannot
+  # change the results. The digest is of version 25.10.1.
+  AUTOBAHN_IMAGE: crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074
+
+  # The case count of that image. A report with any other count fails the check.
+  AUTOBAHN_CASE_COUNT: 517
+
+jobs:
+  client:
+    # Each job runs on a new machine. ubuntu-latest is not a plain Ubuntu:
+    # it is GitHub's own image, built on a recent Ubuntu LTS, with Docker,
+    # git and python already installed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The run steps start in example/autobahn_client, in the repo folder.
+    defaults:
+      run:
+        working-directory: example/autobahn_client
+    steps:
+      # GitHub's own step. The machine does not have our code, so this step
+      # copies the repo into /home/runner/work/wlgows/wlgows
+      # ($GITHUB_WORKSPACE), the repo folder. It copies the pushed commit or,
+      # on a pull request, a test merge of the pull request into master.
+      - uses: actions/checkout@v5
+
+      # GitHub's own step. It installs Go on the machine, at the version in
+      # example/go.mod. It also saves the Go modules it downloads, so the next
+      # run does not download them again.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: example/go.mod
+          cache-dependency-path: example/go.sum
+
+      # -d runs Autobahn in the background, so the next steps can run.
+      # -t gives Autobahn a terminal. Without one, Autobahn holds back its
+      # output, so the wait below never sees "Ok, will run".
+      # The timeout command waits, up to 120 seconds, until Autobahn prints
+      # "Ok, will run", which means it is ready.
+      - name: Start Autobahn
+        run: |
+          mkdir -p reports
+          docker run -d -t --name autobahn \
+            -v "$PWD/config_fuzzing.json:/config/config_fuzzing.json" \
+            -v "$PWD/reports:/reports" \
+            -p 9001:9001 \
+            "$AUTOBAHN_IMAGE" \
+            wstest -m fuzzingserver -s /config/config_fuzzing.json
+          timeout 120 bash -c 'until docker logs autobahn 2>&1 | grep -q "Ok, will run"; do sleep 1; done'
+
+      - name: Run the client
+        run: go run .
+
+      - name: Check the report
+        run: go run ../autobahn_check reports/index.json "$AUTOBAHN_CASE_COUNT"
+
+      # if: always() runs this step even when a step above failed.
+      - name: Print the Autobahn output
+        if: always()
+        run: docker logs autobahn
+
+      # GitHub's own step. The machine is deleted when the job ends, and
+      # reports/ with it. So this step saves reports/ as an artifact: files a
+      # run keeps on GitHub, not in the repo, for 90 days. To see it, open the
+      # run in the Actions tab: it is a zip under Artifacts, at the bottom.
+      # master_pages.yml downloads it by its name.
+      # path is from the repo folder: working-directory is only for run steps.
+      # if: always() saves it even when a step failed, to see which case.
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: autobahn-client
+          path: example/autobahn_client/reports

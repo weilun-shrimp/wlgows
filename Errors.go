@@ -70,9 +70,11 @@ var (
 	// take an arbitrary subset of the frames.
 	ErrListenerIsListening = errors.New("listener is already listening")
 
-	// ErrListenerConnIsNil is a Listen on a Listener built by hand rather than by
-	// NewListener, so it has no connection. Reading from it would panic on the
-	// first frame instead of saying what is wrong.
+	// ErrListenerConnIsNil is a Listen on a Listener with no connection:
+	// NewListener was given a nil conn, or the Listener was built by hand.
+	// Reading from it would panic on the first frame instead of saying what is
+	// wrong. A nil *Conn is not caught: inside the ListenerConn interface it is
+	// not nil, so Listen panics on the first frame.
 	ErrListenerConnIsNil = errors.New("listener has no conn")
 
 	// ErrContinuationFrameWithoutMsg is a continuation frame with no fragmented
@@ -241,15 +243,15 @@ var (
 	ErrHandshakeRequestNil = errors.New("handshake request is nil")
 
 	// ErrHandshakeRequestDeflateWindowBitsInvalid is a PermessageDeflateConfig
-	// whose ServerMaxWindowBits is not 0 or 8 to 15 (RFC 7692 7.1.2.1). A
+	// whose ServerMaxWindowBits, or ClientMaxWindowBits with
+	// ClientMaxWindowBitsEnabled, is not 0 or 8 to 15 (RFC 7692 7.1.2). A
 	// server must decline such an offer (RFC 7692 7).
 	ErrHandshakeRequestDeflateWindowBitsInvalid = errors.New("permessage-deflate window bits are not 0 or 8 to 15")
 
 	// ErrHandshakeRequestDeflateUnsupported is a PermessageDeflateConfig with
-	// ClientMaxWindowBitsEnabled (library choice). It would let the server set
-	// the client's window under 15 bits, and Go's compress/flate cannot send
-	// with a window that small.
-	ErrHandshakeRequestDeflateUnsupported = errors.New("permessage-deflate offer with client_max_window_bits is not supported")
+	// ClientMaxWindowBitsEnabled and ClientMaxWindowBits 8 to 14 (library
+	// choice). Go's compress/flate cannot send with a window under 15 bits.
+	ErrHandshakeRequestDeflateUnsupported = errors.New("permessage-deflate offer with client_max_window_bits under 15 is not supported")
 
 	// The following are ValidateHandShakeResponse rejecting the server's
 	// opening handshake response against RFC 6455 4.1.
@@ -269,12 +271,13 @@ var (
 	ErrHandshakeResponseSubprotocolMultiple   = errors.New("handshake response Sec-WebSocket-Protocol has more than one value")
 	ErrHandshakeResponseSubprotocolNotOffered = errors.New("handshake response Sec-WebSocket-Protocol is not a value the client offered")
 
-	// The following are ValidateHandShakeResponseDeflate rejecting the server's
-	// permessage-deflate answer. RFC 7692 5 has the client fail the connection
-	// on each. ExtensionNotOffered is an answer no single offer allows, or
-	// permessage-deflate accepted twice. DeflateParamsInvalid is a param RFC
-	// 7692 7 forbids. DeflateUnsupported is a valid answer wlgows cannot follow
-	// (library choice).
+	// The following are ValidateHandShakeResponseExtensions rejecting the
+	// server's Sec-WebSocket-Extensions. The client fails the connection on each
+	// (RFC 6455 4.1, RFC 7692 5). ExtensionNotOffered is an extension the
+	// request did not offer, a permessage-deflate answer no single offer
+	// allows, or permessage-deflate accepted twice. DeflateParamsInvalid is a
+	// param RFC 7692 7 forbids. DeflateUnsupported is a client_max_window_bits
+	// under 15, a valid answer wlgows cannot follow (library choice).
 	ErrHandshakeResponseExtensionNotOffered  = errors.New("handshake response Sec-WebSocket-Extensions is not what the client offered")
 	ErrHandshakeResponseDeflateParamsInvalid = errors.New("handshake response permessage-deflate params are invalid")
 	ErrHandshakeResponseDeflateUnsupported   = errors.New("handshake response permessage-deflate params are not supported")

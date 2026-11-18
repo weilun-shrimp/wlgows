@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestClientHandShake(t *testing.T) {
 				*order = append(*order, "validateSubprotocol")
 				return nil
 			},
-			validateHandShakeResponseDeflate: func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
+			validateHandShakeResponseExtensions: func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
 				*order = append(*order, "validateDeflate")
 				return nil, nil
 			},
@@ -158,7 +159,7 @@ func TestClientHandShake(t *testing.T) {
 		writer := bufio.NewWriter(netConn)
 		want := &Conn{}
 		agreed := &PermessageDeflateConfig{ServerNoContextTakeover: true}
-		di.validateHandShakeResponseDeflate = func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
+		di.validateHandShakeResponseExtensions = func(*http.Response, *http.Request) (*PermessageDeflateConfig, error) {
 			return agreed, nil
 		}
 		var gotNetConn net.Conn
@@ -180,7 +181,7 @@ func TestClientHandShake(t *testing.T) {
 			t.Errorf("newConn(%v, %v, %v, _), want (the net.Conn, the bufio.Reader, the bufio.Writer, _)", gotNetConn, gotReader, gotWriter)
 		}
 		// A client's peer is a server, so this Conn masks (RFC 6455 5.1), and it
-		// follows the deflate agreement validateHandShakeResponseDeflate returned.
+		// follows the deflate agreement validateHandShakeResponseExtensions returned.
 		if wantConfig := (NewConnConfig{PeerIsClient: false, PermessageDeflate: agreed}); gotConfig != wantConfig {
 			t.Errorf("newConn config = %+v, want %+v", gotConfig, wantConfig)
 		}
@@ -719,13 +720,25 @@ func TestAddReqDeflateOffers(t *testing.T) {
 				want:         "permessage-deflate",
 			},
 			{
+				name:         "ClientMaxWindowBitsEnabled with ClientMaxWindowBits 0 has no value",
+				premsgConfig: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true},
+				want:         "permessage-deflate; client_max_window_bits",
+			},
+			{
+				name:         "ClientMaxWindowBitsEnabled with ClientMaxWindowBits 15",
+				premsgConfig: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 15},
+				want:         "permessage-deflate; client_max_window_bits=15",
+			},
+			{
 				name: "every param",
 				premsgConfig: PermessageDeflateConfig{
-					ClientNoContextTakeover: true,
-					ServerNoContextTakeover: true,
-					ServerMaxWindowBits:     10,
+					ClientNoContextTakeover:    true,
+					ServerNoContextTakeover:    true,
+					ServerMaxWindowBits:        10,
+					ClientMaxWindowBitsEnabled: true,
+					ClientMaxWindowBits:        15,
 				},
-				want: "permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=10",
+				want: "permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=10; client_max_window_bits=15",
 			},
 		}
 		for _, testCase := range cases {
@@ -740,7 +753,7 @@ func TestAddReqDeflateOffers(t *testing.T) {
 	})
 
 	// RFC 7692 7.1.2: window bits are 8 to 15.
-	t.Run("accepts window bits of 8 to 15", func(t *testing.T) {
+	t.Run("accepts ServerMaxWindowBits 8 to 15", func(t *testing.T) {
 		for bits := uint(8); bits <= 15; bits++ {
 			request := newRequest()
 			err := addReqDeflateOffers(request, []PermessageDeflateConfig{{ServerMaxWindowBits: bits}})
@@ -754,7 +767,7 @@ func TestAddReqDeflateOffers(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects window bits other than 0 or 8 to 15 and adds no offer", func(t *testing.T) {
+	t.Run("rejects ServerMaxWindowBits other than 0 or 8 to 15 and adds no offer", func(t *testing.T) {
 		for _, bits := range []uint{1, 2, 3, 4, 5, 6, 7, 16, 17, 255, ^uint(0)} {
 			cases := []struct {
 				name           string
@@ -786,40 +799,69 @@ func TestAddReqDeflateOffers(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects ClientMaxWindowBitsEnabled and adds no offer", func(t *testing.T) {
-		cases := []struct {
-			name           string
-			configDeflates []PermessageDeflateConfig
-		}{
-			{
-				name:           "with ClientMaxWindowBits 0",
-				configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true}},
-			},
-			{
-				name:           "with ClientMaxWindowBits 8",
-				configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 8}},
-			},
-			{
-				name:           "with ClientMaxWindowBits 15",
-				configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 15}},
-			},
-			{
-				name:           "after a valid offer",
-				configDeflates: []PermessageDeflateConfig{{}, {ClientMaxWindowBitsEnabled: true}},
-			},
-			{
-				name:           "before a valid offer",
-				configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true}, {}},
-			},
-		}
-		for _, testCase := range cases {
-			request := newRequest()
-			err := addReqDeflateOffers(request, testCase.configDeflates)
-			if !errors.Is(err, ErrHandshakeRequestDeflateUnsupported) {
-				t.Errorf("%s: err = %v, want %v", testCase.name, err, ErrHandshakeRequestDeflateUnsupported)
+	// RFC 7692 7.1.2.2: window bits are 8 to 15. 0 sends no value.
+	t.Run("rejects ClientMaxWindowBits other than 0 or 8 to 15 and adds no offer", func(t *testing.T) {
+		// ^uint(0) is the largest uint.
+		for _, bits := range []uint{1, 7, 16, 255, ^uint(0)} {
+			cases := []struct {
+				name           string
+				configDeflates []PermessageDeflateConfig
+			}{
+				{
+					name:           fmt.Sprintf("only ClientMaxWindowBits %d", bits),
+					configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: bits}},
+				},
+				{
+					name:           fmt.Sprintf("a valid offer before ClientMaxWindowBits %d", bits),
+					configDeflates: []PermessageDeflateConfig{{}, {ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: bits}},
+				},
+				{
+					name:           fmt.Sprintf("a valid offer after ClientMaxWindowBits %d", bits),
+					configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: bits}, {}},
+				},
 			}
-			if got := request.Header.Values("Sec-WebSocket-Extensions"); got != nil {
-				t.Errorf("%s: Sec-WebSocket-Extensions = %q, want none", testCase.name, got)
+			for _, testCase := range cases {
+				request := newRequest()
+				err := addReqDeflateOffers(request, testCase.configDeflates)
+				if !errors.Is(err, ErrHandshakeRequestDeflateWindowBitsInvalid) {
+					t.Errorf("%s: err = %v, want %v", testCase.name, err, ErrHandshakeRequestDeflateWindowBitsInvalid)
+				}
+				if got := request.Header.Values("Sec-WebSocket-Extensions"); got != nil {
+					t.Errorf("%s: Sec-WebSocket-Extensions = %q, want none", testCase.name, got)
+				}
+			}
+		}
+	})
+
+	// Library choice: Go's compress/flate cannot keep a window under 15 bits.
+	t.Run("rejects ClientMaxWindowBits 8 to 14 and adds no offer", func(t *testing.T) {
+		for bits := uint(8); bits <= 14; bits++ {
+			cases := []struct {
+				name           string
+				configDeflates []PermessageDeflateConfig
+			}{
+				{
+					name:           fmt.Sprintf("only ClientMaxWindowBits %d", bits),
+					configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: bits}},
+				},
+				{
+					name:           fmt.Sprintf("a valid offer before ClientMaxWindowBits %d", bits),
+					configDeflates: []PermessageDeflateConfig{{}, {ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: bits}},
+				},
+				{
+					name:           fmt.Sprintf("a valid offer after ClientMaxWindowBits %d", bits),
+					configDeflates: []PermessageDeflateConfig{{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: bits}, {}},
+				},
+			}
+			for _, testCase := range cases {
+				request := newRequest()
+				err := addReqDeflateOffers(request, testCase.configDeflates)
+				if !errors.Is(err, ErrHandshakeRequestDeflateUnsupported) {
+					t.Errorf("%s: err = %v, want %v", testCase.name, err, ErrHandshakeRequestDeflateUnsupported)
+				}
+				if got := request.Header.Values("Sec-WebSocket-Extensions"); got != nil {
+					t.Errorf("%s: Sec-WebSocket-Extensions = %q, want none", testCase.name, got)
+				}
 			}
 		}
 	})
@@ -1065,6 +1107,9 @@ func TestClientMustFailConnection(t *testing.T) {
 		ErrHandshakeResponseSubprotocolRepeated,
 		ErrHandshakeResponseSubprotocolMultiple,
 		ErrHandshakeResponseSubprotocolNotOffered,
+		ErrHandshakeResponseExtensionNotOffered,
+		ErrHandshakeResponseDeflateParamsInvalid,
+		ErrHandshakeResponseDeflateUnsupported,
 	}
 	for _, sentinel := range fails {
 		if !ClientMustFailConnection(fmt.Errorf("wrapped: %w", sentinel)) {
@@ -1215,9 +1260,12 @@ func TestValidateHandShakeResponseSubprotocol(t *testing.T) {
 	}
 }
 
-func TestValidateHandShakeResponseDeflate(t *testing.T) {
-	base_di := func() validateHandShakeResponseDeflateDI {
-		return validateHandShakeResponseDeflateDI{
+func TestValidateHandShakeResponseExtensions(t *testing.T) {
+	base_di := func() validateHandShakeResponseExtensionsDI {
+		return validateHandShakeResponseExtensionsDI{
+			validateRespExtensionsOffered: func(*http.Response, *http.Request) error {
+				return nil
+			},
 			validateRespDeflateExt: func(*http.Response) (*PermessageDeflateConfig, error) {
 				return &PermessageDeflateConfig{}, nil
 			},
@@ -1245,9 +1293,9 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return want, nil
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(resp, request, di)
+		agreed_config, err := validateHandShakeResponseExtensions(resp, request, di)
 		if err != nil {
-			t.Fatalf("validateHandShakeResponseDeflate: %v", err)
+			t.Fatalf("validateHandShakeResponseExtensions: %v", err)
 		}
 		if agreed_config == nil || *agreed_config != want {
 			t.Errorf("agreed_config = %+v, want validateRespDeflateExtWithReq's config %+v", agreed_config, want)
@@ -1260,6 +1308,55 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 		}
 	})
 
+	t.Run("checks the extensions are offered first, with the response and the request", func(t *testing.T) {
+		resp := &http.Response{}
+		request := httptestRequest(t)
+		var steps []string
+		var gotResp *http.Response
+		var gotRequest *http.Request
+		di := base_di()
+		di.validateRespExtensionsOffered = func(givenResp *http.Response, givenRequest *http.Request) error {
+			steps = append(steps, "validateRespExtensionsOffered")
+			gotResp, gotRequest = givenResp, givenRequest
+			return nil
+		}
+		di.validateRespDeflateExt = func(*http.Response) (*PermessageDeflateConfig, error) {
+			steps = append(steps, "validateRespDeflateExt")
+			return &PermessageDeflateConfig{}, nil
+		}
+
+		if _, err := validateHandShakeResponseExtensions(resp, request, di); err != nil {
+			t.Fatalf("validateHandShakeResponseExtensions: %v", err)
+		}
+		if want := []string{"validateRespExtensionsOffered", "validateRespDeflateExt"}; !slices.Equal(steps, want) {
+			t.Errorf("steps %q, want %q", steps, want)
+		}
+		if gotResp != resp || gotRequest != request {
+			t.Error("validateRespExtensionsOffered did not get the response and the request")
+		}
+	})
+
+	t.Run("returns validateRespExtensionsOffered's error, no config, and checks nothing else", func(t *testing.T) {
+		wantErr := errors.New("validateRespExtensionsOffered error")
+		di := base_di()
+		di.validateRespExtensionsOffered = func(*http.Response, *http.Request) error {
+			return wantErr
+		}
+		di.validateRespDeflateExt = func(*http.Response) (*PermessageDeflateConfig, error) {
+			t.Error("validateRespDeflateExt was called")
+			return &PermessageDeflateConfig{}, nil
+		}
+		di.validateRespDeflateExtWithReq = func(PermessageDeflateConfig, *http.Request) (PermessageDeflateConfig, error) {
+			t.Error("validateRespDeflateExtWithReq was called")
+			return PermessageDeflateConfig{}, nil
+		}
+
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
+		if err != wantErr || agreed_config != nil {
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
+		}
+	})
+
 	t.Run("returns nil and no error when the server declined deflate", func(t *testing.T) {
 		di := base_di()
 		di.validateRespDeflateExt = func(*http.Response) (*PermessageDeflateConfig, error) { return nil, nil }
@@ -1267,9 +1364,9 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return PermessageDeflateConfig{}, errors.New("validateRespDeflateExtWithReq error")
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(&http.Response{}, httptestRequest(t), di)
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
 		if err != nil || agreed_config != nil {
-			t.Errorf("validateHandShakeResponseDeflate = (%+v, %v), want (nil, nil)", agreed_config, err)
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, nil)", agreed_config, err)
 		}
 	})
 
@@ -1283,9 +1380,9 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return PermessageDeflateConfig{}, errors.New("validateRespDeflateExtWithReq error")
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(&http.Response{}, httptestRequest(t), di)
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
 		if err != wantErr || agreed_config != nil {
-			t.Errorf("validateHandShakeResponseDeflate = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
 		}
 	})
 
@@ -1296,11 +1393,110 @@ func TestValidateHandShakeResponseDeflate(t *testing.T) {
 			return PermessageDeflateConfig{ServerNoContextTakeover: true}, wantErr
 		}
 
-		agreed_config, err := validateHandShakeResponseDeflate(&http.Response{}, httptestRequest(t), di)
+		agreed_config, err := validateHandShakeResponseExtensions(&http.Response{}, httptestRequest(t), di)
 		if err != wantErr || agreed_config != nil {
-			t.Errorf("validateHandShakeResponseDeflate = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
+			t.Errorf("validateHandShakeResponseExtensions = (%+v, %v), want (nil, %v)", agreed_config, err, wantErr)
 		}
 	})
+}
+
+func TestValidateRespExtensionsOffered(t *testing.T) {
+	// Each string in reqExtensions and respExtensions is one
+	// Sec-WebSocket-Extensions line, of the request and of the response.
+	testCases := []struct {
+		name           string
+		reqExtensions  []string
+		respExtensions []string
+		wantErr        error
+	}{
+		{
+			name:           "nothing offered, nothing answered",
+			reqExtensions:  nil,
+			respExtensions: nil,
+			wantErr:        nil,
+		},
+		{
+			name:           "offered, nothing answered",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: nil,
+			wantErr:        nil,
+		},
+		{
+			name:           "offered permessage-deflate answered",
+			reqExtensions:  []string{"permessage-deflate; client_no_context_takeover"},
+			respExtensions: []string{"permessage-deflate"},
+			wantErr:        nil,
+		},
+		{
+			name:           "your own extension offered and answered",
+			reqExtensions:  []string{"x-other, permessage-deflate"},
+			respExtensions: []string{"x-other"},
+			wantErr:        nil,
+		},
+		{
+			name:           "both answered, offered on two lines",
+			reqExtensions:  []string{"x-other", "permessage-deflate"},
+			respExtensions: []string{"permessage-deflate, x-other"},
+			wantErr:        nil,
+		},
+		{
+			name:           "a quoted comma in a param stays in the param",
+			reqExtensions:  []string{"x-other"},
+			respExtensions: []string{`x-other; note="a,b"`},
+			wantErr:        nil,
+		},
+		{
+			name:           "nothing offered, permessage-deflate answered",
+			reqExtensions:  nil,
+			respExtensions: []string{"permessage-deflate"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "an extension not offered answered",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: []string{"x-other"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "an extension not offered after an offered one",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: []string{"permessage-deflate", "x-other; a=1"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "a name in another case is not offered",
+			reqExtensions:  []string{"permessage-deflate"},
+			respExtensions: []string{"Permessage-Deflate"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+		{
+			name:           "a name offered only as a param is not offered",
+			reqExtensions:  []string{"permessage-deflate; x-other"},
+			respExtensions: []string{"x-other"},
+			wantErr:        ErrHandshakeResponseExtensionNotOffered,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := httptestRequest(t)
+			for _, reqExtension := range testCase.reqExtensions {
+				request.Header.Add("Sec-WebSocket-Extensions", reqExtension)
+			}
+			resp := &http.Response{Header: http.Header{}}
+			for _, respExtension := range testCase.respExtensions {
+				resp.Header.Add("Sec-WebSocket-Extensions", respExtension)
+			}
+
+			err := validateRespExtensionsOffered(resp, request)
+
+			if testCase.wantErr == nil && err != nil {
+				t.Errorf("validateRespExtensionsOffered: %v, want nil", err)
+			}
+			if testCase.wantErr != nil && !errors.Is(err, testCase.wantErr) {
+				t.Errorf("validateRespExtensionsOffered: %v, want %v", err, testCase.wantErr)
+			}
+		})
+	}
 }
 
 func TestValidateRespDeflateExt(t *testing.T) {
@@ -1434,19 +1630,20 @@ func TestValidateRespDeflateExtWithReq(t *testing.T) {
 			},
 		},
 		{
-			name:          "client_max_window_bits, offered with no value",
-			offers:        []string{"permessage-deflate; client_max_window_bits"},
-			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
+			name:   "client_max_window_bits, offered with no value",
+			offers: []string{"permessage-deflate; client_max_window_bits"},
+			server_config: PermessageDeflateConfig{
+				ClientMaxWindowBitsEnabled: true,
+				ClientMaxWindowBits:        15,
+			},
 		},
 		{
-			name:          "client_max_window_bits equal to the offer's",
-			offers:        []string{"permessage-deflate; client_max_window_bits=10"},
-			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
-		},
-		{
-			name:          "client_max_window_bits under the offer's",
-			offers:        []string{"permessage-deflate; client_max_window_bits=12"},
-			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
+			name:   "client_max_window_bits equal to the offer's",
+			offers: []string{"permessage-deflate; client_max_window_bits=15"},
+			server_config: PermessageDeflateConfig{
+				ClientMaxWindowBitsEnabled: true,
+				ClientMaxWindowBits:        15,
+			},
 		},
 		{
 			name:          "server_max_window_bits equal to the offer's",
@@ -1461,12 +1658,12 @@ func TestValidateRespDeflateExtWithReq(t *testing.T) {
 		{
 			name:          "the second offer allows it when the first does not",
 			offers:        []string{"permessage-deflate, permessage-deflate; client_max_window_bits"},
-			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 15},
 		},
 		{
 			name:          "the second offer on its own line allows it",
 			offers:        []string{"permessage-deflate", "permessage-deflate; client_max_window_bits"},
-			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 15},
 		},
 		{
 			// RFC 7692 7.1.1.1: the first offer needs server_no_context_takeover
@@ -1519,6 +1716,18 @@ func TestValidateRespDeflateExtWithReq(t *testing.T) {
 			offers:        []string{"permessage-deflate; client_no_context_takeover"},
 			server_config: PermessageDeflateConfig{ServerNoContextTakeover: true},
 			want:          PermessageDeflateConfig{ServerNoContextTakeover: true, ClientNoContextTakeover: true},
+		},
+		{
+			// The offer's client_no_context_takeover ends the offer loop with
+			// break. The window check after the loop still passes a response of 15.
+			name:          "the offer has client_no_context_takeover and client_max_window_bits, the response has client_max_window_bits=15",
+			offers:        []string{"permessage-deflate; client_no_context_takeover; client_max_window_bits"},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 15},
+			want: PermessageDeflateConfig{
+				ClientNoContextTakeover:    true,
+				ClientMaxWindowBitsEnabled: true,
+				ClientMaxWindowBits:        15,
+			},
 		},
 		{
 			// The response does not say which offer it accepted.
@@ -1579,7 +1788,9 @@ func TestValidateRespDeflateExtWithReq(t *testing.T) {
 			server_config: PermessageDeflateConfig{},
 		},
 		{
-			// RFC 7692 7.1.2.2.
+			// RFC 7692 7.1.2.2: the server may send client_max_window_bits only if
+			// an offer has it. That check runs before the check for under 15, so a
+			// response of 10 gives NotOffered, not Unsupported.
 			name:          "client_max_window_bits, not offered",
 			offers:        []string{"permessage-deflate"},
 			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
@@ -1628,6 +1839,53 @@ func TestValidateRespDeflateExtWithReq(t *testing.T) {
 			agreed_config, err := validateRespDeflateExtWithReq(testCase.server_config, request)
 			if !errors.Is(err, ErrHandshakeResponseExtensionNotOffered) {
 				t.Errorf("err = %v, want %v", err, ErrHandshakeResponseExtensionNotOffered)
+			}
+			if agreed_config != (PermessageDeflateConfig{}) {
+				t.Errorf("agreed_config = %+v, want the zero value", agreed_config)
+			}
+		})
+	}
+
+	// Library choice: an offer allows these, but Go's compress/flate cannot
+	// send with a window under 15 bits (RFC 7692 7.1.2.2).
+	unsupported := []struct {
+		name          string
+		offers        []string
+		server_config PermessageDeflateConfig
+	}{
+		{
+			name:          "the response's client_max_window_bits 10, offered with no value",
+			offers:        []string{"permessage-deflate; client_max_window_bits"},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 10},
+		},
+		{
+			name:          "the response's client_max_window_bits 14 under the offer's 15",
+			offers:        []string{"permessage-deflate; client_max_window_bits=15"},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 14},
+		},
+		{
+			name:          "the response's client_max_window_bits 8, offered with no value",
+			offers:        []string{"permessage-deflate; client_max_window_bits"},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 8},
+		},
+		{
+			// The offer's client_no_context_takeover ends the offer loop with break.
+			// The window check after the loop must still run.
+			name:          "the response's client_max_window_bits 9 for an offer with client_no_context_takeover",
+			offers:        []string{"permessage-deflate; client_no_context_takeover; client_max_window_bits"},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 9},
+		},
+	}
+	for _, testCase := range unsupported {
+		t.Run("unsupported: "+testCase.name, func(t *testing.T) {
+			request := httptestRequest(t)
+			for _, line := range testCase.offers {
+				request.Header.Add("Sec-WebSocket-Extensions", line)
+			}
+
+			agreed_config, err := validateRespDeflateExtWithReq(testCase.server_config, request)
+			if !errors.Is(err, ErrHandshakeResponseDeflateUnsupported) {
+				t.Errorf("err = %v, want %v", err, ErrHandshakeResponseDeflateUnsupported)
 			}
 			if agreed_config != (PermessageDeflateConfig{}) {
 				t.Errorf("agreed_config = %+v, want the zero value", agreed_config)
