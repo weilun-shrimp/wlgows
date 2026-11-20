@@ -26,7 +26,7 @@ buffer 越大，用的記憶體越多，寫入次數越少。server 可以低到
 - [Configuration](#configuration) — `SendDataConfig`、`StartLongDataTransmissionConfig`、`TransmitDataConfig`
 - [完整的 message](#完整的-message) — `SendText`、`SendBinary`、`SendData`
 - [Streaming](#streaming) — `Start`、`TransmitData`、`End`、`Release`
-- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — [streaming 時 deflate](#streaming-時-deflate) · [context takeover](#context-takeover) · [result buffer](#記憶體result-buffer)
+- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — [15 bit 以下的 window](#15-bit-以下的-window) · [streaming 時 deflate](#streaming-時-deflate) · [context takeover](#context-takeover) · [result buffer](#記憶體result-buffer)
 - [記憶體與 write buffer](#記憶體與-write-buffer) — [更換：`RenewWriter`](#更換renewwriter) · [最低記憶體的設定方式](#最低記憶體的設定方式) · [最小的連線](#最小的連線)
 - [選擇 chunk size](#選擇-chunk-size)
 - [更快、更省記憶體：用 `unsafe` 送出 string](#更快更省記憶體用-unsafe-送出-string) — 只限清楚自己在做什麼時
@@ -70,11 +70,15 @@ Listener 見 [LISTENER.zh-TW.md](./LISTENER.zh-TW.md)。
 **要 deflate 時，一定要設定 `DeflateLevel`。**
 
 - 它是 `compress/flate` 的 level，從 `flate.HuffmanOnly`（-2）到
-  `flate.BestCompression`（9）。`flate.BestSpeed` 是不錯的預設。
+  `flate.BestCompression`（9）。要速度，我們建議用 `flate.BestSpeed`；要省記憶體，
+  建議用 `flate.DefaultCompression`：它的 writer 約 790 KB，`flate.BestSpeed` 約
+  1170 KB。見 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#記憶體)。
 - 零值是 `flate.NoCompression`。這時 message 會標記為 deflate 過，但內容照原樣
   存放，還會大幾個 byte。
 - level 超出範圍時，會回傳 `ErrDeflateLevelInvalid`。什麼都不會送出，即使這則
   message 根本不會 deflate 也一樣。
+- 協商好的送出 window 是 8 到 14 bit 時，只能用 -2 和 0。見
+  [15 bit 以下的 window](#15-bit-以下的-window)。
 - 每則 message 可以用不同的 level。
 
 ### `StartLongDataTransmissionConfig` 與 `TransmitDataConfig`
@@ -86,7 +90,9 @@ Listener 見 [LISTENER.zh-TW.md](./LISTENER.zh-TW.md)。
 | `StartLongDataTransmissionConfig` | `DeflateIfAgreed` | `false` | 在 Start 時決定一次：整則 message 要不要 deflate。 |
 | `TransmitDataConfig` | `DeflateLevel` | 0，`flate.NoCompression` | 每個 chunk 的 level，End 的也算。 |
 
-`DeflateLevel` 的設定方式和 `SendDataConfig` 一樣。每個 chunk 可以用不同的 level。
+`DeflateLevel` 的設定方式和 `SendDataConfig` 一樣。協商好的送出 window 是 8 到 14
+bit 時，這裡也只能用 -2 和 0，見 [15 bit 以下的 window](#15-bit-以下的-window)。
+每個 chunk 可以用不同的 level。
 
 串流沒有 `ChunkSize`：每呼叫一次 `TransmitData` 就是一個 frame。見
 [Streaming](#streaming) 與 [Streaming 時 deflate](#streaming-時-deflate)。
@@ -200,8 +206,11 @@ config.ChunkSize = 4 * 1024
 conn.SendBinary(data, config) // 每個 frame 是 4 KB 的 deflate 結果
 ```
 
-- **一定要設定 `DeflateLevel`。** 零值會讓 message 照原樣存放。見
-  [`SendDataConfig`](#senddataconfig)。
+- **除非有特別的理由，請一定要設定 `DeflateLevel`。** 零值會讓 message 照原樣存放：
+  什麼都沒省到，還比不 deflate 更花時間和記憶體，見 [`SendDataConfig`](#senddataconfig)。
+  要速度，我們建議用 `flate.BestSpeed`；要省記憶體，建議用
+  `flate.DefaultCompression`。協商好的送出 window 是 8 到 14 bit 時，我們建議用
+  `flate.HuffmanOnly`，見 [15 bit 以下的 window](#15-bit-以下的-window)。
 - **`ChunkSize` 切的是 deflate 後的 byte**，不是你的 message。整則 message 會先
   deflate，再切成 frame。
 - **值得時才壓縮。** deflate 本身會多出約 6 個 byte，還會花 CPU。小於約 128 byte
@@ -209,9 +218,54 @@ conn.SendBinary(data, config) // 每個 frame 是 4 KB 的 deflate 結果
   由你決定。
 - **control frame 永遠不會 deflate**（RFC 7692 6），`SendFrame` 也從不 deflate。
 
+### 15 bit 以下的 window
+
+handshake 會協商這一端送出時用的 window。它決定你可以用哪些 `DeflateLevel` 送出：
+
+| 協商好的送出 window | 可用的 level |
+|---|---|
+| 15 bit（協商結果裡是 15 或 0） | 全部，-2 到 9 |
+| 8 到 14 bit | `flate.HuffmanOnly`（-2）與 `flate.NoCompression`（0） |
+
+8 到 14 bit 時，用其他 level 會回傳 `ErrDeflateLevelUnsupportedForWindow`，這則
+message 或這個 chunk 不會送出。為什麼只有兩個 level 可用，見
+[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)。
+
+我們建議用 `flate.HuffmanOnly`。壓縮文字時，它的結果比 `flate.NoCompression` 小約
+40% 到 50%（Go 1.26）。
+
+wlgows 不會替你選 `DeflateLevel`。`conn.GetPermessageDeflateAgreedConfig()` 會告訴你
+協商好的 window。我們建議在 handshake 之後、第一次送出之前選好 `DeflateLevel`。
+
+client 端：
+
+```go
+sendDataConfig := wlgows.SendDataConfig{
+	DeflateIfAgreed: true,
+	DeflateLevel:    flate.BestSpeed,
+}
+if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil && agreed.ClientMaxWindowBitsEnabled &&
+	agreed.ClientMaxWindowBits != 0 && agreed.ClientMaxWindowBits < 15 {
+	sendDataConfig.DeflateLevel = flate.HuffmanOnly
+}
+```
+
+server 端：
+
+```go
+sendDataConfig := wlgows.SendDataConfig{
+	DeflateIfAgreed: true,
+	DeflateLevel:    flate.BestSpeed,
+}
+if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil &&
+	agreed.ServerMaxWindowBits != 0 && agreed.ServerMaxWindowBits < 15 {
+	sendDataConfig.DeflateLevel = flate.HuffmanOnly
+}
+```
+
 ### Streaming 時 deflate
 
-> **不建議使用。** 大型資料請在送出前自己壓縮，不要用 deflate。見
+> **可以用，但我們不建議。** 大型資料請在送出前自己壓縮，不要用 deflate，這樣會簡單很多。見
 > [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md#大型資料自己壓縮)。
 
 要不要壓縮，Start 時就替整則 message 決定好。level 則是每個 chunk 各自設定：
@@ -485,6 +539,7 @@ err := conn.SendText(payload, wlgows.SendDataConfig{})
 | `ErrNotDataFrameOpcode`、`ErrContinuationFrameWithoutMsg` | `Start` 或 `SendData` 收到一個無法開啟 message 的 opcode。沒有取得任何 lock。 |
 | `ErrLongDataTransmissionNotStarted` | 在沒有開啟 transmission 時呼叫了 `TransmitData` 或 `End`。 |
 | `ErrDeflateLevelInvalid` | `DeflateLevel` 不是 `compress/flate` 的 level。什麼都沒有送出。 |
+| `ErrDeflateLevelUnsupportedForWindow` | 協商好的 window 是 8 到 14 bit，不允許這個 `DeflateLevel`，見 [15 bit 以下的 window](#15-bit-以下的-window)。這則 message 或這個 chunk 沒有送出。 |
 | 其他 | socket 寫入失敗。 |
 
 **socket 寫入失敗是無法挽回的。** write buffer 會記住它的第一個 error，所以之後的

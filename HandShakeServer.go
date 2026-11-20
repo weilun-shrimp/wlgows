@@ -39,9 +39,11 @@ type ServerHandShakeConfig struct {
 	//   - ClientNoContextTakeover true: the server asks the client to reset its
 	//     window after each message. It is also set when the offer has it
 	//     (RFC 7692 7.1.1.2).
-	//   - ServerMaxWindowBits: 0 or 15. 8 to 14 returns
-	//     ErrHandshakeServerDeflateConfigUnsupported (library choice), because
-	//     Go's compress/flate cannot send with a window under 15 bits.
+	//   - ServerMaxWindowBits: 0 or 8 to 15. It is also lowered to the offer's
+	//     server_max_window_bits (RFC 7692 7.1.2.1). When the agreed value is
+	//     8 to 14, the server may only deflate at DeflateLevel
+	//     flate.NoCompression or flate.HuffmanOnly, see
+	//     SendDataConfig.DeflateLevel and TransmitDataConfig.DeflateLevel.
 	//   - ClientMaxWindowBitsEnabled false: the server accepts any client
 	//     window, up to 15 bits. ClientMaxWindowBits is ignored.
 	//   - ClientMaxWindowBitsEnabled true: the client's window is at most
@@ -160,14 +162,11 @@ ValidateServerDeflateConfig checks the server's permessage-deflate config
 before it is used to answer an offer. ServerHandShake already runs it on each
 of ServerHandShakeConfig.PermessageDeflates. Call it yourself to know a config
 is right without a handshake, for example in a test or before a handshake. It
-returns ErrHandshakeServerDeflateConfigInvalid or
-ErrHandshakeServerDeflateConfigUnsupported when one of these fails:
+returns ErrHandshakeServerDeflateConfigInvalid when one of these fails:
 
   - ServerMaxWindowBits is 0 or 8 to 15 (RFC 7692 7.1.2.1).
   - ClientMaxWindowBits is 8 to 15 when ClientMaxWindowBitsEnabled is true,
     since a response must give it a value (RFC 7692 7.1.2.2).
-  - ServerMaxWindowBits is not 8 to 14, since Go's compress/flate cannot send
-    with a window under 15 bits (library choice).
 */
 func ValidateServerDeflateConfig(server_config PermessageDeflateConfig) error {
 	if server_config.ServerMaxWindowBits != 0 && (server_config.ServerMaxWindowBits < 8 || server_config.ServerMaxWindowBits > 15) {
@@ -175,11 +174,6 @@ func ValidateServerDeflateConfig(server_config PermessageDeflateConfig) error {
 	}
 	if server_config.ClientMaxWindowBitsEnabled && (server_config.ClientMaxWindowBits < 8 || server_config.ClientMaxWindowBits > 15) {
 		return fmt.Errorf("ClientMaxWindowBits %d: %w", server_config.ClientMaxWindowBits, ErrHandshakeServerDeflateConfigInvalid)
-	}
-	// Library choice: 8 to 14 is valid (RFC 7692 7.1.2.1), but the server would
-	// promise to send within that window, and Go's compress/flate cannot.
-	if server_config.ServerMaxWindowBits != 0 && server_config.ServerMaxWindowBits < 15 {
-		return fmt.Errorf("ServerMaxWindowBits %d: %w", server_config.ServerMaxWindowBits, ErrHandshakeServerDeflateConfigUnsupported)
 	}
 	return nil
 }
@@ -199,9 +193,7 @@ The answer is server_config plus what the offer requires:
   - client_max_window_bits is lowered to the offer's value (RFC 7692 7.1.2.2).
 
 An offer without client_max_window_bits is skipped when server_config limits
-the client under 15 bits (RFC 7692 7.1.2.2). An offer is also skipped when the
-server's window would be under 15 bits, since Go's compress/flate cannot send
-with a window that small (library choice).
+the client under 15 bits (RFC 7692 7.1.2.2).
 
 There is no validator for the request's offers. An invalid offer is declined,
 not an error that fails the handshake (RFC 7692 7), so it is skipped here like
@@ -233,11 +225,6 @@ func AcceptDeflateOffer(server_config PermessageDeflateConfig, req *http.Request
 		}
 		if offer.ServerMaxWindowBits != 0 && (answer_deflate_config.ServerMaxWindowBits == 0 || offer.ServerMaxWindowBits < answer_deflate_config.ServerMaxWindowBits) {
 			answer_deflate_config.ServerMaxWindowBits = offer.ServerMaxWindowBits
-		}
-		// Library choice: 8 to 14 is valid (RFC 7692 7.1.2.1), but the server would
-		// promise to send within that window, and Go's compress/flate cannot.
-		if answer_deflate_config.ServerMaxWindowBits != 0 && answer_deflate_config.ServerMaxWindowBits < 15 {
-			continue
 		}
 		// Without client_max_window_bits in the offer, the server must not send it
 		// and the client may use 15 bits (RFC 7692 7.1.2.2). Only a server limit

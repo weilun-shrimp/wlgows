@@ -18,6 +18,15 @@ after what `wstest` acts as, not after what is tested:
 This page covers what both sides share: the config fields and how to read the
 report. Each folder's README covers how to run it and where its report is.
 
+## Our result
+
+| Side | OK | Non-Strict | Informational | Unimplemented | Failed |
+|---|---|---|---|---|---|
+| Server | 510 | 4 | 3 | 0 | 0 |
+| Client | 510 | 4 | 3 | 0 | 0 |
+
+wlgows v7, `wstest` 25.10.1, all 517 cases on each side.
+
 ## The config
 
 Each folder has a `config_fuzzing.json`. These fields work the same in both
@@ -47,5 +56,5 @@ In each case's row:
 
 The page doesn't explain Unimplemented: an optional feature, such as a
 compression setting, was not agreed. It has no link, so open its page directly.
-It sits next to `index.html`, such as `wlgows_case_13_3_1.html` for case
-13.3.1.
+It sits next to `index.html`, named after the agent and the case, such as
+`wlgows_case_1_1_1.html` for case 1.1.1.

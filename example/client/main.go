@@ -57,13 +57,6 @@ func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
 	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxDataFramesSize))
 }
 
-// Sent text is deflated when the handshake agreed permessage-deflate, and sent
-// as is otherwise. DeflateLevel must be set: its zero is flate.NoCompression.
-var sendDataConfig = wlgows.SendDataConfig{
-	DeflateIfAgreed: true,
-	DeflateLevel:    flate.DefaultCompression,
-}
-
 func main() {
 	clientConfig, err := example_helpers.ReadUserInputClientConfig()
 	if err != nil {
@@ -104,6 +97,20 @@ func main() {
 	// The server answers with one value or none. A value never offered already
 	// failed the handshake above (RFC 6455 4.1).
 	example_helpers.PrintSubprotocol(resp.Header.Get("Sec-WebSocket-Protocol"))
+
+	// Sent text is deflated when the handshake agreed permessage-deflate.
+	// Under an agreed client_max_window_bits of 8 to 14 (RFC 7692 7.1.2.2),
+	// wlgows allows only flate.NoCompression and flate.HuffmanOnly (library
+	// choice). See SENDING.md.
+	sendDataConfig := wlgows.SendDataConfig{
+		DeflateIfAgreed: true,
+		DeflateLevel:    flate.BestSpeed,
+	}
+	if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil && agreed.ClientMaxWindowBitsEnabled &&
+		agreed.ClientMaxWindowBits != 0 && agreed.ClientMaxWindowBits < 15 {
+		sendDataConfig.DeflateLevel = flate.HuffmanOnly
+	}
+
 	fmt.Println("Client with server handshaked. Type a line to send it, or \"exit\" to quit.")
 
 	// Closed once, by whichever side finishes first: the reader when the server

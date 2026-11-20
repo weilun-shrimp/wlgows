@@ -512,3 +512,122 @@ func TestValidateDeflateLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestSendWindowBits(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		agreed       PermessageDeflateConfig
+		peerIsClient bool
+		want         uint
+	}{
+		// RFC 7692 7.1.2.1: a server sends within server_max_window_bits.
+		{
+			name:         "server, no server_max_window_bits, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{},
+			peerIsClient: true,
+			want:         15,
+		},
+		{
+			name:         "server, server_max_window_bits=8, sends within 8 bits",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 8},
+			peerIsClient: true,
+			want:         8,
+		},
+		{
+			name:         "server, server_max_window_bits=14, sends within 14 bits",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 14},
+			peerIsClient: true,
+			want:         14,
+		},
+		{
+			name:         "server, server_max_window_bits=15, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 15},
+			peerIsClient: true,
+			want:         15,
+		},
+		{
+			name:         "server, the client's window does not count, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 9},
+			peerIsClient: true,
+			want:         15,
+		},
+		// RFC 7692 7.1.2.2: a client sends within client_max_window_bits.
+		{
+			name:         "client, no client_max_window_bits, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{},
+			peerIsClient: false,
+			want:         15,
+		},
+		{
+			name:         "client, ClientMaxWindowBits set without ClientMaxWindowBitsEnabled, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBits: 9},
+			peerIsClient: false,
+			want:         15,
+		},
+		{
+			name:         "client, client_max_window_bits with no value, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true},
+			peerIsClient: false,
+			want:         15,
+		},
+		{
+			name:         "client, client_max_window_bits=8, sends within 8 bits",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 8},
+			peerIsClient: false,
+			want:         8,
+		},
+		{
+			name:         "client, client_max_window_bits=14, sends within 14 bits",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 14},
+			peerIsClient: false,
+			want:         14,
+		},
+		{
+			name:         "client, client_max_window_bits=15, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 15},
+			peerIsClient: false,
+			want:         15,
+		},
+		{
+			name:         "client, the server's window does not count, sends within 15 bits",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 9},
+			peerIsClient: false,
+			want:         15,
+		},
+	} {
+		if got := sendWindowBits(&testCase.agreed, testCase.peerIsClient); got != testCase.want {
+			t.Errorf("%s: sendWindowBits = %d, want %d", testCase.name, got, testCase.want)
+		}
+	}
+}
+
+func TestValidateDeflateLevelForWindow(t *testing.T) {
+	// Every compress/flate level at 15, 14 and 8 bits. Not tried, as they never
+	// reach validateDeflateLevelForWindow:
+	//   - levels compress/flate has not: validateDeflateLevel refuses them
+	//     first.
+	//   - window bits out of 8 to 15, see its comment.
+
+	// At 15 bits every level fits.
+	for level := flate.HuffmanOnly; level <= flate.BestCompression; level++ {
+		if err := validateDeflateLevelForWindow(level, 15); err != nil {
+			t.Errorf("validateDeflateLevelForWindow(%d, 15) = %v, want nil", level, err)
+		}
+	}
+	for _, window_bits := range []uint{14, 8} {
+		// Only these two write no references back, so they fit any window.
+		for _, level := range []int{flate.HuffmanOnly, flate.NoCompression} {
+			if err := validateDeflateLevelForWindow(level, window_bits); err != nil {
+				t.Errorf("validateDeflateLevelForWindow(%d, %d) = %v, want nil", level, window_bits, err)
+			}
+		}
+		for _, level := range []int{flate.DefaultCompression, 1, 2, 3, 4, 5, 6, 7, 8, 9} {
+			if err := validateDeflateLevelForWindow(level, window_bits); !errors.Is(err, ErrDeflateLevelUnsupportedForWindow) {
+				t.Errorf(
+					"validateDeflateLevelForWindow(%d, %d) = %v, want ErrDeflateLevelUnsupportedForWindow",
+					level, window_bits, err,
+				)
+			}
+		}
+	}
+}

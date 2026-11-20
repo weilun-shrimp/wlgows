@@ -93,10 +93,17 @@ header 的原因，見 [PermessageDeflateConfig](#permessagedeflateconfig)。
 
 ## 15 bit 以下的 window
 
-wlgows 用 Go 的 `compress/flate` 壓縮，而它無法用 15 bit 以下的 window 送出。所以
-wlgows 永遠不會同意用 8 到 14 bit 送出（函式庫的選擇）。兩邊因此會拒絕哪些設定，見
-[CLIENT.zh-TW.md](./CLIENT.zh-TW.md#壓縮-permessage-deflate) 與
-[SERVER.zh-TW.md](./SERVER.zh-TW.md#壓縮-permessage-deflate)。
+協商好的送出 window 是 8 到 14 bit 時，wlgows 只用 `flate.HuffmanOnly` 和
+`flate.NoCompression` 送出（函式庫的選擇）。原因如下：
+
+- 對方同意 8 到 14 bit 時，只會保留它收到的最後 256 byte 到 16 KB（RFC 7692
+  7.1.2）。deflate 後的 message 往回指的距離，不能超過這個範圍。
+- wlgows 用 Go 的 `compress/flate` 壓縮。它的其他 level（-1 與 1 到 9）最多會往回指
+  32 KB，也就是 15 bit 的 window。它沒有更小的 window。
+- `flate.HuffmanOnly` 和 `flate.NoCompression` 完全不往回指，所以結果放得進任何
+  window。
+
+怎麼選 level，見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#15-bit-以下的-window)。
 
 接收沒有這個限制。Go 的解壓器可以讀取 15 bit 以內的任何 window，所以對方用任何 window
 送出，wlgows 都能接受。

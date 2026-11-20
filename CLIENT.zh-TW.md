@@ -139,7 +139,7 @@ request.Header.Set("Authorization", "Bearer "+token)
 | 升級成功 | 那個 `Conn` | 收到的 101 | `nil` |
 | `request` 是 `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
 | request 的 URL 沒有 host | `nil` | `nil` | `ErrUrlHostEmpty` |
-| `config` 裡有 wlgows 拒絕的提議 —— 見 [壓縮](#壓縮-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateUnsupported` 或 `ErrHandshakeRequestDeflateWindowBitsInvalid` |
+| `config` 裡有提議的 window bits 不合法（RFC 7692 7.1.2）—— 見 [壓縮](#壓縮-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 | request 送不出去 | `nil` | `nil` | 原因 |
 | 回應讀不進來 | `nil` | `nil` | 原因 |
 | server 拒絕，或回應不正確 | `nil` | server 的回應 | 原因 |
@@ -278,19 +278,17 @@ config := wlgows.ClientHandShakeConfig{
 }
 ```
 
+你的提議決定 server 最多能把 client 的 window 縮到多小。每個提議的
+`ClientMaxWindowBitsEnabled` 都是 false 時，window 維持 15 bit。設為 true 時，server
+可以把它調小，最小到 8 bit（RFC 7692 7.1.2.2）。
+
 不建議自己設定 `Sec-WebSocket-Extensions`。你自己寫的 header 會照原樣送出，打錯字也
 一樣。config 會在 request 送出之前檢查，所以用錯時會得到 error，而不會送出去。
-`ClientHandShake` 會拒絕兩種設定，並讓 `netConn` 保持開啟：
+`ClientHandShake` 會拒絕一種設定，並讓 `netConn` 保持開啟：
 
 | 設定 | Error |
 |---|---|
-| `ClientMaxWindowBitsEnabled` 為 true，`ClientMaxWindowBits` 為 8 到 14 | `ErrHandshakeRequestDeflateUnsupported` |
 | `ServerMaxWindowBits`，或 `ClientMaxWindowBitsEnabled` 為 true 時的 `ClientMaxWindowBits`，不是 0 或 8 到 15（RFC 7692 7.1.2） | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
-
-第一種是函式庫的選擇。client 提議 8 到 14 的 `client_max_window_bits`，等於告訴 server：
-client 會用這麼小的 window 送出，但 wlgows 做不到（見
-[15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）。
-`ClientMaxWindowBits` 為 0（不帶值）或 15 時，`client_max_window_bits` 就會送出。
 
 server 會接受其中一個提議，或一個都不接受。回應中沒有 permessage-deflate 不是 error：
 連線照樣建立，只是不壓縮。沒有任何提議允許的回應，或帶有
@@ -304,22 +302,27 @@ server 會接受其中一個提議，或一個都不接受。回應中沒有 per
 | `client_max_window_bits=N`，但沒有任何 client 提議包含它（RFC 7692 7.1.2.2） | `ErrHandshakeResponseExtensionNotOffered` |
 | 沒有任何一個提議允許的參數，例如比提議更大的 `server_max_window_bits`，或提議要求了 `server_no_context_takeover` 或 `server_max_window_bits` 卻沒有回傳（RFC 7692 7.1.1.1、7.1.2.1） | `ErrHandshakeResponseExtensionNotOffered` |
 | 不合法的項目 | `ErrHandshakeResponseDeflateParamsInvalid` |
-| 小於 15 的 `client_max_window_bits`，wlgows 無法用這麼小的 window 送出（函式庫的選擇） | `ErrHandshakeResponseDeflateUnsupported` |
 
 如果你自己在 request 的 header 裡提出 permessage-deflate 以外的 extension，server 在
 回應裡接受它時，client 不會把它當成錯誤。wlgows 不懂那個 extension，要怎麼照它的規則
 處理由你負責。
 
-`ClientHandShake` 不會回傳協商結果。請用 `ValidateHandShakeResponseExtensions` 取得：
+`conn.GetPermessageDeflateAgreedConfig()` 就是協商結果；server 拒絕時是 `nil`：
 
 ```go
-agreed, err := wlgows.ValidateHandShakeResponseExtensions(resp, request) // server 拒絕時 agreed 是 nil
+agreed := conn.GetPermessageDeflateAgreedConfig() // server 拒絕時是 nil
 ```
 
-`agreed` 是一個 `*PermessageDeflateConfig`：雙方都遵守的內容，不是回應的複本。
-只要有一個符合這個回應的提議帶有 `client_no_context_takeover`，就算回應裡沒有它，
-`agreed` 也會有。那個提議是 client 自己的承諾（RFC 7692 7.1.1.2），而回應不會說
-它接受的是哪一個提議。
+`agreed` 是雙方都遵守的內容，不是回應的複本。只要有一個符合這個回應的提議帶有
+`client_no_context_takeover`，就算回應裡沒有它，`agreed` 也會有。那個提議是 client
+自己的承諾（RFC 7692 7.1.1.2），而回應不會說它接受的是哪一個提議。
+`client_max_window_bits` 也一樣：`agreed.ClientMaxWindowBits` 是回應裡的值；回應沒有時，
+就是那些提議中最小的值。
+
+請依 `agreed.ClientMaxWindowBits` 選 `DeflateLevel`。值是 0，或
+`ClientMaxWindowBitsEnabled` 為 false，都表示 15 bit：wlgows 可以用任何
+`DeflateLevel`（-2 到 9）送出。8 到 14 bit 時，只能用 -2（`flate.HuffmanOnly`）和 0
+（`flate.NoCompression`）。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#15-bit-以下的-window)。
 
 ## 自己跑 handshake
 

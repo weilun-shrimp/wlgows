@@ -18,6 +18,15 @@ permessage-deflate。
 這一頁說明兩邊共用的部分：設定欄位，以及怎麼看報告。
 每個資料夾的 README 說明怎麼執行，以及報告在哪裡。
 
+## 我們的結果
+
+| 端 | OK | Non-Strict | Informational | Unimplemented | Failed |
+|---|---|---|---|---|---|
+| Server | 510 | 4 | 3 | 0 | 0 |
+| Client | 510 | 4 | 3 | 0 | 0 |
+
+wlgows v7，`wstest` 25.10.1，每一端各跑全部 517 個案例。
+
 ## 設定檔
 
 每個資料夾都有一個 `config_fuzzing.json`。以下欄位在兩種模式下的用法相同：
@@ -44,4 +53,4 @@ permessage-deflate。
 
 報告頁面沒有說明 Unimplemented。它表示某個選用功能沒有協商出來，例如某種壓縮設定。
 Unimplemented 沒有連結，所以要直接打開它的頁面。這個頁面和 `index.html` 放在一起，
-例如案例 13.3.1 是 `wlgows_case_13_3_1.html`。
+檔名由 agent 和案例組成，例如案例 1.1.1 是 `wlgows_case_1_1_1.html`。

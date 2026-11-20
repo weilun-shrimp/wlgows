@@ -150,11 +150,11 @@ func main() {
 func handler(w http.ResponseWriter, r *http.Request, supportedSubprotocols []string) {
 	handShakeConfig := wlgows.ServerHandShakeConfig{
 		// permessage-deflate (RFC 7692). One answer with every field zero
-		// accepts any offer this package can serve. Matching adds the offer's
-		// server_no_context_takeover (RFC 7692 7.1.1.1) and
-		// client_no_context_takeover (7.1.1.2), so the client picks the mode.
-		// An offer of server_max_window_bits under 15 is skipped (library
-		// choice). A client that offers nothing gets no compression.
+		// accepts any valid offer (RFC 7692 7). Matching adds the offer's
+		// server_no_context_takeover (RFC 7692 7.1.1.1),
+		// client_no_context_takeover (7.1.1.2) and server_max_window_bits
+		// (7.1.2.1), so the client picks the mode. A client that offers
+		// nothing gets no compression.
 		PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
 
 		// Subprotocols (RFC 6455 4.2.2). When no offer is one the server
@@ -189,6 +189,19 @@ func handler(w http.ResponseWriter, r *http.Request, supportedSubprotocols []str
 	fmt.Println("connected:", conn.RemoteAddr())
 	example_helpers.PrintAgreedDeflate(conn)
 	example_helpers.PrintSubprotocol(resp.Header.Get("Sec-WebSocket-Protocol"))
+
+	// The sha256 reply below is deflated when the handshake agreed
+	// permessage-deflate. Under an agreed server_max_window_bits of 8 to 14
+	// (RFC 7692 7.1.2.1), wlgows allows only flate.NoCompression and
+	// flate.HuffmanOnly (library choice). See SENDING.md.
+	sendDataConfig := wlgows.SendDataConfig{
+		DeflateIfAgreed: true,
+		DeflateLevel:    flate.BestSpeed,
+	}
+	if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil &&
+		agreed.ServerMaxWindowBits != 0 && agreed.ServerMaxWindowBits < 15 {
+		sendDataConfig.DeflateLevel = flate.HuffmanOnly
+	}
 
 	out, err := os.Create(outPath)
 	if err != nil {
@@ -332,13 +345,9 @@ func handler(w http.ResponseWriter, r *http.Request, supportedSubprotocols []str
 
 		// Sent back so our stream_client can compare it with what it sent. That
 		// is this example's own convention, not WebSocket's: another client
-		// may ignore it. Deflated when agreed; DeflateLevel must be set, its
-		// zero is flate.NoCompression.
+		// may ignore it.
 		reply := fmt.Sprintf("sha256 %x", sha256sum)
-		if err := conn.SendText([]byte(reply), wlgows.SendDataConfig{
-			DeflateIfAgreed: true,
-			DeflateLevel:    flate.DefaultCompression,
-		}); err != nil {
+		if err := conn.SendText([]byte(reply), sendDataConfig); err != nil {
 			listener.PauseListen(fmt.Errorf("sending sha256: %w", err))
 			return
 		}

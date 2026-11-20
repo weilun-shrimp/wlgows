@@ -2,6 +2,7 @@ package wlgows
 
 import (
 	"bufio"
+	"compress/flate"
 	"errors"
 	"fmt"
 	"slices"
@@ -145,15 +146,21 @@ func TestConnStartLongDataTransmission(t *testing.T) {
 }
 
 func TestTransmitData(t *testing.T) {
-	// base_di has a text transmission open on a real Conn, and a sendFrame that
-	// succeeds; each case overrides what it looks at.
+	// base_di has a text transmission open on a real Conn, with
+	// permessage-deflate agreed, and a sendFrame that succeeds; each case
+	// overrides what it looks at. The message is not deflated unless a case
+	// sets currentTransmitDataMsgDeflating, as Start would.
 	base_di := func() transmitDataDI {
 		netConn := newFakeConn(nil)
 		conn, _ := NewConn(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), NewConnConfig{PeerIsClient: true})
 		conn.currentTransmitDataMsgOpcode = OpcodeText
+		conn.permessageDeflateAgreedConfig = &PermessageDeflateConfig{}
 		return transmitDataDI{
 			conn:      conn,
 			sendFrame: func(f *Frame) error { return nil },
+
+			sendWindowBits:                func(*PermessageDeflateConfig, bool) uint { return 15 },
+			validateDeflateLevelForWindow: func(int, uint) error { return nil },
 		}
 	}
 
@@ -218,6 +225,197 @@ func TestTransmitData(t *testing.T) {
 
 		if err := transmitData([]byte("hello"), TransmitDataConfig{}, di); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
 			t.Errorf("transmitData = %v, want ErrLongDataTransmissionNotStarted", err)
+		}
+	})
+
+	t.Run("refuses an invalid deflate level before anything runs", func(t *testing.T) {
+		// Go's compress/flate has no level -3 or 10. It only has -2 to 9.
+		for _, level := range []int{-3, 10} {
+			for _, deflating := range []bool{false, true} {
+				var steps []string
+				di := base_di()
+				di.conn.currentTransmitDataMsgDeflating = deflating
+				di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
+					steps = append(steps, "build")
+					return &Frame{}, nil
+				}
+				di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+					steps = append(steps, "deflate")
+					return []byte{0x00, 0x00, 0xff, 0xff}, nil
+				}}
+				di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+					steps = append(steps, "sendWindowBits")
+					return 15
+				}
+				di.validateDeflateLevelForWindow = func(int, uint) error {
+					steps = append(steps, "validateDeflateLevelForWindow")
+					return nil
+				}
+				di.sendFrame = func(*Frame) error {
+					steps = append(steps, "send")
+					return nil
+				}
+
+				if err := transmitData([]byte("hello"), TransmitDataConfig{DeflateLevel: level}, di); !errors.Is(err, ErrDeflateLevelInvalid) {
+					t.Errorf("level %d, deflating %v: transmitData = %v, want ErrDeflateLevelInvalid", level, deflating, err)
+				}
+				if len(steps) != 0 {
+					t.Errorf("level %d, deflating %v: steps %q, want nothing run", level, deflating, steps)
+				}
+			}
+		}
+	})
+
+	// RFC 7692 7.1.2: the window comes from this side's agreed config, and
+	// the level is checked against it.
+	small_windows := []struct {
+		name         string
+		agreed       PermessageDeflateConfig
+		peerIsClient bool
+	}{
+		{
+			name:         "server, server_max_window_bits=9",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 9},
+			peerIsClient: true,
+		},
+		{
+			name:         "client, client_max_window_bits=9",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 9},
+			peerIsClient: false,
+		},
+	}
+
+	t.Run("returns the validateDeflateLevelForWindow error and sends nothing", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			var steps []string
+			di := base_di()
+			di.conn.peerIsClient = testCase.peerIsClient
+			di.conn.permessageDeflateAgreedConfig = &testCase.agreed
+			di.conn.currentTransmitDataMsgDeflating = true
+			want_window_bits := uint(11)
+			validate_deflate_level_for_window_error := errors.New("validateDeflateLevelForWindow error")
+			di.sendWindowBits = func(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+				steps = append(steps, fmt.Sprintf("sendWindowBits %+v %v", *agreed, peerIsClient))
+				return want_window_bits
+			}
+			di.validateDeflateLevelForWindow = func(level int, window_bits uint) error {
+				if window_bits != want_window_bits {
+					t.Errorf(
+						"%s: validateDeflateLevelForWindow got window_bits %d, want %d from sendWindowBits",
+						testCase.name, window_bits, want_window_bits,
+					)
+				}
+				steps = append(steps, fmt.Sprintf("validateDeflateLevelForWindow %d", level))
+				return validate_deflate_level_for_window_error
+			}
+			di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
+				steps = append(steps, "build")
+				return &Frame{}, nil
+			}
+			di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+				steps = append(steps, "deflate")
+				return []byte{0x00, 0x00, 0xff, 0xff}, nil
+			}}
+			di.sendFrame = func(*Frame) error {
+				steps = append(steps, "send")
+				return nil
+			}
+
+			config := TransmitDataConfig{DeflateLevel: flate.DefaultCompression}
+			if err := transmitData([]byte("hello"), config, di); !errors.Is(err, validate_deflate_level_for_window_error) {
+				t.Errorf("%s: transmitData = %v, want the validateDeflateLevelForWindow error", testCase.name, err)
+			}
+			want := []string{fmt.Sprintf("sendWindowBits %+v %v", testCase.agreed, testCase.peerIsClient), "validateDeflateLevelForWindow -1"}
+			if !slices.Equal(steps, want) {
+				t.Errorf("%s: steps %q, want %q", testCase.name, steps, want)
+			}
+			if di.conn.currentTransmitDataMsgOpened {
+				t.Errorf("%s: a refused fragment opened the message", testCase.name)
+			}
+		}
+	})
+
+	t.Run("deflates and sends when validateDeflateLevelForWindow returns nil", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			for _, level := range []int{flate.HuffmanOnly, flate.NoCompression} {
+				var steps []string
+				var sent []string
+				di := base_di()
+				di.conn.peerIsClient = testCase.peerIsClient
+				di.conn.permessageDeflateAgreedConfig = &testCase.agreed
+				di.conn.currentTransmitDataMsgDeflating = true
+				want_window_bits := uint(11)
+				di.sendWindowBits = func(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+					steps = append(steps, fmt.Sprintf("sendWindowBits %+v %v", *agreed, peerIsClient))
+					return want_window_bits
+				}
+				di.validateDeflateLevelForWindow = func(level int, window_bits uint) error {
+					if window_bits != want_window_bits {
+						t.Errorf(
+							"%s: validateDeflateLevelForWindow got window_bits %d, want %d from sendWindowBits",
+							testCase.name, window_bits, want_window_bits,
+						)
+					}
+					steps = append(steps, fmt.Sprintf("validateDeflateLevelForWindow %d", level))
+					return nil
+				}
+				di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func(data []byte, level int) ([]byte, error) {
+					steps = append(steps, fmt.Sprintf("deflate %s %d", data, level))
+					return append([]byte("z:"), append(data, 0x00, 0x00, 0xff, 0xff)...), nil
+				}}
+				di.sendFrame = func(f *Frame) error {
+					sent = append(sent, fmt.Sprintf("%d %v %v %q", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
+					return nil
+				}
+
+				if err := transmitData([]byte("hello"), TransmitDataConfig{DeflateLevel: level}, di); err != nil {
+					t.Fatalf("%s, level %d: transmitData: %v", testCase.name, level, err)
+				}
+				want_steps := []string{
+					fmt.Sprintf("sendWindowBits %+v %v", testCase.agreed, testCase.peerIsClient),
+					fmt.Sprintf("validateDeflateLevelForWindow %d", level),
+					fmt.Sprintf("deflate hello %d", level),
+				}
+				if !slices.Equal(steps, want_steps) {
+					t.Errorf("%s, level %d: steps %q, want %q", testCase.name, level, steps, want_steps)
+				}
+				if want := []string{`1 false true "z:hello\x00\x00\xff\xff"`}; !slices.Equal(sent, want) {
+					t.Errorf("%s, level %d: sent %q, want %q", testCase.name, level, sent, want)
+				}
+			}
+		}
+	})
+
+	// Nothing is deflated, so the window does not limit the level.
+	t.Run("calls no sendWindowBits or validateDeflateLevelForWindow when the message is not deflated", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			var sent []string
+			di := base_di()
+			di.conn.peerIsClient = testCase.peerIsClient
+			di.conn.permessageDeflateAgreedConfig = &testCase.agreed
+			di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+				t.Errorf("%s: sendWindowBits called", testCase.name)
+				return 9
+			}
+			di.validateDeflateLevelForWindow = func(int, uint) error {
+				t.Errorf("%s: validateDeflateLevelForWindow called", testCase.name)
+				return ErrDeflateLevelUnsupportedForWindow
+			}
+			di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+				t.Errorf("%s: deflated a message not deflated", testCase.name)
+				return nil, nil
+			}}
+			di.sendFrame = func(f *Frame) error {
+				sent = append(sent, fmt.Sprintf("%d %v %v %q", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
+				return nil
+			}
+
+			if err := transmitData([]byte("hello"), TransmitDataConfig{DeflateLevel: flate.BestCompression}, di); err != nil {
+				t.Fatalf("%s: transmitData: %v", testCase.name, err)
+			}
+			if want := []string{`1 false false "hello"`}; !slices.Equal(sent, want) {
+				t.Errorf("%s: sent %q, want %q", testCase.name, sent, want)
+			}
 		}
 	})
 
@@ -353,33 +551,6 @@ func TestTransmitData(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses an invalid level before anything runs", func(t *testing.T) {
-		for _, deflating := range []bool{false, true} {
-			var steps []string
-			di := base_di()
-			di.conn.currentTransmitDataMsgDeflating = deflating
-			di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
-				steps = append(steps, "build")
-				return &Frame{}, nil
-			}
-			di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
-				steps = append(steps, "deflate")
-				return []byte{0x00, 0x00, 0xff, 0xff}, nil
-			}}
-			di.sendFrame = func(*Frame) error {
-				steps = append(steps, "send")
-				return nil
-			}
-
-			if err := transmitData([]byte("hello"), TransmitDataConfig{DeflateLevel: 10}, di); !errors.Is(err, ErrDeflateLevelInvalid) {
-				t.Errorf("deflating %v: transmitData = %v, want ErrDeflateLevelInvalid", deflating, err)
-			}
-			if len(steps) != 0 {
-				t.Errorf("deflating %v: steps %q, want nothing run", deflating, steps)
-			}
-		}
-	})
-
 	// A chunk that fails to build is never deflated: its bytes would enter the
 	// context.
 	t.Run("does not deflate when the frame fails to build", func(t *testing.T) {
@@ -426,6 +597,9 @@ func TestEndLongDataTransmission(t *testing.T) {
 		return endLongDataTransmissionDI{
 			conn:      conn,
 			sendFrame: func(f *Frame) error { return nil },
+
+			sendWindowBits:                func(*PermessageDeflateConfig, bool) uint { return 15 },
+			validateDeflateLevelForWindow: func(int, uint) error { return nil },
 		}
 	}
 
@@ -511,6 +685,198 @@ func TestEndLongDataTransmission(t *testing.T) {
 
 		if err := endLongDataTransmission(nil, TransmitDataConfig{}, di); !errors.Is(err, ErrLongDataTransmissionNotStarted) {
 			t.Errorf("endLongDataTransmission = %v, want ErrLongDataTransmissionNotStarted", err)
+		}
+	})
+
+	t.Run("refuses an invalid deflate level before anything runs", func(t *testing.T) {
+		// Go's compress/flate has no level -3 or 10. It only has -2 to 9.
+		for _, level := range []int{-3, 10} {
+			for _, deflating := range []bool{false, true} {
+				var steps []string
+				di := base_di()
+				di.conn.permessageDeflateAgreedConfig = &PermessageDeflateConfig{}
+				di.conn.currentTransmitDataMsgDeflating = deflating
+				di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
+					steps = append(steps, "build")
+					return &Frame{}, nil
+				}
+				di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+					steps = append(steps, "deflate")
+					return []byte{0x00, 0x00, 0xff, 0xff}, nil
+				}}
+				di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+					steps = append(steps, "sendWindowBits")
+					return 15
+				}
+				di.validateDeflateLevelForWindow = func(int, uint) error {
+					steps = append(steps, "validateDeflateLevelForWindow")
+					return nil
+				}
+				di.sendFrame = func(*Frame) error {
+					steps = append(steps, "send")
+					return nil
+				}
+
+				if err := endLongDataTransmission(nil, TransmitDataConfig{DeflateLevel: level}, di); !errors.Is(err, ErrDeflateLevelInvalid) {
+					t.Errorf("level %d, deflating %v: endLongDataTransmission = %v, want ErrDeflateLevelInvalid", level, deflating, err)
+				}
+				if len(steps) != 0 {
+					t.Errorf("level %d, deflating %v: steps %q, want nothing run", level, deflating, steps)
+				}
+			}
+		}
+	})
+
+	// RFC 7692 7.1.2: the window comes from this side's agreed config, and
+	// the level is checked against it.
+	small_windows := []struct {
+		name         string
+		agreed       PermessageDeflateConfig
+		peerIsClient bool
+	}{
+		{
+			name:         "server, server_max_window_bits=9",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 9},
+			peerIsClient: true,
+		},
+		{
+			name:         "client, client_max_window_bits=9",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 9},
+			peerIsClient: false,
+		},
+	}
+
+	t.Run("returns the validateDeflateLevelForWindow error and sends nothing", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			var steps []string
+			di := base_di()
+			di.conn.peerIsClient = testCase.peerIsClient
+			di.conn.permessageDeflateAgreedConfig = &testCase.agreed
+			di.conn.currentTransmitDataMsgDeflating = true
+			want_window_bits := uint(11)
+			validate_deflate_level_for_window_error := errors.New("validateDeflateLevelForWindow error")
+			di.sendWindowBits = func(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+				steps = append(steps, fmt.Sprintf("sendWindowBits %+v %v", *agreed, peerIsClient))
+				return want_window_bits
+			}
+			di.validateDeflateLevelForWindow = func(level int, window_bits uint) error {
+				if window_bits != want_window_bits {
+					t.Errorf(
+						"%s: validateDeflateLevelForWindow got window_bits %d, want %d from sendWindowBits",
+						testCase.name, window_bits, want_window_bits,
+					)
+				}
+				steps = append(steps, fmt.Sprintf("validateDeflateLevelForWindow %d", level))
+				return validate_deflate_level_for_window_error
+			}
+			di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
+				steps = append(steps, "build")
+				return &Frame{}, nil
+			}
+			di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+				steps = append(steps, "deflate")
+				return []byte{0x00, 0x00, 0xff, 0xff}, nil
+			}}
+			di.sendFrame = func(*Frame) error {
+				steps = append(steps, "send")
+				return nil
+			}
+
+			config := TransmitDataConfig{DeflateLevel: flate.DefaultCompression}
+			if err := endLongDataTransmission([]byte("hello"), config, di); !errors.Is(err, validate_deflate_level_for_window_error) {
+				t.Errorf("%s: endLongDataTransmission = %v, want the validateDeflateLevelForWindow error", testCase.name, err)
+			}
+			want := []string{fmt.Sprintf("sendWindowBits %+v %v", testCase.agreed, testCase.peerIsClient), "validateDeflateLevelForWindow -1"}
+			if !slices.Equal(steps, want) {
+				t.Errorf("%s: steps %q, want %q", testCase.name, steps, want)
+			}
+			if !di.conn.currentTransmitDataMsgDeflating {
+				t.Errorf("%s: a refused last frame ended the deflated stream", testCase.name)
+			}
+		}
+	})
+
+	t.Run("deflates and sends when validateDeflateLevelForWindow returns nil", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			for _, level := range []int{flate.HuffmanOnly, flate.NoCompression} {
+				var steps []string
+				var sent []string
+				di := base_di()
+				di.conn.peerIsClient = testCase.peerIsClient
+				di.conn.permessageDeflateAgreedConfig = &testCase.agreed
+				di.conn.currentTransmitDataMsgDeflating = true
+				want_window_bits := uint(11)
+				di.sendWindowBits = func(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+					steps = append(steps, fmt.Sprintf("sendWindowBits %+v %v", *agreed, peerIsClient))
+					return want_window_bits
+				}
+				di.validateDeflateLevelForWindow = func(level int, window_bits uint) error {
+					if window_bits != want_window_bits {
+						t.Errorf(
+							"%s: validateDeflateLevelForWindow got window_bits %d, want %d from sendWindowBits",
+							testCase.name, window_bits, want_window_bits,
+						)
+					}
+					steps = append(steps, fmt.Sprintf("validateDeflateLevelForWindow %d", level))
+					return nil
+				}
+				di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func(data []byte, level int) ([]byte, error) {
+					steps = append(steps, fmt.Sprintf("deflate %s %d", data, level))
+					return append([]byte("z:"), append(data, 0x00, 0x00, 0xff, 0xff)...), nil
+				}}
+				di.sendFrame = func(f *Frame) error {
+					sent = append(sent, fmt.Sprintf("%d %v %v %q", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
+					return nil
+				}
+
+				if err := endLongDataTransmission([]byte("hello"), TransmitDataConfig{DeflateLevel: level}, di); err != nil {
+					t.Fatalf("%s, level %d: endLongDataTransmission: %v", testCase.name, level, err)
+				}
+				want_steps := []string{
+					fmt.Sprintf("sendWindowBits %+v %v", testCase.agreed, testCase.peerIsClient),
+					fmt.Sprintf("validateDeflateLevelForWindow %d", level),
+					fmt.Sprintf("deflate hello %d", level),
+				}
+				if !slices.Equal(steps, want_steps) {
+					t.Errorf("%s, level %d: steps %q, want %q", testCase.name, level, steps, want_steps)
+				}
+				if want := []string{`2 true true "z:hello"`}; !slices.Equal(sent, want) {
+					t.Errorf("%s, level %d: sent %q, want %q", testCase.name, level, sent, want)
+				}
+			}
+		}
+	})
+
+	// Nothing is deflated, so the window does not limit the level.
+	t.Run("calls no sendWindowBits or validateDeflateLevelForWindow when the message is not deflated", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			var sent []string
+			di := base_di()
+			di.conn.peerIsClient = testCase.peerIsClient
+			di.conn.permessageDeflateAgreedConfig = &testCase.agreed
+			di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+				t.Errorf("%s: sendWindowBits called", testCase.name)
+				return 9
+			}
+			di.validateDeflateLevelForWindow = func(int, uint) error {
+				t.Errorf("%s: validateDeflateLevelForWindow called", testCase.name)
+				return ErrDeflateLevelUnsupportedForWindow
+			}
+			di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+				t.Errorf("%s: deflated a message not deflated", testCase.name)
+				return nil, nil
+			}}
+			di.sendFrame = func(f *Frame) error {
+				sent = append(sent, fmt.Sprintf("%d %v %v %q", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
+				return nil
+			}
+
+			if err := endLongDataTransmission([]byte("hello"), TransmitDataConfig{DeflateLevel: flate.BestCompression}, di); err != nil {
+				t.Fatalf("%s: endLongDataTransmission: %v", testCase.name, err)
+			}
+			if want := []string{`2 true false "hello"`}; !slices.Equal(sent, want) {
+				t.Errorf("%s: sent %q, want %q", testCase.name, sent, want)
+			}
 		}
 	})
 
@@ -673,34 +1039,6 @@ func TestEndLongDataTransmission(t *testing.T) {
 			}
 			if !slices.Equal(steps, testCase.want) {
 				t.Errorf("%s: steps %q, want %q", testCase.name, steps, testCase.want)
-			}
-		}
-	})
-
-	t.Run("refuses an invalid level before anything runs", func(t *testing.T) {
-		for _, deflating := range []bool{false, true} {
-			var steps []string
-			di := base_di()
-			di.conn.permessageDeflateAgreedConfig = &PermessageDeflateConfig{}
-			di.conn.currentTransmitDataMsgDeflating = deflating
-			di.conn.di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
-				steps = append(steps, "build")
-				return &Frame{}, nil
-			}
-			di.conn.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
-				steps = append(steps, "deflate")
-				return []byte{0x00, 0x00, 0xff, 0xff}, nil
-			}}
-			di.sendFrame = func(*Frame) error {
-				steps = append(steps, "send")
-				return nil
-			}
-
-			if err := endLongDataTransmission(nil, TransmitDataConfig{DeflateLevel: -3}, di); !errors.Is(err, ErrDeflateLevelInvalid) {
-				t.Errorf("deflating %v: endLongDataTransmission = %v, want ErrDeflateLevelInvalid", deflating, err)
-			}
-			if len(steps) != 0 {
-				t.Errorf("deflating %v: steps %q, want nothing run", deflating, steps)
 			}
 		}
 	})

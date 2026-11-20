@@ -62,6 +62,11 @@ type SendDataConfig struct {
 	// to flate.BestCompression (9), used as it is: 0 is flate.NoCompression.
 	// It may change from one message to the next. Another value is refused,
 	// even when nothing would be deflated.
+	//
+	// When the message is deflated under this side's agreed window of 8 to
+	// 14 bits, only flate.NoCompression and flate.HuffmanOnly are allowed.
+	// Other levels return ErrDeflateLevelUnsupportedForWindow.
+	// GetPermessageDeflateAgreedConfig tells the agreed window.
 	DeflateLevel int
 }
 
@@ -79,7 +84,9 @@ deflated first, and RSV1 is set on the first frame (RFC 7692 6).
 
 A DeflateLevel compress/flate has no level for is refused with
 ErrDeflateLevelInvalid before anything is sent, even when nothing would be
-deflated.
+deflated. A message deflated under this side's agreed window of 8 to 14 bits
+at a level other than flate.NoCompression or flate.HuffmanOnly is refused with
+ErrDeflateLevelUnsupportedForWindow before anything is sent.
 
 dataFramesWriteLocker is held throughout, so no other message interleaves.
 writeLocker is held for each frame appended to the write buffer and for the
@@ -104,6 +111,9 @@ func (c *Conn) SendData(opcode uint8, payload []byte, config SendDataConfig) err
 		deflateAgreedConfig: c.permessageDeflateAgreedConfig,
 		contextDeflater:     c.contextDeflater,
 		noContextDeflater:   c.noContextDeflater,
+
+		sendWindowBits:                sendWindowBits,
+		validateDeflateLevelForWindow: validateDeflateLevelForWindow,
 	})
 }
 
@@ -122,6 +132,9 @@ type sendDataDI struct {
 	deflateAgreedConfig *PermessageDeflateConfig
 	contextDeflater     sendDataDeflater
 	noContextDeflater   sendDataDeflater
+
+	sendWindowBits                func(agreed *PermessageDeflateConfig, peerIsClient bool) uint
+	validateDeflateLevelForWindow func(level int, window_bits uint) error
 }
 
 func sendData(opcode uint8, payload []byte, config SendDataConfig, di sendDataDI) error {
@@ -130,6 +143,12 @@ func sendData(opcode uint8, payload []byte, config SendDataConfig, di sendDataDI
 	}
 	if err := validateDeflateLevel(config.DeflateLevel); err != nil {
 		return err
+	}
+	if config.DeflateIfAgreed && di.deflateAgreedConfig != nil {
+		window_bits := di.sendWindowBits(di.deflateAgreedConfig, di.peerIsClient)
+		if err := di.validateDeflateLevelForWindow(config.DeflateLevel, window_bits); err != nil {
+			return err
+		}
 	}
 	// dataFramesWriteLocker first, as a long data transmission takes them, so
 	// this cannot land between its fragments (5.4).

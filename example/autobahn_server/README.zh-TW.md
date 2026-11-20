@@ -56,3 +56,9 @@ start reports\index.html      # Windows
 ```
 
 怎麼看報告，請看 [AUTOBAHN.zh-TW.md](../AUTOBAHN.zh-TW.md#怎麼看報告)。
+
+在 13.3.x、13.5.x 和 13.7.x 案例中，Autobahn 的 client 提議
+`server_max_window_bits=9`，server 會同意。在這個 window 下，wlgows 只允許
+`flate.HuffmanOnly` 和 `flate.NoCompression`（函式庫的選擇），所以 server 在這些
+案例用 `flate.HuffmanOnly` echo，其他案例用 `flate.BestSpeed`。請看
+[SENDING.zh-TW.md](../../SENDING.zh-TW.md#15-bit-以下的-window)。

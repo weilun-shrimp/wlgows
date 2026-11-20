@@ -12,7 +12,7 @@ handshake、從 `net/http` 或 Gin hijack、TLS、subprotocol，以及壓縮。
 - [HTTP Hijacking](#http-hijacking) — `net/http` 與 Gin
 - [TLS (wss://)](#tls-wss)
 - [Subprotocols](#subprotocols) — [選一個](#選一個) · [強制使用](#強制使用-subprotocol) · [實際送出的值](#實際送出的值)
-- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — [選哪個回應](#選哪個回應) · [用自己的規則選](#用自己的規則選) · [檢查設定](#檢查設定)
+- [壓縮 (permessage-deflate)](#壓縮-permessage-deflate) — [選哪個回應](#選哪個回應) · [用自己的規則選](#用自己的規則選) · [保留想要的 window](#保留想要的-window) · [協商結果](#協商結果) · [檢查設定](#檢查設定)
 - [檢查 Origin](#檢查-origin) — 給瀏覽器會連上的 server
 - [自己跑 handshake](#自己跑-handshake) — 不建議
 - [下一步：讀取與傳送](#下一步讀取與傳送)
@@ -120,7 +120,7 @@ handshake 之前就檢查 `PermessageDeflates`，見 [壓縮](#壓縮-permessage
 | 回應寫不出去 | `nil` | 那個回應 | 寫入的 error |
 | 升級成功，但 writer 無法 flush | `nil` | 送出的 101 | 寫入的 error |
 | `request` 是 `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
-| `config.PermessageDeflates` 中有設定被拒絕 —— 見 [壓縮](#檢查設定) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` 或 `ErrHandshakeServerDeflateConfigUnsupported` |
+| `config.PermessageDeflates` 中有設定的 window bits 不合法（RFC 7692 7.1.2）—— 見 [壓縮](#檢查設定) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` |
 
 只要 `err` 不是 `nil`，`conn` 就是 `nil`。`resp` 是實際送出去的內容，可以拿來寫 log。
 `resp` 是 `nil` 表示什麼都沒送出。
@@ -355,7 +355,8 @@ server 如何解讀每個欄位：
 |---|---|
 | `ServerNoContextTakeover` 為 true | server 送出時不使用 context。提議要求時也會設成 true（RFC 7692 7.1.1.1）。 |
 | `ClientNoContextTakeover` 為 true | server 要求 client 送出時不使用 context（RFC 7692 7.1.1.2）。這樣 server 在 client 的 message 之間什麼都不用留。提議中有它時也會設成 true。 |
-| `ServerMaxWindowBits` | 0 或 15。8 到 14 會被拒絕，見 [檢查設定](#檢查設定)。 |
+| `ServerMaxWindowBits` 為 0 | server 的 window 是 15 bit，除非提議要求更小（RFC 7692 7.1.2.1）。 |
+| `ServerMaxWindowBits` 為 8 到 15 | server 的 window 不超過這個值。提議可以把它調小（RFC 7692 7.1.2.1）。 |
 | `ClientMaxWindowBitsEnabled` 為 false | server 接受 client 使用任何 window，最多 15 bit。`ClientMaxWindowBits` 會被忽略。 |
 | `ClientMaxWindowBitsEnabled` 為 true | client 的 window 不超過 `ClientMaxWindowBits`，這個值必須介於 8 到 15。 |
 
@@ -363,12 +364,13 @@ server 如何解讀每個欄位：
 
 server 照你的順序逐一嘗試這些設定，採用 client 同意的第一份。
 
-符合下列任一情況時，client 的提議就不允許這份設定：
+設定的 `ClientMaxWindowBitsEnabled` 為 true、`ClientMaxWindowBits` 為 8 到 14 時，這份
+設定會跳過沒有 `client_max_window_bits` 的提議。只有 client 提議了這個參數，server 才能限制
+client 的 window（RFC 7692 7.1.2.2）。
 
-- 提議要求 server 的 window 小於 15 bit。wlgows 無法用這麼小的 window 送出（函式庫
-  的選擇，見 [15 bit 以下的 window](./PERMESSAGE_DEFLATE.zh-TW.md#15-bit-以下的-window)）；
-- 設定把 client 的 window 限制在小於 15 bit，而提議沒有 `client_max_window_bits`。server 只有在
-  提議包含這個參數時才能送出它（RFC 7692 7.1.2.2）。
+`ServerHandShake` 不會因為 `server_max_window_bits` 拒絕提議，而是把 server 的
+window 降到提議的值（RFC 7692 7.1.2.1）：設定是 12、提議是 8 時，協商結果是 8。想改成
+拒絕，見 [保留想要的 window](#保留想要的-window)。
 
 沒有任何設定符合時，回應沒有 `Sec-WebSocket-Extensions`，連線照樣建立，只是不壓縮。
 `resp.Header.Get("Sec-WebSocket-Extensions")` 就是送出的內容。
@@ -387,6 +389,32 @@ if answer != nil && (openConnections <= limit || answer.ClientNoContextTakeover)
 }
 ```
 
+### 保留想要的 window
+
+`ServerHandShake` 沒有設定最小 window 的欄位。不想要太小的 window 時，在 handshake 之前
+呼叫 `AcceptDeflateOffer`，看看會協商出什麼。然後不傳 `PermessageDeflates`，這條連線就
+不壓縮；或者直接拒絕這個 request：
+
+```go
+serverConfig := wlgows.PermessageDeflateConfig{ServerMaxWindowBits: 12}
+config := wlgows.ServerHandShakeConfig{
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		serverConfig,
+	},
+}
+if answer := wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil &&
+	answer.ServerMaxWindowBits < 12 { // 這裡不會是 0：設定是 12
+	config.PermessageDeflates = nil // 小於 12：這裡不壓縮；如果一定要壓縮，也可以拒絕這個 request
+}
+```
+
+### 協商結果
+
+`conn.GetPermessageDeflateAgreedConfig()` 就是協商結果；沒有任何設定符合時是 `nil`。
+請依它的 `ServerMaxWindowBits` 選 `DeflateLevel`。0 表示 15 bit：wlgows 可以用任何
+`DeflateLevel`（-2 到 9）送出。8 到 14 bit 時，只能用 -2（`flate.HuffmanOnly`）和 0
+（`flate.NoCompression`）。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#15-bit-以下的-window)。
+
 ### 檢查設定
 
 `ValidateServerDeflateConfig` 會拒絕下列設定。`ServerHandShake` 會先用它檢查清單中的
@@ -395,7 +423,6 @@ if answer != nil && (openConnections <= limit || answer.ClientNoContextTakeover)
 | 設定 | Error |
 |---|---|
 | `ServerMaxWindowBits` 不是 0，也不在 8 到 15 之間；或 `ClientMaxWindowBitsEnabled` 為 true，但 `ClientMaxWindowBits` 不在 8 到 15 之間（RFC 7692 7.1.2） | `ErrHandshakeServerDeflateConfigInvalid` |
-| `ServerMaxWindowBits` 為 8 到 14（函式庫的選擇） | `ErrHandshakeServerDeflateConfigUnsupported` |
 
 想不經過 handshake 就抓到這些錯誤，請在測試中或第一次 handshake 之前呼叫
 `ValidateServerDeflateConfig`，做法見 [壓縮](#壓縮-permessage-deflate)。

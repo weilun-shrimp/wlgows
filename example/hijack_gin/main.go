@@ -64,13 +64,6 @@ func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
 	return io.ReadAll(wlgows.NewSizeLimitReader(reader, maxDataFramesSize))
 }
 
-// Echoes are deflated when the handshake agreed permessage-deflate, and sent as
-// is otherwise. DeflateLevel must be set: its zero is flate.NoCompression.
-var sendDataConfig = wlgows.SendDataConfig{
-	DeflateIfAgreed: true,
-	DeflateLevel:    flate.DefaultCompression,
-}
-
 func main() {
 	serverConfig, err := example_helpers.ReadUserInputServerConfig()
 	if err != nil {
@@ -111,11 +104,11 @@ func main() {
 func handler(c *gin.Context, supportedSubprotocols []string) {
 	handShakeConfig := wlgows.ServerHandShakeConfig{
 		// permessage-deflate (RFC 7692). One answer with every field zero
-		// accepts any offer this package can serve. Matching adds the offer's
-		// server_no_context_takeover (RFC 7692 7.1.1.1) and
-		// client_no_context_takeover (7.1.1.2), so the client picks the mode.
-		// An offer of server_max_window_bits under 15 is skipped (library
-		// choice). A client that offers nothing gets no compression.
+		// accepts any valid offer (RFC 7692 7). Matching adds the offer's
+		// server_no_context_takeover (RFC 7692 7.1.1.1),
+		// client_no_context_takeover (7.1.1.2) and server_max_window_bits
+		// (7.1.2.1), so the client picks the mode. A client that offers
+		// nothing gets no compression.
 		PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
 
 		// Subprotocols (RFC 6455 4.2.2). When no offer is one the server
@@ -149,6 +142,19 @@ func handler(c *gin.Context, supportedSubprotocols []string) {
 	fmt.Println("connected:", conn.RemoteAddr())
 	example_helpers.PrintAgreedDeflate(conn)
 	example_helpers.PrintSubprotocol(resp.Header.Get("Sec-WebSocket-Protocol"))
+
+	// Echoes are deflated when the handshake agreed permessage-deflate.
+	// Under an agreed server_max_window_bits of 8 to 14 (RFC 7692 7.1.2.1),
+	// wlgows allows only flate.NoCompression and flate.HuffmanOnly (library
+	// choice). See SENDING.md.
+	sendDataConfig := wlgows.SendDataConfig{
+		DeflateIfAgreed: true,
+		DeflateLevel:    flate.BestSpeed,
+	}
+	if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil &&
+		agreed.ServerMaxWindowBits != 0 && agreed.ServerMaxWindowBits < 15 {
+		sendDataConfig.DeflateLevel = flate.HuffmanOnly
+	}
 
 	// Ping, pong, close and reserved opcodes are answered for you, and masking
 	// (5.1) is settled from which side this connection is.

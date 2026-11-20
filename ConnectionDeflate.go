@@ -7,9 +7,9 @@ import (
 	"sync"
 )
 
-// deflateWindowSize is how far back a reference may reach, 32 KB. The
-// handshakes never agree to send with less (library choice: compress/flate
-// cannot), so this is always the sending window (RFC 7692 7.1.2).
+// deflateWindowSize is how far back a reference may reach: 32 KB, the window
+// at 15 bits (RFC 7692 7.1.2). Under a smaller send window only levels that
+// write no references back are allowed, see validateDeflateLevelForWindow.
 const deflateWindowSize = 32 * 1024 // 32 KB
 
 type connNoContextDeflater interface {
@@ -258,4 +258,42 @@ func validateDeflateLevel(level int) error {
 		return fmt.Errorf("DeflateLevel %d: %w", level, ErrDeflateLevelInvalid)
 	}
 	return nil
+}
+
+// sendWindowBits returns the window bits this side agreed to send within.
+// Without a value, the window is 15 bits (RFC 7692 7.1.2.1, 7.1.2.2). agreed
+// is never nil: it is called only when a message is deflated, which needs an
+// agreement, so nil is not handled.
+func sendWindowBits(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+	if peerIsClient {
+		// RFC 7692 7.1.2.1: a server keeps to server_max_window_bits.
+		if agreed.ServerMaxWindowBits == 0 {
+			return 15
+		}
+		return agreed.ServerMaxWindowBits
+	}
+	// RFC 7692 7.1.2.2: a client keeps to client_max_window_bits.
+	if !agreed.ClientMaxWindowBitsEnabled || agreed.ClientMaxWindowBits == 0 {
+		return 15
+	}
+	return agreed.ClientMaxWindowBits
+}
+
+// validateDeflateLevelForWindow refuses a level that may refer back further
+// than window_bits allows, with ErrDeflateLevelUnsupportedForWindow (RFC 7692
+// 7.1.2). Under 15 bits only flate.NoCompression and flate.HuffmanOnly are
+// allowed: they write no references back. Other levels refer back up to
+// 32 KB, as compress/flate keeps no smaller window (library choice).
+//
+//   - level is always a compress/flate level: validateDeflateLevel runs
+//     first, so other levels are not handled.
+//
+//   - window_bits is always 8 to 15: it comes from sendWindowBits, and the
+//     handshake refuses any other value, so bits out of that range are not
+//     handled.
+func validateDeflateLevelForWindow(level int, window_bits uint) error {
+	if window_bits == 15 || level == flate.NoCompression || level == flate.HuffmanOnly {
+		return nil
+	}
+	return fmt.Errorf("DeflateLevel %d under %d window bits: %w", level, window_bits, ErrDeflateLevelUnsupportedForWindow)
 }

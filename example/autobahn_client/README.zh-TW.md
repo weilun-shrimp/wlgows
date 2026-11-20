@@ -7,8 +7,7 @@
 請看 [AUTOBAHN.zh-TW.md](../AUTOBAHN.zh-TW.md)。
 
 全部都在你的電腦上執行。Autobahn 跑在 Docker 裡，以 `fuzzingserver` 模式扮演
-server，listen 在 port 9001。`main.go` 是一個 echo client，每個案例連到 Autobahn 一次，
-部分 13.x 案例會連兩次（見[報告](#報告)）。
+server，listen 在 port 9001。`main.go` 是一個 echo client，每個案例連到 Autobahn 一次。
 
 ## 執行
 
@@ -60,11 +59,7 @@ start reports\index.html      # Windows
 怎麼看報告，請看 [AUTOBAHN.zh-TW.md](../AUTOBAHN.zh-TW.md#怎麼看報告)。
 
 在 13.3.x、13.5.x 和 13.7.x 案例中，Autobahn 的 server 回應
-`client_max_window_bits=9`。wlgows 無法用小於 15 bit 的 window 送出，
-所以 handshake 會失敗，回傳 `ErrHandshakeResponseDeflateUnsupported`
-（函式庫的選擇）。
-
-接著 client 會用不含 `client_max_window_bits` 的提議，重跑一次這個案例。
-Autobahn 只保留最後一次的結果，所以 13.3.x 和 13.5.x 會顯示 Unimplemented。
-在 13.7.x，server 改成只回應 `client_no_context_takeover`，wlgows 可以使用。
-請看 [CLIENT.zh-TW.md](../../CLIENT.zh-TW.md)。
+`client_max_window_bits=9`。在這個 window 下，wlgows 只允許 `flate.HuffmanOnly`
+和 `flate.NoCompression`（函式庫的選擇），所以 client 在這些案例用
+`flate.HuffmanOnly` echo，其他案例用 `flate.BestSpeed`。請看
+[SENDING.zh-TW.md](../../SENDING.zh-TW.md#15-bit-以下的-window)。

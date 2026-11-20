@@ -30,7 +30,7 @@ as 14 bytes per connection. See
 - [Configuration](#configuration) — `SendDataConfig`, `StartLongDataTransmissionConfig`, `TransmitDataConfig`
 - [Whole messages](#whole-messages) — `SendText`, `SendBinary`, `SendData`
 - [Streaming](#streaming) — `Start`, `TransmitData`, `End`, `Release`
-- [Compression (permessage-deflate)](#compression-permessage-deflate) — [streaming deflated](#streaming-deflated) · [context takeover](#context-takeover) · [the result buffer](#memory-the-result-buffer)
+- [Compression (permessage-deflate)](#compression-permessage-deflate) — [windows under 15 bits](#windows-under-15-bits) · [streaming deflated](#streaming-deflated) · [context takeover](#context-takeover) · [the result buffer](#memory-the-result-buffer)
 - [Memory: the write buffer](#memory-the-write-buffer) — [changing it: `RenewWriter`](#changing-it-renewwriter) · [the lowest memory setup](#the-lowest-memory-setup) · [the smallest connection](#the-smallest-connection)
 - [Choosing a chunk size](#choosing-a-chunk-size)
 - [Faster and less memory: sending a string with `unsafe`](#faster-and-less-memory-sending-a-string-with-unsafe) — only if you know what you are doing
@@ -75,11 +75,16 @@ For `SendText`, `SendBinary` and `SendData`:
 **Always set `DeflateLevel` when you deflate.**
 
 - It is a `compress/flate` level, from `flate.HuffmanOnly` (-2) to
-  `flate.BestCompression` (9). `flate.BestSpeed` is a fair default.
+  `flate.BestCompression` (9). We recommend `flate.BestSpeed` for speed, and
+  `flate.DefaultCompression` if you want less memory: its writer is about
+  790 KB, against about 1170 KB at `flate.BestSpeed`. See
+  [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#memory).
 - Its zero value is `flate.NoCompression`. The message is then marked deflated
   but stored as it is, a few bytes larger.
 - A level outside the range is refused with `ErrDeflateLevelInvalid`. Nothing is
   sent, even when nothing would be deflated.
+- Under an agreed send window of 8 to 14 bits, only -2 and 0 are allowed. See
+  [Windows under 15 bits](#windows-under-15-bits).
 - It can change from one message to the next.
 
 ### `StartLongDataTransmissionConfig` and `TransmitDataConfig`
@@ -91,7 +96,10 @@ A stream splits the same choices in two:
 | `StartLongDataTransmissionConfig` | `DeflateIfAgreed` | `false` | Decides once, at Start, whether the whole message is deflated. |
 | `TransmitDataConfig` | `DeflateLevel` | 0, `flate.NoCompression` | The level of each chunk, including End's. |
 
-Set `DeflateLevel` as for `SendDataConfig`. It can change from chunk to chunk.
+Set `DeflateLevel` as for `SendDataConfig`. Under an agreed send window of 8
+to 14 bits, only -2 and 0 are allowed here too, see
+[Windows under 15 bits](#windows-under-15-bits). It can change from chunk to
+chunk.
 
 A stream has no `ChunkSize`: each `TransmitData` call is one frame. See
 [Streaming](#streaming) and [Streaming deflated](#streaming-deflated).
@@ -211,8 +219,12 @@ config.ChunkSize = 4 * 1024
 conn.SendBinary(data, config) // frames of 4 KB of the deflated bytes
 ```
 
-- **Always set `DeflateLevel`.** Its zero value stores the message as it is.
-  See [`SendDataConfig`](#senddataconfig).
+- **Always set `DeflateLevel`, unless you have a reason not to.** Its zero
+  value stores the message as it is: it saves nothing, and costs more time and
+  memory than not deflating, see [`SendDataConfig`](#senddataconfig). We
+  recommend `flate.BestSpeed` for speed, and `flate.DefaultCompression` if you
+  want less memory. Under an agreed send window of 8 to 14 bits, we recommend
+  `flate.HuffmanOnly`, see [Windows under 15 bits](#windows-under-15-bits).
 - **`ChunkSize` cuts the deflated bytes**, not your message. The whole message
   is deflated first, then split into frames.
 - **Ask only where it pays.** Deflate adds about 6 bytes of its own, and it
@@ -221,10 +233,59 @@ conn.SendBinary(data, config) // frames of 4 KB of the deflated bytes
 - **Control frames are never deflated** (RFC 7692 6), and `SendFrame` never
   deflates.
 
+### Windows under 15 bits
+
+The handshake agrees on the window this side sends with. It decides which
+`DeflateLevel` you may send at:
+
+| Agreed send window | Levels allowed |
+|---|---|
+| 15 bits (in the agreed config: 15, or 0) | every level, -2 to 9 |
+| 8 to 14 bits | `flate.HuffmanOnly` (-2) and `flate.NoCompression` (0) |
+
+Under 8 to 14 bits, any other level returns
+`ErrDeflateLevelUnsupportedForWindow`, and that message or chunk is not sent.
+Why only two levels is in
+[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#windows-under-15-bits).
+
+We recommend `flate.HuffmanOnly`. On text, its output is about 40% to 50%
+smaller than `flate.NoCompression`'s (Go 1.26).
+
+wlgows does not pick the `DeflateLevel` for you.
+`conn.GetPermessageDeflateAgreedConfig()` tells the agreed window. We
+recommend picking the `DeflateLevel` after the handshake, before the first
+send. 
+
+On a client:
+
+```go
+sendDataConfig := wlgows.SendDataConfig{
+	DeflateIfAgreed: true,
+	DeflateLevel:    flate.BestSpeed,
+}
+if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil && agreed.ClientMaxWindowBitsEnabled &&
+	agreed.ClientMaxWindowBits != 0 && agreed.ClientMaxWindowBits < 15 {
+	sendDataConfig.DeflateLevel = flate.HuffmanOnly
+}
+```
+
+On a server:
+
+```go
+sendDataConfig := wlgows.SendDataConfig{
+	DeflateIfAgreed: true,
+	DeflateLevel:    flate.BestSpeed,
+}
+if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil &&
+	agreed.ServerMaxWindowBits != 0 && agreed.ServerMaxWindowBits < 15 {
+	sendDataConfig.DeflateLevel = flate.HuffmanOnly
+}
+```
+
 ### Streaming deflated
 
-> **Not recommended.** For large data, compress it yourself before you send
-> it, not deflate. See
+> **It works, but we do not recommend it.** For large data, compress it
+> yourself before you send it, not deflate: it makes things simpler. See
 > [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md#large-data-compress-it-yourself).
 
 Start decides once for the whole message. The level is per chunk:
@@ -514,6 +575,7 @@ Receiving has the same trick the other way round: see
 | `ErrNotDataFrameOpcode`, `ErrContinuationFrameWithoutMsg` | `Start` or `SendData` got an opcode that cannot open a message. Nothing was locked. |
 | `ErrLongDataTransmissionNotStarted` | `TransmitData` or `End` with no transmission open. |
 | `ErrDeflateLevelInvalid` | `DeflateLevel` is not a `compress/flate` level. Nothing was sent. |
+| `ErrDeflateLevelUnsupportedForWindow` | `DeflateLevel` is not allowed under the agreed window of 8 to 14 bits, see [Windows under 15 bits](#windows-under-15-bits). That message or chunk was not sent. |
 | Anything else | The socket write failed. |
 
 **A failed socket write is final.** The write buffer keeps its first error, so

@@ -2,18 +2,17 @@
 
 # WLGOWS
 
-A simple, intuitive, powerful and fast WebSocket library for Go: zero
-allocations on send, and faster than gorilla/websocket almost everywhere
-([benchmarks](./BENCHMARK_COMPARISON.md)).
+A simple, easy-to-use, feature-rich, powerful, well-tested,
+well-documented, fast, and memory-efficient WebSocket library for Go. It's
+faster than gorilla/websocket in almost every
+[benchmark](./BENCHMARK_COMPARISON.md).
 It is quick to start with, and it does not hide how WebSocket works.
 
-The Quick Start below is a working echo server. `conn.NewStandardListener()`
-answers ping, pong and close for you. When you need more, you can stream a
-message larger than memory, handle each frame yourself, ping on your own
-schedule, or build a frame by hand. You run the handshake yourself, and every
-rule from RFC 6455 and RFC 7692 is documented.
+The [Quick Start](#quick-start) below is a working echo server.
 
-**Correctness first.** We want the fastest code, but only when it stays correct
+**Correctness first.** wlgows follows RFC 6455 and RFC 7692, with 0
+[Autobahn](./example/AUTOBAHN.md#our-result) failures on both sides. We want
+the fastest code and the least memory, but only when it stays correct
 and safe: no `unsafe`, and no skipped bounds checks. Your own code may go
 further if you know what you are doing. See
 [Faster and less memory](./SENDING.md#faster-and-less-memory-sending-a-string-with-unsafe).
@@ -27,11 +26,14 @@ further if you know what you are doing. See
 - **HTTP Hijacking** — `http.Server` or Gin
 - **Listener** — a read loop that validates against RFC 6455 and routes frames to your hooks
 - **Frame-level control** — build and send your own frames when you need to
-- **Streaming** — send a message larger than memory, fragment by fragment
+- **Streaming** — send or read a message larger than memory, frame by frame
 - **Compression** — permessage-deflate (RFC 7692), on both sides. See [PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md)
-- **Memory in your hands** — hand each connection its own write buffer, from 14 bytes up, and swap it at any time. Pick the frame size on every send. See [SENDING.md](./SENDING.md#you-are-in-control)
+- **Memory in your hands** — pick each connection's write buffer (from 14 bytes, swappable at any time) and read buffer (from 16 bytes). See [SENDING.md](./SENDING.md#you-are-in-control) and [READING.md](./READING.md#memory-the-connections-read-buffer)
+- **Memory protection** — cap the bytes a peer can send with `MaxFrameSize` and `MaxDataFramesSize`, and the size after decompressing with `NewSizeLimitReader`. See [READING.md](./READING.md#limiting-the-size)
 - **Keepalive** — ping on an interval, with a payload you choose per ping
 - **Concurrent sending** — lock-guarded, and control frames are never stuck behind a long message
+
+And even more, see [Guides](#guides).
 
 ## Contents
 
@@ -39,9 +41,9 @@ further if you know what you are doing. See
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client)
 - [Guides](#guides) — server, client, reading, the Listener, sending, compression, benchmarks
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
-- [Coming from v6](#coming-from-v6)
 - [Testing](#testing)
 - [License](#license)
+- [Coming from v6](#coming-from-v6)
 
 ## Installation
 
@@ -234,7 +236,7 @@ none (RFC 6455 5.1).
 
 | Guide | What is in it |
 |---|---|
-| **[SERVER.md](./SERVER.md)** | Accepting a connection, the handshake and its refusals, HTTP hijacking from `net/http` or Gin, TLS, subprotocols |
+| **[SERVER.md](./SERVER.md)** | Accepting a connection, the handshake and its refusals, HTTP hijacking from `net/http` or Gin, TLS, subprotocols, compression |
 | **[CLIENT.md](./CLIENT.md)** | Dialing, TLS, the handshake, adding headers, subprotocols, compression |
 | **[READING.md](./READING.md)** | Reading a message: limiting its size, errors and their close codes, compressed messages, one frame at a time, the read buffer |
 | **[LISTENER.md](./LISTENER.md)** | The read loop: the standard Listener, hooks, limits, errors, noticing a dead peer, pausing |
@@ -287,6 +289,19 @@ Each example uses a [`Listener`](./LISTENER.md), which answers pings and
 closes and refuses bad frames. What is left in each file is the part you write
 yourself: the hooks.
 
+## Testing
+
+97.6% statement coverage. Autobahn: 510 OK and 0 failures, as a server and as
+a client. See [Autobahn](./example/AUTOBAHN.md#our-result).
+
+```bash
+go test -race ./...
+```
+
+## License
+
+MIT
+
 ## Coming from v6
 
 v7 reads frame headers straight from your `bufio.Reader`, so a frame allocates
@@ -319,10 +334,14 @@ compile:
 | `wlgows.ClientHandShake(netConn, reader, writer, request)` | `wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})` |
 | your own `ListenerConn` with `GetNextFrame(max)` | `LockRead()`, `UnlockRead()`, `GetNextFrameHeader()` and `ReadFramePayload(frame)`, as `*Conn` has them |
 
-`wlgows.Dial(url, tlsConfig)` still works. `DialContext` is new: it also takes
-a context and a `*net.Dialer`. See [CLIENT.md](./CLIENT.md#dialing).
+`wlgows.Dial(url, tlsConfig)` still works.
 
-Behaviour that changes without a compile error:
+New in v7: compression (permessage-deflate), subprotocols, `DialContext`,
+`ReadMessageInto` and `NewSizeLimitReader`. See the [Guides](#guides).
+Compression and subprotocols are off by default: a zero `ClientHandShakeConfig`
+offers neither, and a zero `ServerHandShakeConfig` agrees to neither.
+
+Behavior that changes without a compile error:
 
 - **`io.EOF` now only means the stream ended between frames.** A stream that
   ends after a frame's first byte returns `io.ErrUnexpectedEOF`. In v6 a frame
@@ -367,7 +386,7 @@ Behaviour that changes without a compile error:
 - **`NewStandardListener` now sets limits.** 4 KB per message and per frame, 16
   frames, and a 60 second read timeout. A larger message ends `Listen` with
   `ErrFrameByteLengthExceeded` (1009), and an idle peer times out. Raise them as
-  the quick start does, and ping at 30 seconds or less. In v6 it set no limit.
+  the [Quick Start](#quick-start) does, and ping at 30 seconds or less. In v6 it set no limit.
 - **`RFC6455UnknownHook` stops `Listen` with `ErrReservedOpcode`.** In v6 it
   paused with `nil`.
 - **A payload length not in its shortest form returns
@@ -376,27 +395,3 @@ Behaviour that changes without a compile error:
 - **`ServerHandShake` refuses a `Sec-WebSocket-Key` that is not base64 of 16
   bytes**, with 400 and `ErrHttpSecWebSocketKeyInvalid`. In v6 any value was
   accepted.
-
-## Testing
-
-```bash
-go test ./...                                  # full suite
-go test -race ./...                            # the integration tests spawn goroutines
-go test -cover .                               # 97.6% of statements
-go test -bench BenchmarkDataFramesAssembly .   # benchmarks, which plain `go test` skips
-```
-
-One `_test.go` per source file, all in package `wlgows`, so the `di` seams are
-reachable. Every function that does I/O or uses randomness is a thin exported
-wrapper over a function taking a `di` struct of function values, and the tests
-target that function with fakes. Three files have no source counterpart:
-
-| File | Contents |
-|---|---|
-| [`Benchmark_test.go`](./Benchmark_test.go) | Send and read benchmarks, and `TestBenchmarkReport`, behind BENCHMARK_COMPARISON.md |
-| [`Fakes_test.go`](./Fakes_test.go) | Shared fakes, such as `fakeConn`, an in-memory `net.Conn` |
-| [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | `Listen` end to end over a real `net.Pipe`, with **no** `di` substitution |
-
-## License
-
-MIT

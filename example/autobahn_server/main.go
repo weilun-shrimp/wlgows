@@ -37,13 +37,6 @@ const (
 	maxHeaderBytes    = 16 * 1024 // 16 KB
 )
 
-// Echoes are deflated when the handshake agreed permessage-deflate (RFC 7692).
-// DeflateLevel must be set: its zero is flate.NoCompression.
-var sendDataConfig = wlgows.SendDataConfig{
-	DeflateIfAgreed: true,
-	DeflateLevel:    flate.DefaultCompression,
-}
-
 func main() {
 	server := &http.Server{
 		Addr:              service,
@@ -72,10 +65,9 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer netConn.Close()
 
-	// permessage-deflate (RFC 7692). One answer with every field zero accepts
-	// any offer this package can serve, so the cases 12.x and 13.x run. An offer
-	// of server_max_window_bits under 15 (RFC 7692 7.1.2.1) is skipped (library
-	// choice), so cases 13.3.x and 13.5.x run without compression.
+	// permessage-deflate (RFC 7692). One response config with every field zero
+	// accepts any valid offer, so the cases 12.x and 13.x run. An offered
+	// server_max_window_bits is kept as it is (RFC 7692 7.1.2.1).
 	handShakeConfig := wlgows.ServerHandShakeConfig{
 		PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
 	}
@@ -83,6 +75,21 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Println("error: handshake:", err)
 		return
+	}
+
+	// Echoes are deflated at flate.BestSpeed when the handshake agreed
+	// permessage-deflate (RFC 7692). Under a server_max_window_bits of 8 to 14,
+	// as in the cases 13.3.x, 13.5.x and 13.7.x, wlgows allows only
+	// flate.NoCompression and flate.HuffmanOnly (library choice), so the
+	// echoes use flate.HuffmanOnly. ServerMaxWindowBits 0 means 15 bits
+	// (RFC 7692 7.1.2.1).
+	sendDataConfig := wlgows.SendDataConfig{
+		DeflateIfAgreed: true,
+		DeflateLevel:    flate.BestSpeed,
+	}
+	if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil &&
+		agreed.ServerMaxWindowBits != 0 && agreed.ServerMaxWindowBits < 15 {
+		sendDataConfig.DeflateLevel = flate.HuffmanOnly
 	}
 
 	// Ping, pong, close and reserved opcodes are answered for you.

@@ -187,6 +187,10 @@ func (c *Conn) ReadFramePayload(f *Frame) error {
 // GetPermessageDeflateAgreedConfig is the permessage-deflate config the
 // handshake agreed, nil if none was. It is a copy, so changing it changes
 // nothing here. Pass it to NewListenerConfig.
+//
+// On a client it also holds the client's own promises from its offers:
+// client_no_context_takeover and client_max_window_bits. They are kept even
+// when the response left them out. See ValidateHandShakeResponseExtensions.
 func (c *Conn) GetPermessageDeflateAgreedConfig() *PermessageDeflateConfig {
 	if c.permessageDeflateAgreedConfig == nil {
 		return nil

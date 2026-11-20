@@ -167,6 +167,15 @@ var (
 	// Nothing is sent.
 	ErrDeflateLevelInvalid = errors.New("deflate level is not a compress/flate level")
 
+	// ErrDeflateLevelUnsupportedForWindow is a DeflateLevel wlgows does not
+	// support under this side's agreed send window: server_max_window_bits on
+	// a server, client_max_window_bits on a client (RFC 7692 7.1.2). At 8 to
+	// 14 bits, wlgows only supports flate.NoCompression (0) and
+	// flate.HuffmanOnly (-2): compress/flate refers back up to 32 KB at other
+	// levels, further than the window allows (library choice). The message or
+	// chunk is not sent.
+	ErrDeflateLevelUnsupportedForWindow = errors.New("deflate level is not supported under the agreed window")
+
 	// ErrInflateDataInvalid is a compressed message that does not inflate:
 	// the peer sent a corrupt or truncated deflate stream (RFC 7692 7.2.2).
 	// It wraps compress/flate's error — answer with close code 1007.
@@ -248,11 +257,6 @@ var (
 	// server must decline such an offer (RFC 7692 7).
 	ErrHandshakeRequestDeflateWindowBitsInvalid = errors.New("permessage-deflate window bits are not 0 or 8 to 15")
 
-	// ErrHandshakeRequestDeflateUnsupported is a PermessageDeflateConfig with
-	// ClientMaxWindowBitsEnabled and ClientMaxWindowBits 8 to 14 (library
-	// choice). Go's compress/flate cannot send with a window under 15 bits.
-	ErrHandshakeRequestDeflateUnsupported = errors.New("permessage-deflate offer with client_max_window_bits under 15 is not supported")
-
 	// The following are ValidateHandShakeResponse rejecting the server's
 	// opening handshake response against RFC 6455 4.1.
 	ErrHandshakeResponseStatusCodeInvalid       = errors.New("handshake response status code is not 101")
@@ -276,11 +280,9 @@ var (
 	// (RFC 6455 4.1, RFC 7692 5). ExtensionNotOffered is an extension the
 	// request did not offer, a permessage-deflate answer no single offer
 	// allows, or permessage-deflate accepted twice. DeflateParamsInvalid is a
-	// param RFC 7692 7 forbids. DeflateUnsupported is a client_max_window_bits
-	// under 15, a valid answer wlgows cannot follow (library choice).
+	// param RFC 7692 7 forbids.
 	ErrHandshakeResponseExtensionNotOffered  = errors.New("handshake response Sec-WebSocket-Extensions is not what the client offered")
 	ErrHandshakeResponseDeflateParamsInvalid = errors.New("handshake response permessage-deflate params are invalid")
-	ErrHandshakeResponseDeflateUnsupported   = errors.New("handshake response permessage-deflate params are not supported")
 )
 
 // server handshake
@@ -289,13 +291,10 @@ var (
 	// *http.Response.
 	ErrHandshakeResponseNil = errors.New("handshake response is nil")
 
-	// The following are ValidateServerDeflateConfig rejecting
-	// ServerHandShakeConfig.PermessageDeflates. DeflateConfigInvalid would put a
-	// param RFC 7692 7 forbids in the response. DeflateConfigUnsupported is a
-	// window under 15 bits for the server, which Go's compress/flate cannot
-	// send with (library choice).
-	ErrHandshakeServerDeflateConfigInvalid     = errors.New("server permessage-deflate config is invalid")
-	ErrHandshakeServerDeflateConfigUnsupported = errors.New("server permessage-deflate config is not supported")
+	// ErrHandshakeServerDeflateConfigInvalid is ValidateServerDeflateConfig
+	// rejecting one of ServerHandShakeConfig.PermessageDeflates: it would put a
+	// param RFC 7692 7 forbids in the response.
+	ErrHandshakeServerDeflateConfigInvalid = errors.New("server permessage-deflate config is invalid")
 )
 
 /*

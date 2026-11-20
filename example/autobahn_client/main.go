@@ -11,7 +11,6 @@ import (
 	"bufio"
 	"compress/flate"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -48,26 +47,12 @@ const (
 )
 
 // permessage-deflate (RFC 7692). The offer has client_max_window_bits with no
-// value (RFC 7692 7.1.2.2), so the cases 13.4.x and 13.6.x run.
+// value, so the server may limit the client's window (RFC 7692 7.1.2.2). The
+// cases 13.3.x to 13.6.x need that.
 var handShakeConfig = wlgows.ClientHandShakeConfig{
 	PermessageDeflates: []wlgows.PermessageDeflateConfig{
 		{ClientMaxWindowBitsEnabled: true},
 	},
-}
-
-// A response of client_max_window_bits under 15 fails the handshake with
-// ErrHandshakeResponseDeflateUnsupported (library choice). Then runCase
-// dials again with this offer, which has no client_max_window_bits, so the
-// server cannot send it (RFC 7692 7.1.2.2).
-var retryHandShakeConfig = wlgows.ClientHandShakeConfig{
-	PermessageDeflates: []wlgows.PermessageDeflateConfig{{}},
-}
-
-// Echoes are deflated when the handshake agreed permessage-deflate (RFC 7692).
-// DeflateLevel must be set: its zero is flate.NoCompression.
-var sendDataConfig = wlgows.SendDataConfig{
-	DeflateIfAgreed: true,
-	DeflateLevel:    flate.DefaultCompression,
 }
 
 func main() {
@@ -120,21 +105,29 @@ func readCaseCount() (int, error) {
 // case number in the report, such as 13.3.1. Every message goes back until
 // Autobahn closes. A failure is printed, and the next case runs: the report
 // shows the result.
-//
-// On ErrHandshakeResponseDeflateUnsupported, the case runs again with
-// retryHandShakeConfig. The first run is logged as Fail. Autobahn keeps the
-// last result of a case, so the report shows the second run.
 func runCase(caseIndex int) {
 	query := url.Values{"case": {strconv.Itoa(caseIndex)}, "agent": {agent}}
 	conn, err := connect("/runCase", query, handShakeConfig)
-	if errors.Is(err, wlgows.ErrHandshakeResponseDeflateUnsupported) {
-		conn, err = connect("/runCase", query, retryHandShakeConfig)
-	}
 	if err != nil {
 		fmt.Printf("error: case index %d: %v\n", caseIndex, err)
 		return
 	}
 	defer conn.Close()
+
+	// Echoes are deflated at flate.BestSpeed when the handshake agreed
+	// permessage-deflate (RFC 7692). Under a client_max_window_bits of 8 to 14,
+	// as in the cases 13.3.x, 13.5.x and 13.7.x, wlgows allows only
+	// flate.NoCompression and flate.HuffmanOnly (library choice), so the
+	// echoes use flate.HuffmanOnly. ClientMaxWindowBitsEnabled false or
+	// ClientMaxWindowBits 0 means 15 bits (RFC 7692 7.1.2.2).
+	sendDataConfig := wlgows.SendDataConfig{
+		DeflateIfAgreed: true,
+		DeflateLevel:    flate.BestSpeed,
+	}
+	if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil && agreed.ClientMaxWindowBitsEnabled &&
+		agreed.ClientMaxWindowBits != 0 && agreed.ClientMaxWindowBits < 15 {
+		sendDataConfig.DeflateLevel = flate.HuffmanOnly
+	}
 
 	listener := newListener(conn)
 	config := listener.GetConfig()

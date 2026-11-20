@@ -9,8 +9,7 @@ to read the report.
 
 Everything runs on your machine. Autobahn runs in Docker and acts as the
 server, in its `fuzzingserver` mode, on port 9001. `main.go`, an echo client,
-connects to it once for each case, or twice for some 13.x cases (see
-[The report](#the-report)).
+connects to it once for each case.
 
 ## Run
 
@@ -64,10 +63,7 @@ start reports\index.html      # Windows
 How to read it is in [AUTOBAHN.md](../AUTOBAHN.md#reading-the-report).
 
 In the cases 13.3.x, 13.5.x and 13.7.x, Autobahn's server responds with
-`client_max_window_bits=9`. wlgows cannot send with a window under 15 bits, so
-the handshake fails with `ErrHandshakeResponseDeflateUnsupported` (library
-choice). The client then runs the case again with an offer that has no
-`client_max_window_bits`. Autobahn keeps the last result, so 13.3.x and 13.5.x
-show Unimplemented. In 13.7.x, the server then responds with
-`client_no_context_takeover` only, which wlgows can use. See
-[CLIENT.md](../../CLIENT.md).
+`client_max_window_bits=9`. Under that window wlgows allows only
+`flate.HuffmanOnly` and `flate.NoCompression` (library choice), so the client
+echoes at `flate.HuffmanOnly` there, and at `flate.BestSpeed` otherwise. See
+[SENDING.md](../../SENDING.md#windows-under-15-bits).

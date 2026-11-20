@@ -3,6 +3,7 @@ package wlgows
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -597,7 +598,6 @@ func TestValidateServerDeflateConfig(t *testing.T) {
 		server_config PermessageDeflateConfig
 	}{
 		{name: "the zero value", server_config: PermessageDeflateConfig{}},
-		{name: "ServerMaxWindowBits 15", server_config: PermessageDeflateConfig{ServerMaxWindowBits: 15}},
 		{
 			name:          "ClientMaxWindowBitsEnabled with ClientMaxWindowBits 8",
 			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 8},
@@ -644,12 +644,11 @@ func TestValidateServerDeflateConfig(t *testing.T) {
 		}
 	}
 
-	// Library choice: Go's compress/flate cannot send with a window under 15
-	// bits.
-	for bits := uint(8); bits <= 14; bits++ {
+	// RFC 7692 7.1.2.1: window bits are 8 to 15.
+	for bits := uint(8); bits <= 15; bits++ {
 		err := ValidateServerDeflateConfig(PermessageDeflateConfig{ServerMaxWindowBits: bits})
-		if !errors.Is(err, ErrHandshakeServerDeflateConfigUnsupported) {
-			t.Errorf("ServerMaxWindowBits %d: err = %v, want %v", bits, err, ErrHandshakeServerDeflateConfigUnsupported)
+		if err != nil {
+			t.Errorf("ServerMaxWindowBits %d: err = %v, want nil", bits, err)
 		}
 	}
 }
@@ -685,10 +684,12 @@ func TestAcceptDeflateOffer(t *testing.T) {
 		},
 		{
 			// RFC 7692 7.1.1.2: only the accepted offer's hint is sent back.
+			// The first offer is skipped for its missing client_max_window_bits
+			// (RFC 7692 7.1.2.2).
 			name:          "a skipped offer's client_no_context_takeover is not sent back",
-			offers:        []string{"permessage-deflate; client_no_context_takeover; server_max_window_bits=14, permessage-deflate"},
-			server_config: PermessageDeflateConfig{},
-			want:          PermessageDeflateConfig{},
+			offers:        []string{"permessage-deflate; client_no_context_takeover, permessage-deflate; client_max_window_bits"},
+			server_config: PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 14},
+			want:          PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 14},
 		},
 		{
 			// RFC 7692 7.1.2.1.
@@ -705,11 +706,32 @@ func TestAcceptDeflateOffer(t *testing.T) {
 			want:          PermessageDeflateConfig{ServerMaxWindowBits: 15},
 		},
 		{
+			// RFC 7692 7.1.2.1: the server may limit itself without an offer.
+			name:          "ServerMaxWindowBits 9 is kept without an offer",
+			offers:        []string{"permessage-deflate"},
+			server_config: PermessageDeflateConfig{ServerMaxWindowBits: 9},
+			want:          PermessageDeflateConfig{ServerMaxWindowBits: 9},
+		},
+		{
 			// RFC 7692 7.1.2.1.
 			name:          "ServerMaxWindowBits equal to the offer's is kept",
 			offers:        []string{"permessage-deflate; server_max_window_bits=15"},
 			server_config: PermessageDeflateConfig{ServerMaxWindowBits: 15},
 			want:          PermessageDeflateConfig{ServerMaxWindowBits: 15},
+		},
+		{
+			// RFC 7692 7.1.2.1: the same or a smaller value than the offer's.
+			name:          "ServerMaxWindowBits 15 is lowered to an offered server_max_window_bits=10",
+			offers:        []string{"permessage-deflate; server_max_window_bits=10"},
+			server_config: PermessageDeflateConfig{ServerMaxWindowBits: 15},
+			want:          PermessageDeflateConfig{ServerMaxWindowBits: 10},
+		},
+		{
+			// RFC 7692 7.1.2.1.
+			name:          "ServerMaxWindowBits 9 under the offer's 12 is kept",
+			offers:        []string{"permessage-deflate; server_max_window_bits=12"},
+			server_config: PermessageDeflateConfig{ServerMaxWindowBits: 9},
+			want:          PermessageDeflateConfig{ServerMaxWindowBits: 9},
 		},
 		{
 			// RFC 7692 7.1.2.2: the offer's value is not sent back.
@@ -762,12 +784,11 @@ func TestAcceptDeflateOffer(t *testing.T) {
 			want:          PermessageDeflateConfig{ServerNoContextTakeover: true},
 		},
 		{
-			// Library choice: Go's compress/flate cannot send with a window
-			// under 15 bits.
-			name:          "a server_max_window_bits under 15 is skipped for the next offer",
+			// RFC 7692 7.1.2.1: the answer carries the offer's value.
+			name:          "an offered server_max_window_bits=14 is added, and the next offer is not used",
 			offers:        []string{"permessage-deflate; server_max_window_bits=14, permessage-deflate"},
 			server_config: PermessageDeflateConfig{},
-			want:          PermessageDeflateConfig{},
+			want:          PermessageDeflateConfig{ServerMaxWindowBits: 14},
 		},
 		{
 			// RFC 7692 7.1.2.2.
@@ -795,6 +816,18 @@ func TestAcceptDeflateOffer(t *testing.T) {
 		}
 	}
 
+	// RFC 7692 7.1.2.1: every offered server_max_window_bits from 8 to 15 is
+	// accepted with the offer's value.
+	for bits := uint(8); bits <= 15; bits++ {
+		request := validClientHandShakeRequest(t)
+		request.Header.Add("Sec-WebSocket-Extensions", fmt.Sprintf("permessage-deflate; server_max_window_bits=%d", bits))
+		got := AcceptDeflateOffer(PermessageDeflateConfig{}, request)
+		want := PermessageDeflateConfig{ServerMaxWindowBits: bits}
+		if got == nil || *got != want {
+			t.Errorf("server_max_window_bits=%d: AcceptDeflateOffer = %+v, want %+v", bits, got, want)
+		}
+	}
+
 	declines := []struct {
 		name          string
 		offers        []string
@@ -802,13 +835,6 @@ func TestAcceptDeflateOffer(t *testing.T) {
 	}{
 		{name: "no Sec-WebSocket-Extensions", offers: nil, server_config: PermessageDeflateConfig{}},
 		{name: "only another extension", offers: []string{"x-other"}, server_config: PermessageDeflateConfig{}},
-		{
-			// RFC 7692 7.1.2.1: the offer lowers ServerMaxWindowBits under 15,
-			// which Go's compress/flate cannot send with (library choice).
-			name:          "ServerMaxWindowBits 15 against an offered server_max_window_bits=10",
-			offers:        []string{"permessage-deflate; server_max_window_bits=10"},
-			server_config: PermessageDeflateConfig{ServerMaxWindowBits: 15},
-		},
 	}
 	for _, testCase := range declines {
 		request := validClientHandShakeRequest(t)

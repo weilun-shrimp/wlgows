@@ -144,7 +144,7 @@ one, and adds what `config` asks for.
 | Upgraded | the `Conn` | the 101 | `nil` |
 | `request` is `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
 | The request URL has no host | `nil` | `nil` | `ErrUrlHostEmpty` |
-| `config` has an offer wlgows refuses — see [Compression](#compression-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateUnsupported` or `ErrHandshakeRequestDeflateWindowBitsInvalid` |
+| An offer in `config` has window bits that are not valid (RFC 7692 7.1.2) — see [Compression](#compression-permessage-deflate) | `nil` | `nil` | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
 | The request could not be sent | `nil` | `nil` | why |
 | The answer could not be read | `nil` | `nil` | why |
 | The server refused, or answered wrong | `nil` | its answer | why |
@@ -294,20 +294,18 @@ config := wlgows.ClientHandShakeConfig{
 }
 ```
 
+Your offers decide how small the server may make the client's window.
+`ClientMaxWindowBitsEnabled` false in every offer keeps it at 15 bits. With it
+true, the server may lower it, down to 8 bits (RFC 7692 7.1.2.2).
+
 Setting `Sec-WebSocket-Extensions` by hand is not recommended. A header you
 write is sent as it is, typos and all. The config is checked before the request
 is sent, so a misuse comes back as an error instead of going on the wire.
-`ClientHandShake` refuses two configs, and leaves `netConn` open:
+`ClientHandShake` refuses one config, and leaves `netConn` open:
 
 | Config | Error |
 |---|---|
-| `ClientMaxWindowBitsEnabled` true, `ClientMaxWindowBits` 8 to 14 | `ErrHandshakeRequestDeflateUnsupported` |
 | `ServerMaxWindowBits`, or `ClientMaxWindowBits` with `ClientMaxWindowBitsEnabled`, not 0 or 8 to 15 (RFC 7692 7.1.2) | `ErrHandshakeRequestDeflateWindowBitsInvalid` |
-
-The first is a library choice. An offer of 8 to 14 tells the server the client
-will send with a window that small, and wlgows cannot (see
-[Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits)).
-`ClientMaxWindowBits` 0 (no value) or 15 is sent.
 
 The server accepts one offer, or none. No permessage-deflate in the answer is
 not an error: the connection opens without compression. An answer no offer
@@ -321,24 +319,29 @@ fails the connection (RFC 6455 4.1, RFC 7692 5):
 | `client_max_window_bits=N` when no offer had it (RFC 7692 7.1.2.2) | `ErrHandshakeResponseExtensionNotOffered` |
 | params no single offer allows, such as a `server_max_window_bits` above the offer's, or no `server_no_context_takeover` or `server_max_window_bits` when the offer asked for it (RFC 7692 7.1.1.1, 7.1.2.1) | `ErrHandshakeResponseExtensionNotOffered` |
 | an invalid entry | `ErrHandshakeResponseDeflateParamsInvalid` |
-| `client_max_window_bits` under 15, which wlgows cannot send with (library choice) | `ErrHandshakeResponseDeflateUnsupported` |
 
 An extension other than permessage-deflate that you offer in the request header
 yourself is not an error when the server accepts it. wlgows does not speak it,
 so following it is up to you.
 
-`ClientHandShake` does not return what was agreed. Get it with
-`ValidateHandShakeResponseExtensions`:
+`conn.GetPermessageDeflateAgreedConfig()` is what was agreed, or `nil` when the
+server declined:
 
 ```go
-agreed, err := wlgows.ValidateHandShakeResponseExtensions(resp, request) // agreed is nil when the server declined
+agreed := conn.GetPermessageDeflateAgreedConfig() // nil when the server declined
 ```
 
-`agreed` is a `*PermessageDeflateConfig`: what both sides follow, not a copy
-of the answer. If an offer that allows the answer has
-`client_no_context_takeover`, `agreed` has it too, even when the answer
-leaves it out. That offer was the client's promise
+`agreed` is what both sides follow, not a copy of the answer. If an offer that
+allows the answer has `client_no_context_takeover`, `agreed` has it too, even
+when the answer leaves it out. That offer was the client's promise
 (RFC 7692 7.1.1.2), and the answer does not say which offer it took.
+`client_max_window_bits` is kept the same way: `agreed.ClientMaxWindowBits` is
+the answer's value, or else the smallest value among those offers.
+
+Pick the `DeflateLevel` by `agreed.ClientMaxWindowBits`. 0, or
+`ClientMaxWindowBitsEnabled` false, means 15 bits: wlgows sends at any
+`DeflateLevel`, -2 to 9. With 8 to 14 bits, only at -2 (`flate.HuffmanOnly`) and 0
+(`flate.NoCompression`). See [SENDING.md](./SENDING.md#windows-under-15-bits).
 
 ## Running the handshake yourself
 

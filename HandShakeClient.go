@@ -60,11 +60,11 @@ type ClientHandShakeConfig struct {
 	// PermessageDeflates are permessage-deflate offers, in order of preference
 	// (RFC 7692 5). Each one is sent as one offer.
 	//
-	// ClientMaxWindowBitsEnabled is sent with ClientMaxWindowBits 0 or 15.
-	// 8 to 14 returns ErrHandshakeRequestDeflateUnsupported (library choice):
-	// Go's compress/flate cannot send with a window under 15 bits. For the
-	// same reason, a server response under 15 fails the handshake with
-	// ErrHandshakeResponseDeflateUnsupported.
+	// ClientMaxWindowBitsEnabled is sent with ClientMaxWindowBits 0 or 8 to 15.
+	// When the offer or the response limits the client to 8 to 14 bits, the
+	// client may only deflate at DeflateLevel flate.NoCompression or
+	// flate.HuffmanOnly, see SendDataConfig.DeflateLevel and
+	// TransmitDataConfig.DeflateLevel.
 	PermessageDeflates []PermessageDeflateConfig
 }
 
@@ -185,12 +185,6 @@ func addReqDeflateOffers(req *http.Request, premsg_configs []PermessageDeflateCo
 			if bits != 0 && (bits < 8 || bits > 15) {
 				return fmt.Errorf("UpgradeRequest: client window bits %d: %w", bits, ErrHandshakeRequestDeflateWindowBitsInvalid)
 			}
-			// Library choice: an offer value is the most the client will use
-			// (RFC 7692 7.1.2.2). Go's compress/flate cannot keep a window
-			// under 15 bits, so 8 to 14 is a promise the client cannot keep.
-			if bits != 0 && bits < 15 {
-				return fmt.Errorf("UpgradeRequest: client window bits %d: %w", bits, ErrHandshakeRequestDeflateUnsupported)
-			}
 		}
 		// RFC 7692 7.1.2.1: window bits are 8 to 15. 0 is not sent.
 		if bits := premsg_config.ServerMaxWindowBits; bits != 0 && (bits < 8 || bits > 15) {
@@ -310,8 +304,7 @@ func ClientMustFailConnection(err error) bool {
 		errors.Is(err, ErrHandshakeResponseSubprotocolMultiple) ||
 		errors.Is(err, ErrHandshakeResponseSubprotocolNotOffered) ||
 		errors.Is(err, ErrHandshakeResponseExtensionNotOffered) ||
-		errors.Is(err, ErrHandshakeResponseDeflateParamsInvalid) ||
-		errors.Is(err, ErrHandshakeResponseDeflateUnsupported)
+		errors.Is(err, ErrHandshakeResponseDeflateParamsInvalid)
 }
 
 /*
@@ -458,13 +451,12 @@ server_no_context_takeover, client_no_context_takeover and
 server_max_window_bits may be added without an offer (RFC 7692 7.1.1.1,
 7.1.1.2, 7.1.2.1).
 
-A client_max_window_bits under 15 that an offer allows returns
-ErrHandshakeResponseDeflateUnsupported (library choice): Go's compress/flate
-cannot send with a window that small.
+It returns server_config with the client's own promises added, from any offer
+that allows the response, even when the response leaves them out:
 
-It returns server_config with the client's own promises added: a
-client_no_context_takeover from any offer that allows the response binds the
-client, even when the response leaves it out (RFC 7692 7.1.1.2).
+  - client_no_context_takeover (RFC 7692 7.1.1.2).
+  - the smallest client_max_window_bits value, when the response has none
+    (RFC 7692 7.1.2.2).
 */
 func validateRespDeflateExtWithReq(server_config PermessageDeflateConfig, req *http.Request) (agreed_config PermessageDeflateConfig, err error) {
 	agreed_config = server_config
@@ -496,23 +488,23 @@ func validateRespDeflateExtWithReq(server_config PermessageDeflateConfig, req *h
 		}
 		allowed = true
 		// The response does not say which offer it accepted, so the client
-		// downgrades for safety: if any offer that allows it had
-		// client_no_context_takeover, the client drops context. Dropping
-		// context is always safe for a sender. Keeping it could break a server
-		// that relied on the hint. No later offer can change this.
+		// keeps the promises of every offer that allows it. Dropping context
+		// and a smaller window are always safe for a sender. Breaking a promise
+		// could break a server that relied on it.
 		if offer.ClientNoContextTakeover {
 			agreed_config.ClientNoContextTakeover = true
-			break
+		}
+		// RFC 7692 7.1.2.2: an offered value binds the client even when the
+		// response leaves client_max_window_bits out. A value in the response
+		// is already at or under every allowing offer's value.
+		if !server_config.ClientMaxWindowBitsEnabled && offer.ClientMaxWindowBits != 0 &&
+			(agreed_config.ClientMaxWindowBits == 0 || offer.ClientMaxWindowBits < agreed_config.ClientMaxWindowBits) {
+			agreed_config.ClientMaxWindowBitsEnabled = true
+			agreed_config.ClientMaxWindowBits = offer.ClientMaxWindowBits
 		}
 	}
 	if !allowed {
 		return PermessageDeflateConfig{}, fmt.Errorf("permessage-deflate response matches no offer: %w", ErrHandshakeResponseExtensionNotOffered)
-	}
-	// Library choice: the client must not send with a window larger than the
-	// response's (RFC 7692 7.1.2.2), and Go's compress/flate cannot keep one
-	// under 15 bits.
-	if agreed_config.ClientMaxWindowBitsEnabled && agreed_config.ClientMaxWindowBits < 15 {
-		return PermessageDeflateConfig{}, fmt.Errorf("client_max_window_bits %d: %w", agreed_config.ClientMaxWindowBits, ErrHandshakeResponseDeflateUnsupported)
 	}
 	return agreed_config, nil
 }

@@ -13,7 +13,7 @@ compression.
 - [HTTP hijacking](#http-hijacking) — `net/http` and Gin
 - [TLS (wss://)](#tls-wss)
 - [Subprotocols](#subprotocols) — [picking one](#picking-one) · [requiring one](#requiring-one) · [what was sent](#what-was-sent)
-- [Compression (permessage-deflate)](#compression-permessage-deflate) — [which answer is picked](#which-answer-is-picked) · [picking by your own rule](#picking-by-your-own-rule) · [checking the config](#checking-the-config)
+- [Compression (permessage-deflate)](#compression-permessage-deflate) — [which answer is picked](#which-answer-is-picked) · [picking by your own rule](#picking-by-your-own-rule) · [keeping a window you want](#keeping-a-window-you-want) · [what was agreed](#what-was-agreed) · [checking the config](#checking-the-config)
 - [Checking Origin](#checking-origin) — for a server browsers reach
 - [Running the handshake yourself](#running-the-handshake-yourself) — not recommended
 - [Next: reading and sending](#next-reading-and-sending)
@@ -128,7 +128,7 @@ without it. You can check `PermessageDeflates` before any handshake, see
 | The answer could not be written | `nil` | the answer | the write error |
 | Upgraded, but the writer could not be flushed | `nil` | the 101 that went out | the write error |
 | `request` is `nil` | `nil` | `nil` | `ErrHandshakeRequestNil` |
-| a config in `config.PermessageDeflates` is refused — see [Compression](#checking-the-config) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` or `ErrHandshakeServerDeflateConfigUnsupported` |
+| a config in `config.PermessageDeflates` has window bits that are not valid (RFC 7692 7.1.2) — see [Compression](#checking-the-config) | `nil` | `nil` | `ErrHandshakeServerDeflateConfigInvalid` |
 
 `conn` is `nil` whenever `err` is not. `resp` is what reached the wire, so you
 can log it. A `nil` `resp` means nothing was sent.
@@ -375,7 +375,8 @@ How the server reads each field:
 |---|---|
 | `ServerNoContextTakeover` true | The server sends without context. It is also set when the offer asks for it (RFC 7692 7.1.1.1). |
 | `ClientNoContextTakeover` true | The server asks the client to send without context (RFC 7692 7.1.1.2). Then the server keeps nothing between the client's messages. It is also set when the offer has it. |
-| `ServerMaxWindowBits` | 0 or 15. 8 to 14 is refused, see [Checking the config](#checking-the-config). |
+| `ServerMaxWindowBits` 0 | The server's window is 15 bits, unless the offer asks for less (RFC 7692 7.1.2.1). |
+| `ServerMaxWindowBits` 8 to 15 | The server's window is at most this. The offer may lower it (RFC 7692 7.1.2.1). |
 | `ClientMaxWindowBitsEnabled` false | The server accepts any client window, up to 15 bits. `ClientMaxWindowBits` is ignored. |
 | `ClientMaxWindowBitsEnabled` true | The client's window is at most `ClientMaxWindowBits`, which must be 8 to 15. |
 
@@ -384,14 +385,15 @@ How the server reads each field:
 The server tries your configs in your order. It uses the first one the client
 agrees to.
 
-An offer does not allow a config when:
+A config with `ClientMaxWindowBitsEnabled` true and `ClientMaxWindowBits` 8
+to 14 skips an offer that has no `client_max_window_bits`. The server may
+limit the client's window only when the client offered that param
+(RFC 7692 7.1.2.2).
 
-- it asks the server for a window under 15 bits, which wlgows cannot send with
-  (library choice, see
-  [Windows under 15 bits](./PERMESSAGE_DEFLATE.md#windows-under-15-bits));
-- the config limits the client under 15 bits, and the offer has no
-  `client_max_window_bits`. The server may send that param only when it was
-  offered (RFC 7692 7.1.2.2).
+`ServerHandShake` never declines an offer for its `server_max_window_bits`.
+It lowers the server's window to the offer's value (RFC 7692 7.1.2.1): a
+config of 12 with an offer of 8 agrees to 8. To decline instead, see
+[Keeping a window you want](#keeping-a-window-you-want).
 
 When no config fits, the answer has no `Sec-WebSocket-Extensions`, and the
 connection opens without compression.
@@ -413,6 +415,34 @@ if answer != nil && (openConnections <= limit || answer.ClientNoContextTakeover)
 }
 ```
 
+### Keeping a window you want
+
+`ServerHandShake` has no field for a smallest window. If you do not want a
+small one, call `AcceptDeflateOffer` before the handshake to see what would be
+agreed. Then pass no `PermessageDeflates`, so there is no deflate, or refuse
+the request:
+
+```go
+serverConfig := wlgows.PermessageDeflateConfig{ServerMaxWindowBits: 12}
+config := wlgows.ServerHandShakeConfig{
+	PermessageDeflates: []wlgows.PermessageDeflateConfig{
+		serverConfig,
+	},
+}
+if answer := wlgows.AcceptDeflateOffer(serverConfig, request); answer != nil &&
+	answer.ServerMaxWindowBits < 12 { // never 0 here: the config has 12
+	config.PermessageDeflates = nil // under 12: no deflate here, or refuse the request if you require it
+}
+```
+
+### What was agreed
+
+`conn.GetPermessageDeflateAgreedConfig()` is what was agreed, or `nil` when no
+config fit. Pick the `DeflateLevel` by its `ServerMaxWindowBits`. 0 means 15
+bits: wlgows sends at any `DeflateLevel`, -2 to 9. With 8 to 14 bits, only at -2
+(`flate.HuffmanOnly`) and 0 (`flate.NoCompression`). See
+[SENDING.md](./SENDING.md#windows-under-15-bits).
+
 ### Checking the config
 
 `ValidateServerDeflateConfig` refuses these. `ServerHandShake` checks every
@@ -422,7 +452,6 @@ sent, leaving the connection open:
 | Config | Error |
 |---|---|
 | `ServerMaxWindowBits` not 0 or 8 to 15, or `ClientMaxWindowBitsEnabled` with `ClientMaxWindowBits` not 8 to 15 (RFC 7692 7.1.2) | `ErrHandshakeServerDeflateConfigInvalid` |
-| `ServerMaxWindowBits` 8 to 14 (library choice) | `ErrHandshakeServerDeflateConfigUnsupported` |
 
 To catch these without a handshake, call `ValidateServerDeflateConfig` in a
 test or before the first handshake, as shown in

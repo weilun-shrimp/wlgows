@@ -132,6 +132,9 @@ func TestSendData(t *testing.T) {
 			flushWriter:        func() error { return nil },
 			contextDeflater:    fakeFuncDeflater{deflateFunc: fake_deflate},
 			noContextDeflater:  fakeFuncDeflater{deflateFunc: fake_deflate},
+
+			sendWindowBits:                func(*PermessageDeflateConfig, bool) uint { return 15 },
+			validateDeflateLevelForWindow: func(int, uint) error { return nil },
 		}
 	}
 
@@ -157,6 +160,211 @@ func TestSendData(t *testing.T) {
 		}
 		if len(steps) != 0 {
 			t.Errorf("steps %q, want no lock taken", steps)
+		}
+	})
+
+	t.Run("refuses a level compress/flate has not before anything runs", func(t *testing.T) {
+		for _, testCase := range []struct {
+			name   string
+			config SendDataConfig
+		}{
+			{
+				name:   "above flate.BestCompression",
+				config: SendDataConfig{DeflateIfAgreed: true, DeflateLevel: 10},
+			},
+			{
+				name:   "below flate.HuffmanOnly",
+				config: SendDataConfig{DeflateIfAgreed: true, DeflateLevel: -3},
+			},
+			{
+				name:   "not asked to deflate",
+				config: SendDataConfig{DeflateLevel: 10},
+			},
+		} {
+			var steps []string
+			di := base_di()
+			di.deflateAgreedConfig = &PermessageDeflateConfig{}
+			di.dataFramesWriteLocker = fakeFuncLocker{
+				lock:   func() { steps = append(steps, "data lock") },
+				unlock: func() { steps = append(steps, "data unlock") },
+			}
+			di.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+				steps = append(steps, "deflate")
+				return nil, nil
+			}}
+			di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+				steps = append(steps, "sendWindowBits")
+				return 15
+			}
+			di.validateDeflateLevelForWindow = func(int, uint) error {
+				steps = append(steps, "validateDeflateLevelForWindow")
+				return nil
+			}
+
+			if err := sendData(OpcodeText, []byte("hello"), testCase.config, di); !errors.Is(err, ErrDeflateLevelInvalid) {
+				t.Errorf("%s: sendData = %v, want ErrDeflateLevelInvalid", testCase.name, err)
+			}
+			if len(steps) != 0 {
+				t.Errorf("%s: steps %q, want nothing run", testCase.name, steps)
+			}
+		}
+	})
+
+	// RFC 7692 7.1.2: the window comes from this side's agreed config, and
+	// the level is checked against it.
+	small_windows := []struct {
+		name         string
+		agreed       PermessageDeflateConfig
+		peerIsClient bool
+	}{
+		{
+			name:         "server, server_max_window_bits=9",
+			agreed:       PermessageDeflateConfig{ServerMaxWindowBits: 9},
+			peerIsClient: true,
+		},
+		{
+			name:         "client, client_max_window_bits=9",
+			agreed:       PermessageDeflateConfig{ClientMaxWindowBitsEnabled: true, ClientMaxWindowBits: 9},
+			peerIsClient: false,
+		},
+	}
+
+	t.Run("returns the validateDeflateLevelForWindow error and sends nothing", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			var steps []string
+			di := base_di()
+			di.peerIsClient = testCase.peerIsClient
+			di.deflateAgreedConfig = &testCase.agreed
+			want_window_bits := uint(11)
+			validate_deflate_level_for_window_error := errors.New("validateDeflateLevelForWindow error")
+			di.sendWindowBits = func(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+				steps = append(steps, fmt.Sprintf("sendWindowBits %+v %v", *agreed, peerIsClient))
+				return want_window_bits
+			}
+			di.validateDeflateLevelForWindow = func(level int, window_bits uint) error {
+				if window_bits != want_window_bits {
+					t.Errorf(
+						"%s: validateDeflateLevelForWindow got window_bits %d, want %d from sendWindowBits",
+						testCase.name, window_bits, want_window_bits,
+					)
+				}
+				steps = append(steps, fmt.Sprintf("validateDeflateLevelForWindow %d", level))
+				return validate_deflate_level_for_window_error
+			}
+			di.dataFramesWriteLocker = fakeFuncLocker{
+				lock:   func() { steps = append(steps, "data lock") },
+				unlock: func() { steps = append(steps, "data unlock") },
+			}
+			di.newDataFrame = func(NewFrameConfig) (*Frame, error) {
+				steps = append(steps, "build")
+				return &Frame{}, nil
+			}
+			for _, deflater := range []*sendDataDeflater{&di.contextDeflater, &di.noContextDeflater} {
+				*deflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+					steps = append(steps, "deflate")
+					return nil, nil
+				}}
+			}
+			di.bufferedWriteFrame = func(*Frame) error {
+				steps = append(steps, "write")
+				return nil
+			}
+
+			config := SendDataConfig{DeflateIfAgreed: true, DeflateLevel: flate.DefaultCompression}
+			if err := sendData(OpcodeText, []byte("hello"), config, di); !errors.Is(err, validate_deflate_level_for_window_error) {
+				t.Errorf("%s: sendData = %v, want the validateDeflateLevelForWindow error", testCase.name, err)
+			}
+			want := []string{fmt.Sprintf("sendWindowBits %+v %v", testCase.agreed, testCase.peerIsClient), "validateDeflateLevelForWindow -1"}
+			if !slices.Equal(steps, want) {
+				t.Errorf("%s: steps %q, want %q", testCase.name, steps, want)
+			}
+		}
+	})
+
+	t.Run("deflates and sends when validateDeflateLevelForWindow returns nil", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			for _, level := range []int{flate.HuffmanOnly, flate.NoCompression} {
+				var steps []string
+				var got []string
+				di := base_di()
+				di.peerIsClient = testCase.peerIsClient
+				di.deflateAgreedConfig = &testCase.agreed
+				want_window_bits := uint(11)
+				di.sendWindowBits = func(agreed *PermessageDeflateConfig, peerIsClient bool) uint {
+					steps = append(steps, fmt.Sprintf("sendWindowBits %+v %v", *agreed, peerIsClient))
+					return want_window_bits
+				}
+				di.validateDeflateLevelForWindow = func(level int, window_bits uint) error {
+					if window_bits != want_window_bits {
+						t.Errorf(
+							"%s: validateDeflateLevelForWindow got window_bits %d, want %d from sendWindowBits",
+							testCase.name, window_bits, want_window_bits,
+						)
+					}
+					steps = append(steps, fmt.Sprintf("validateDeflateLevelForWindow %d", level))
+					return nil
+				}
+				di.contextDeflater = fakeFuncDeflater{deflateFunc: func(data []byte, level int) ([]byte, error) {
+					steps = append(steps, fmt.Sprintf("deflate %s %d", data, level))
+					return append([]byte("z:"), append(data, 0x00, 0x00, 0xff, 0xff)...), nil
+				}}
+				di.bufferedWriteFrame = func(f *Frame) error {
+					got = append(got, fmt.Sprintf("%d %v %v %s", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
+					return nil
+				}
+
+				config := SendDataConfig{ChunkSize: 4, DeflateIfAgreed: true, DeflateLevel: level}
+				if err := sendData(OpcodeText, []byte("hello"), config, di); err != nil {
+					t.Fatalf("%s, level %d: sendData: %v", testCase.name, level, err)
+				}
+				want_steps := []string{
+					fmt.Sprintf("sendWindowBits %+v %v", testCase.agreed, testCase.peerIsClient),
+					fmt.Sprintf("validateDeflateLevelForWindow %d", level),
+					fmt.Sprintf("deflate hello %d", level),
+				}
+				if !slices.Equal(steps, want_steps) {
+					t.Errorf("%s, level %d: steps %q, want %q", testCase.name, level, steps, want_steps)
+				}
+				if want := []string{"1 false true z:he", "0 true false llo"}; !slices.Equal(got, want) {
+					t.Errorf("%s, level %d: wrote %q, want %q", testCase.name, level, got, want)
+				}
+			}
+		}
+	})
+
+	// Nothing is deflated, so the window does not limit the level.
+	t.Run("calls no sendWindowBits or validateDeflateLevelForWindow when not asked to deflate", func(t *testing.T) {
+		for _, testCase := range small_windows {
+			var got []string
+			di := base_di()
+			di.peerIsClient = testCase.peerIsClient
+			di.deflateAgreedConfig = &testCase.agreed
+			di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+				t.Errorf("%s: sendWindowBits called", testCase.name)
+				return 9
+			}
+			di.validateDeflateLevelForWindow = func(int, uint) error {
+				t.Errorf("%s: validateDeflateLevelForWindow called", testCase.name)
+				return ErrDeflateLevelUnsupportedForWindow
+			}
+			for _, deflater := range []*sendDataDeflater{&di.contextDeflater, &di.noContextDeflater} {
+				*deflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
+					t.Errorf("%s: deflated", testCase.name)
+					return nil, nil
+				}}
+			}
+			di.bufferedWriteFrame = func(f *Frame) error {
+				got = append(got, fmt.Sprintf("%d %v %v %s", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
+				return nil
+			}
+
+			config := SendDataConfig{ChunkSize: 4, DeflateLevel: flate.BestCompression}
+			if err := sendData(OpcodeText, []byte("hello"), config, di); err != nil {
+				t.Fatalf("%s: sendData: %v", testCase.name, err)
+			}
+			if want := []string{"1 false false hell", "0 true false o"}; !slices.Equal(got, want) {
+				t.Errorf("%s: wrote %q, want %q", testCase.name, got, want)
+			}
 		}
 	})
 
@@ -486,6 +694,15 @@ func TestSendData(t *testing.T) {
 					return nil, nil
 				}}
 			}
+			// Nothing is deflated, so the window is not looked up or checked.
+			di.sendWindowBits = func(*PermessageDeflateConfig, bool) uint {
+				t.Errorf("%s: sendWindowBits called", testCase.name)
+				return 9
+			}
+			di.validateDeflateLevelForWindow = func(int, uint) error {
+				t.Errorf("%s: validateDeflateLevelForWindow called", testCase.name)
+				return ErrDeflateLevelUnsupportedForWindow
+			}
 			di.bufferedWriteFrame = func(f *Frame) error {
 				got = append(got, fmt.Sprintf("%d %v %v %s", f.Opcode, f.FIN, f.RSV1, f.PayloadData))
 				return nil
@@ -598,36 +815,6 @@ func TestSendData(t *testing.T) {
 		}
 		if want := []string{"data lock", "deflate", "write", "flush", "data unlock"}; !slices.Equal(steps, want) {
 			t.Errorf("steps %q, want %q", steps, want)
-		}
-	})
-
-	t.Run("refuses a level compress/flate has not before anything runs", func(t *testing.T) {
-		for _, testCase := range []struct {
-			name   string
-			config SendDataConfig
-		}{
-			{"above flate.BestCompression", SendDataConfig{DeflateIfAgreed: true, DeflateLevel: 10}},
-			{"below flate.HuffmanOnly", SendDataConfig{DeflateIfAgreed: true, DeflateLevel: -3}},
-			{"not asked to deflate", SendDataConfig{DeflateLevel: 10}},
-		} {
-			var steps []string
-			di := base_di()
-			di.deflateAgreedConfig = &PermessageDeflateConfig{}
-			di.dataFramesWriteLocker = fakeFuncLocker{
-				lock:   func() { steps = append(steps, "data lock") },
-				unlock: func() { steps = append(steps, "data unlock") },
-			}
-			di.contextDeflater = fakeFuncDeflater{deflateFunc: func([]byte, int) ([]byte, error) {
-				steps = append(steps, "deflate")
-				return nil, nil
-			}}
-
-			if err := sendData(OpcodeText, []byte("hello"), testCase.config, di); !errors.Is(err, ErrDeflateLevelInvalid) {
-				t.Errorf("%s: sendData = %v, want ErrDeflateLevelInvalid", testCase.name, err)
-			}
-			if len(steps) != 0 {
-				t.Errorf("%s: steps %q, want nothing run", testCase.name, steps)
-			}
 		}
 	})
 

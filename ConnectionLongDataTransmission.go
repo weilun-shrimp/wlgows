@@ -101,12 +101,20 @@ type TransmitDataConfig struct {
 	// the message is deflated. 0 is flate.NoCompression. It may change from
 	// chunk to chunk. A level compress/flate has not is refused with
 	// ErrDeflateLevelInvalid, even when nothing would be deflated.
+	//
+	// When the message is deflated under this side's agreed window of 8 to
+	// 14 bits, only flate.NoCompression and flate.HuffmanOnly are allowed.
+	// Other levels return ErrDeflateLevelUnsupportedForWindow and the chunk
+	// is not sent. GetPermessageDeflateAgreedConfig tells the agreed window.
 	DeflateLevel int
 }
 
 type transmitDataDI struct {
 	conn      *Conn
 	sendFrame func(f *Frame) error
+
+	sendWindowBits                func(agreed *PermessageDeflateConfig, peerIsClient bool) uint
+	validateDeflateLevelForWindow func(level int, window_bits uint) error
 }
 
 /*
@@ -124,6 +132,9 @@ func (c *Conn) TransmitData(data []byte, config TransmitDataConfig) error {
 	return transmitData(data, config, transmitDataDI{
 		conn:      c,
 		sendFrame: c.sendFrame,
+
+		sendWindowBits:                sendWindowBits,
+		validateDeflateLevelForWindow: validateDeflateLevelForWindow,
 	})
 }
 
@@ -133,6 +144,12 @@ func transmitData(data []byte, config TransmitDataConfig, di transmitDataDI) err
 	}
 	if err := validateDeflateLevel(config.DeflateLevel); err != nil {
 		return err
+	}
+	if di.conn.currentTransmitDataMsgDeflating {
+		window_bits := di.sendWindowBits(di.conn.permessageDeflateAgreedConfig, di.conn.peerIsClient)
+		if err := di.validateDeflateLevelForWindow(config.DeflateLevel, window_bits); err != nil {
+			return err
+		}
 	}
 	// 5.4: the message's own opcode opens it, every frame after continues it.
 	opcode := di.conn.currentTransmitDataMsgOpcode
@@ -187,12 +204,18 @@ func (c *Conn) EndLongDataTransmission(data []byte, config TransmitDataConfig) e
 	return endLongDataTransmission(data, config, endLongDataTransmissionDI{
 		conn:      c,
 		sendFrame: c.sendFrame,
+
+		sendWindowBits:                sendWindowBits,
+		validateDeflateLevelForWindow: validateDeflateLevelForWindow,
 	})
 }
 
 type endLongDataTransmissionDI struct {
 	conn      *Conn
 	sendFrame func(f *Frame) error
+
+	sendWindowBits                func(agreed *PermessageDeflateConfig, peerIsClient bool) uint
+	validateDeflateLevelForWindow func(level int, window_bits uint) error
 }
 
 func endLongDataTransmission(data []byte, config TransmitDataConfig, di endLongDataTransmissionDI) error {
@@ -201,6 +224,12 @@ func endLongDataTransmission(data []byte, config TransmitDataConfig, di endLongD
 	}
 	if err := validateDeflateLevel(config.DeflateLevel); err != nil {
 		return err
+	}
+	if di.conn.currentTransmitDataMsgDeflating {
+		window_bits := di.sendWindowBits(di.conn.permessageDeflateAgreedConfig, di.conn.peerIsClient)
+		if err := di.validateDeflateLevelForWindow(config.DeflateLevel, window_bits); err != nil {
+			return err
+		}
 	}
 
 	// Nothing sent yet: this frame is the whole message, with its own opcode.

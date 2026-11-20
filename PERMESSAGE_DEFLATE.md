@@ -102,11 +102,18 @@ why we recommend setting the header with them, see
 
 ## Windows under 15 bits
 
-wlgows compresses with Go's `compress/flate`, which cannot send with a window
-under 15 bits. So a wlgows peer never agrees to send with 8 to 14 bits (library
-choice). Which configs each side refuses for this is in
-[CLIENT.md](./CLIENT.md#compression-permessage-deflate) and
-[SERVER.md](./SERVER.md#compression-permessage-deflate).
+Under an agreed send window of 8 to 14 bits, wlgows sends only at
+`flate.HuffmanOnly` and `flate.NoCompression` (library choice). This is why:
+
+- A peer that agreed to 8 to 14 bits keeps only the last 256 bytes to 16 KB of
+  what it received (RFC 7692 7.1.2). A deflated message may not refer back
+  further than that.
+- wlgows deflates with Go's `compress/flate`. Its other levels, -1 and 1 to 9,
+  refer back up to 32 KB, the window at 15 bits. It has no smaller window.
+- `flate.HuffmanOnly` and `flate.NoCompression` write no references back, so
+  their output fits any window.
+
+How to pick the level is in [SENDING.md](./SENDING.md#windows-under-15-bits).
 
 Receiving has no such limit. Go's inflater reads any window up to 15 bits, so a
 wlgows peer accepts any window the other side sends with.

@@ -58,3 +58,10 @@ start reports\index.html      # Windows
 ```
 
 How to read it is in [AUTOBAHN.md](../AUTOBAHN.md#reading-the-report).
+
+In the cases 13.3.x, 13.5.x and 13.7.x, Autobahn's client offers
+`server_max_window_bits=9`, and the server agrees to it. Under that window
+wlgows allows only `flate.HuffmanOnly` and `flate.NoCompression` (library
+choice), so the server echoes at `flate.HuffmanOnly` there, and at
+`flate.BestSpeed` otherwise. See
+[SENDING.md](../../SENDING.md#windows-under-15-bits).

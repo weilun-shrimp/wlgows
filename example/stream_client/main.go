@@ -158,6 +158,17 @@ func main() {
 	// failed the handshake above (RFC 6455 4.1).
 	example_helpers.PrintSubprotocol(resp.Header.Get("Sec-WebSocket-Protocol"))
 
+	// The stream is deflated when the handshake agreed permessage-deflate.
+	// Under an agreed client_max_window_bits of 8 to 14 (RFC 7692 7.1.2.2),
+	// wlgows allows only flate.NoCompression and flate.HuffmanOnly (library
+	// choice). See SENDING.md.
+	startLongDataTransmissionConfig := wlgows.StartLongDataTransmissionConfig{DeflateIfAgreed: true}
+	transmitDataConfig := wlgows.TransmitDataConfig{DeflateLevel: flate.BestSpeed}
+	if agreed := conn.GetPermessageDeflateAgreedConfig(); agreed != nil && agreed.ClientMaxWindowBitsEnabled &&
+		agreed.ClientMaxWindowBits != 0 && agreed.ClientMaxWindowBits < 15 {
+		transmitDataConfig.DeflateLevel = flate.HuffmanOnly
+	}
+
 	// Ping, pong and close answered for us. The close hook also pauses the loop,
 	// which is what ends the wait at the bottom.
 	listener := conn.NewStandardListener()
@@ -220,7 +231,7 @@ func main() {
 		fmt.Println("error: stream:", err)
 		return
 	}
-	sha256sum, chunkCount, byteCount, err := sendChunks(conn, file, chunkLimit)
+	sha256sum, chunkCount, byteCount, err := sendChunks(conn, file, chunkLimit, transmitDataConfig)
 	if err == nil && chunkLimit == noChunkLimit {
 		// FIN tells the server the message ended. Without it the message is
 		// left unterminated, so a partial file is never taken as whole.
@@ -251,20 +262,15 @@ func main() {
 	<-listenerStopped
 }
 
-// The stream is deflated when the handshake agreed permessage-deflate, and sent
-// as is otherwise. DeflateLevel must be set: its zero is flate.NoCompression.
-var (
-	startLongDataTransmissionConfig = wlgows.StartLongDataTransmissionConfig{DeflateIfAgreed: true}
-	transmitDataConfig              = wlgows.TransmitDataConfig{DeflateLevel: flate.DefaultCompression}
-)
-
 // sendChunks sends reader as chunks of the open transmission, at most
-// chunkLimit of them, and returns at the reader's end or at the limit, with
-// the sha256 of what it sent. It never sends FIN: EndLongDataTransmission does.
+// chunkLimit of them, each with transmitDataConfig, and returns at the
+// reader's end or at the limit, with the sha256 of what it sent. It never
+// sends FIN: EndLongDataTransmission does.
 func sendChunks(
 	conn *wlgows.Conn,
 	reader io.Reader,
 	chunkLimit int,
+	transmitDataConfig wlgows.TransmitDataConfig,
 ) (
 	sha256sum []byte,
 	chunkCount int,

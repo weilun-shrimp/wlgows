@@ -2,16 +2,16 @@
 
 # WLGOWS
 
-一個簡單、直覺、強大且快速的 Go WebSocket 函式庫：送出時零配置，幾乎每項都比
-gorilla/websocket 快（[benchmark](./BENCHMARK_COMPARISON.zh-TW.md)）。容易上手，
-也不隱藏 WebSocket 的運作方式。
+一套簡單易用、功能豐富、效能強大、經過充分測試、文件完善、執行速度快且記憶體使用
+效率高的 Go WebSocket 函式庫。在幾乎所有
+[benchmark](./BENCHMARK_COMPARISON.zh-TW.md) 中，表現都優於 gorilla/websocket。
+容易上手，也不隱藏 WebSocket 的運作方式。
 
-下方的 Quick Start 是一個能執行的 echo server。`conn.NewStandardListener()` 會替你
-處理 ping、pong 與 close。需要更多時，你可以串流比記憶體還大的 message、自己處理
-每個 frame、依自己的節奏送 ping，或手動組出 frame。handshake 由你自己執行，RFC 6455
-與 RFC 7692 的每條規則都有文件說明。
+下方的 [Quick Start](#quick-start) 是一個能執行的 echo server。
 
-**正確性優先。** 我們追求最快的程式，但前提是正確且安全：不用 `unsafe`，也不跳過
+**正確性優先。** wlgows 遵循 RFC 6455 與 RFC 7692，兩端的
+[Autobahn](./example/AUTOBAHN.zh-TW.md#我們的結果) 測試都是 0 失敗。我們追求最快的
+程式與最少的記憶體，但前提是正確且安全：不用 `unsafe`，也不跳過
 bounds check。如果你清楚自己在做什麼，你的程式可以更進一步。見
 [更快、更省記憶體](./SENDING.zh-TW.md#更快更省記憶體用-unsafe-送出-string)。
 
@@ -24,12 +24,15 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 - **HTTP Hijacking**：支援 `http.Server` 與 Gin
 - **Listener**：單一 read loop，依 RFC 6455 驗證每個 frame 後交給你的 hook
 - **Frame-level control**：需要時可自行組出 frame 並送出
-- **Streaming**：以一個個 fragment 傳送比記憶體還大的 message
+- **Streaming**：以一個個 frame 送出或讀取比記憶體還大的 message
 - **Compression**：permessage-deflate（RFC 7692），兩端皆支援。見 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)
-- **Memory in your hands**：每條連線的 write buffer 由你提供，最小 14 byte，而且隨時可以更換；每次傳送也能自己選 frame 大小。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#掌控權在你手上)
+- **Memory in your hands**：每條連線的 write buffer（最小 14 byte，隨時可以更換）與 read buffer（最小 16 byte）都由你決定。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#掌控權在你手上) 與 [READING.zh-TW.md](./READING.zh-TW.md#記憶體連線的-read-buffer)
+- **Memory protection**：用 `MaxFrameSize` 與 `MaxDataFramesSize` 限制對方能送來的 byte，用 `NewSizeLimitReader` 限制解壓縮後的大小。見 [READING.zh-TW.md](./READING.zh-TW.md#限制大小)
 - **Keepalive**：定期發送 ping，每次的 payload 由你決定
 - **Concurrent sending**：以 lock 保護，且 control frame 不會被卡在大型 message
   後面
+
+還有更多，見[說明文件](#說明文件)。
 
 ## Contents
 
@@ -37,9 +40,9 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client)
 - [說明文件](#說明文件) — server、client、讀取、Listener、傳送、壓縮、benchmark
 - [Examples](#examples) — 三個 echo server、一個 client，以及一組 streaming 範例
-- [從 v6 升級](#從-v6-升級)
 - [Testing](#testing)
 - [License](#license)
+- [從 v6 升級](#從-v6-升級)
 
 ## Installation
 
@@ -230,7 +233,7 @@ func main() {
 
 | 文件 | 內容 |
 |---|---|
-| **[SERVER.zh-TW.md](./SERVER.zh-TW.md)** | 接受連線、handshake 與它的拒絕回應、從 `net/http` 或 Gin hijack、TLS、subprotocol |
+| **[SERVER.zh-TW.md](./SERVER.zh-TW.md)** | 接受連線、handshake 與它的拒絕回應、從 `net/http` 或 Gin hijack、TLS、subprotocol、壓縮 |
 | **[CLIENT.zh-TW.md](./CLIENT.zh-TW.md)** | 建立連線、TLS、handshake、加上 header、subprotocol、壓縮 |
 | **[READING.zh-TW.md](./READING.zh-TW.md)** | 讀取 message：限制大小、error 與對應的 close code、壓縮的 message、一次讀一個 frame、read buffer |
 | **[LISTENER.zh-TW.md](./LISTENER.zh-TW.md)** | read loop：標準 Listener、hook、上限、error、偵測已斷線的對方、暫停 |
@@ -280,6 +283,19 @@ stream client 再拿來和自己送出的內容比對。
 每個範例都使用 [`Listener`](./LISTENER.zh-TW.md)，它會回應 ping 與 close，
 並擋下不合法的 frame。每個檔案剩下的是你自己要寫的部分：hook。
 
+## Testing
+
+statement coverage 97.6%。Autobahn：server 與 client 都是 510 OK、0 失敗。見
+[Autobahn](./example/AUTOBAHN.zh-TW.md#我們的結果)。
+
+```bash
+go test -race ./...
+```
+
+## License
+
+MIT
+
 ## 從 v6 升級
 
 v7 直接從你的 `bufio.Reader` 讀 frame header，所以一個 frame 只配置它自己與 payload。
@@ -311,8 +327,11 @@ Listener 的上限也改了名。傳送、兩邊的 handshake、`NewConn` 與 `N
 | `wlgows.ClientHandShake(netConn, reader, writer, request)` | `wlgows.ClientHandShake(netConn, reader, writer, request, wlgows.ClientHandShakeConfig{})` |
 | 你自己的 `ListenerConn`，實作 `GetNextFrame(max)` | 改為 `LockRead()`、`UnlockRead()`、`GetNextFrameHeader()` 與 `ReadFramePayload(frame)`，與 `*Conn` 相同 |
 
-`wlgows.Dial(url, tlsConfig)` 還是可以用。`DialContext` 是新的：多了 context 與
-`*net.Dialer` 兩個參數。見 [CLIENT.zh-TW.md](./CLIENT.zh-TW.md#建立連線)。
+`wlgows.Dial(url, tlsConfig)` 還是可以用。
+
+v7 新增：壓縮（permessage-deflate）、subprotocol、`DialContext`、`ReadMessageInto`
+與 `NewSizeLimitReader`。見[說明文件](#說明文件)。壓縮與 subprotocol 預設都不開啟：
+零值的 `ClientHandShakeConfig` 兩者都不提議，零值的 `ServerHandShakeConfig` 兩者都不同意。
 
 不會出現編譯錯誤、但行為改變的地方：
 
@@ -349,7 +368,7 @@ Listener 的上限也改了名。傳送、兩邊的 handshake、`NewConn` 與 `N
   送出那個 frame，請像 streaming 範例那樣先檢查長度。
 - **`NewStandardListener` 現在會設定上限。** 每個 message 與每個 frame 4 KB、16 個
   frame、60 秒讀取逾時。更大的 message 會讓 `Listen` 回傳
-  `ErrFrameByteLengthExceeded`（1009），閒置的對方會逾時。請像 quick start 那樣調高，
+  `ErrFrameByteLengthExceeded`（1009），閒置的對方會逾時。請像 [Quick Start](#quick-start) 那樣調高，
   並以 30 秒以內的間隔送 ping。在 v6 中它不設任何上限。
 - **`RFC6455UnknownHook` 會以 `ErrReservedOpcode` 停止 `Listen`。** 在 v6 中它以
   `nil` 暫停。
@@ -357,27 +376,3 @@ Listener 的上限也改了名。傳送、兩邊的 handshake、`NewConn` 與 `N
   close 1002）。在 v6 中會被接受。
 - **`ServerHandShake` 會拒絕不是 16 byte base64 的 `Sec-WebSocket-Key`**，回 400 與
   `ErrHttpSecWebSocketKeyInvalid`。在 v6 中任何值都會被接受。
-
-## Testing
-
-```bash
-go test ./...                                  # 完整測試
-go test -race ./...                            # integration test 會啟動 goroutine
-go test -cover .                               # 97.6% 的 statement
-go test -bench BenchmarkDataFramesAssembly .   # benchmark，一般的 `go test` 不會執行
-```
-
-每個原始檔對應一個 `_test.go`，全部都在 package `wlgows` 裡，所以能使用 `di`
-替換點。每個做 I/O 或使用亂數的函式，都是一層薄薄的匯出包裝，底下是一個接收 `di`
-struct（裡面是函式值）的函式，測試以 fake 直接測那個函式。有三個檔案沒有對應的
-原始檔：
-
-| 檔案 | 內容 |
-|---|---|
-| [`Benchmark_test.go`](./Benchmark_test.go) | 送出與讀取的 benchmark，以及 `TestBenchmarkReport`，BENCHMARK_COMPARISON.zh-TW.md 的數字來源 |
-| [`Fakes_test.go`](./Fakes_test.go) | 共用的 fake，例如 `fakeConn`，一個在記憶體中的 `net.Conn` |
-| [`ListenerIntegration_test.go`](./ListenerIntegration_test.go) | 透過真正的 `net.Pipe` 端到端測試 `Listen`，**完全不**替換 `di` |
-
-## License
-
-MIT
