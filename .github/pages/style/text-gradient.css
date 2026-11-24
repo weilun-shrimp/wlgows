@@ -1,0 +1,8 @@
+/* Text gradient: text that fades from green, through blue, to violet. */
+
+.text-gradient {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

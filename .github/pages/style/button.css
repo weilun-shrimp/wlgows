@@ -1,0 +1,35 @@
+/* Button */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-weight: 600;
+  font-size: 15px;
+  transition: border-color 200ms ease-out, opacity 200ms ease-out;
+}
+
+.button:hover {
+  border-color: var(--muted);
+}
+
+.button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.button-primary:hover {
+  border-color: var(--accent);
+  opacity: 0.9;
+}

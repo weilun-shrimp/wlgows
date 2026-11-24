@@ -1,0 +1,57 @@
+/* Go code colors, for the spans script/highlight.js adds. Each kind has a
+   light and a dark color, so it switches with the theme. */
+
+:root {
+  --tok-keyword: #7c3aed;
+  --tok-builtin: #0a7d68;
+  --tok-func: #0b6fb8;
+  --tok-string: #a15c07;
+  --tok-number: #c2410c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tok-keyword: #b48cff;
+    --tok-builtin: #3ccfac;
+    --tok-func: #5ab8ff;
+    --tok-string: #e6b673;
+    --tok-number: #ff9e64;
+  }
+}
+
+:root[data-theme="dark"] {
+  --tok-keyword: #b48cff;
+  --tok-builtin: #3ccfac;
+  --tok-func: #5ab8ff;
+  --tok-string: #e6b673;
+  --tok-number: #ff9e64;
+}
+
+.tok-keyword {
+  color: var(--tok-keyword);
+}
+
+.tok-builtin {
+  color: var(--tok-builtin);
+}
+
+.tok-func {
+  color: var(--tok-func);
+}
+
+.tok-string {
+  color: var(--tok-string);
+}
+
+.tok-number {
+  color: var(--tok-number);
+}
+
+.tok-comment {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.tok-package {
+  font-weight: 600;
+}

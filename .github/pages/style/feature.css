@@ -1,0 +1,90 @@
+/* Feature grid: a list of short items, each a title and one line. The
+   columns fill the width, at least 240px each. */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.feature {
+  position: relative;
+  padding: 16px 16px 16px 36px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* A small accent dot before the title. */
+.feature::before {
+  content: "";
+  position: absolute;
+  top: 24px;
+  left: 16px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-3));
+}
+
+.feature h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.feature p {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.feature code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 4px;
+  background: var(--code-bg);
+  border-radius: 4px;
+}
+
+/* The last item: a link to the Guides, with a dashed border so it reads as
+   "more", not as one more feature. The whole box is the link. */
+.feature-more {
+  padding: 0;
+  background: transparent;
+  border-style: dashed;
+}
+
+.feature-more::before {
+  display: none;
+}
+
+/* Styled like a feature's title, but not a heading: it is a link, not one
+   more feature. */
+.feature-more-title {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.feature-more a {
+  display: block;
+  height: 100%;
+  padding: 16px;
+  border-radius: var(--radius);
+  transition: background-color 200ms ease-out;
+}
+
+.feature-more p {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.feature-more a:hover {
+  background: var(--code-bg);
+}

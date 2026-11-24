@@ -1,0 +1,37 @@
+/* Shared by index.html (en) and zh-TW/index.html. Loads every style file.
+   base.css comes first, for its colors. The page parts come last, so their
+   rules win over the components'. */
+
+@import url("base.css");
+
+/* Components */
+@import url("glass.css");
+@import url("text-gradient.css");
+@import url("badge.css");
+@import url("button.css");
+@import url("icon-button.css");
+@import url("theme-toggle.css");
+@import url("lang-switch.css");
+@import url("card.css");
+@import url("feature.css");
+@import url("example.css");
+@import url("guide.css");
+@import url("layer-stack.css");
+@import url("stat.css");
+@import url("bar-chart.css");
+@import url("callout.css");
+@import url("data-table.css");
+@import url("code-block.css");
+@import url("code-highlight.css");
+@import url("code-tabs.css");
+@import url("install.css");
+@import url("reveal.css");
+
+/* Page parts */
+@import url("header.css");
+@import url("hero.css");
+@import url("concept.css");
+@import url("benchmarks.css");
+@import url("tested.css");
+@import url("section.css");
+@import url("footer.css");

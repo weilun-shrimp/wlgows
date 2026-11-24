@@ -1,0 +1,63 @@
+/* Footer: the wordmark, the tagline, one row of links, and the license line.
+   Centered. */
+
+.site-footer {
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
+}
+
+.site-footer-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.site-footer-brand {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+/* Pulled up close under the wordmark, as one unit. */
+.site-footer-tagline {
+  margin: -8px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.site-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 24px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.site-footer-links a {
+  transition: color 200ms ease-out;
+}
+
+.site-footer-links a:hover {
+  color: var(--text);
+}
+
+.site-footer-license {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.site-footer-license a {
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 200ms ease-out;
+}
+
+.site-footer-license a:hover {
+  text-decoration-color: currentColor;
+}

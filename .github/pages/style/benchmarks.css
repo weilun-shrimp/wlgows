@@ -1,0 +1,40 @@
+/* Benchmarks: the charts in two columns, one on narrow windows, then the
+   test machine and a link to every number. */
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .chart-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.benchmark-env {
+  margin: 16px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.benchmark-more {
+  margin: 8px 0 0;
+  text-align: center;
+}
+
+.benchmark-more a {
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 200ms ease-out;
+}
+
+.benchmark-more a:hover {
+  text-decoration-color: currentColor;
+}

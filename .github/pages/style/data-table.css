@@ -1,0 +1,61 @@
+/* Data table: numbers in columns, inside a .table-card. The card scrolls
+   sideways on narrow windows, so the page itself never does. */
+
+.table-card {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.data-table caption {
+  padding: 16px 20px 8px;
+  caption-side: top;
+  text-align: left;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.data-table caption code {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+}
+
+.data-table th,
+.data-table td {
+  padding: 10px 20px;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table thead th {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.data-table thead th:first-child,
+.data-table tbody th {
+  text-align: left;
+}
+
+.data-table td {
+  font-family: var(--font-mono);
+  text-align: right;
+  color: var(--muted);
+}
+
+/* A number to stand out: bold, in the accent color. */
+.data-table .data-good {
+  font-weight: 700;
+  color: var(--accent);
+}

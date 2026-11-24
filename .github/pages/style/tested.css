@@ -1,0 +1,45 @@
+/* Well-tested: the report buttons, then the test command, centered under
+   the table. */
+
+.tested-actions {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.tested-command {
+  margin-top: 16px;
+  text-align: center;
+}
+
+/* Bigger text in this section only. The shared components keep their sizes
+   elsewhere (the Benchmarks stats use the same .stat). */
+
+#well-tested .stat-label {
+  font-size: 16px;
+}
+
+#well-tested .data-table {
+  font-size: 16px;
+}
+
+#well-tested .data-table caption {
+  font-size: 15px;
+}
+
+#well-tested .data-table thead th {
+  font-size: 13px;
+}
+
+#well-tested .install {
+  font-size: 16px;
+}
+
+/* The smallest phones: the test command fits without scrolling. */
+@media (max-width: 360px) {
+  #well-tested .install {
+    font-size: 14px;
+  }
+}

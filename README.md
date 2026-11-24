@@ -2,9 +2,9 @@
 
 # WLGOWS
 
-A simple, easy-to-use, feature-rich, powerful, well-tested,
-well-documented, fast, and memory-efficient WebSocket library for Go. It's
-faster than gorilla/websocket in almost every
+A fast open source WebSocket library for Go. Built for speed and memory
+efficiency, without giving up correctness. Simple, well-tested and
+well-documented. It's faster than gorilla/websocket in almost every
 [benchmark](./BENCHMARK_COMPARISON.md).
 It is quick to start with, and it does not hide how WebSocket works.
 
@@ -38,6 +38,9 @@ And even more, see [Guides](#guides).
 ## Contents
 
 - [Installation](#installation)
+- [Why I started, and why v7](#why-i-started-and-why-v7)
+- [Goal](#goal)
+- [Design concept](#design-concept)
 - [Quick Start](#quick-start) — [Server](#server) · [Client](#client)
 - [Guides](#guides) — server, client, reading, the Listener, sending, compression, benchmarks
 - [Examples](#examples) — three echo servers, a client, and a streaming pair
@@ -53,6 +56,51 @@ go get github.com/weilun-shrimp/wlgows/v7
 
 The import path carries the `/v7` suffix Go requires for major version 2 and
 above; the package name is still `wlgows`, so call sites read `wlgows.DialContext(...)`.
+
+### v7 is the long-term support (LTS) version
+
+See [Why I started, and why v7](#why-i-started-and-why-v7).
+
+## Why I started, and why v7
+
+Many libraries hide the details and decide them for you. That makes it hard
+to know what is going on, and sometimes impossible to customize. I did not
+like that, so I started wlgows as my practice project. I was its only user,
+in my own private projects. Each version changed the API to fit what
+those projects needed, so it broke often. That is why the version number is high.
+
+At v6, I saw that wlgows already followed almost all of RFC 6455. I also
+saw that it could go further. Compared to other popular Go WebSocket
+libraries, it could be the fastest, use the least memory, be the most
+correct, and be easier to use and understand. So v7 is the last big rebuild
+for now, made for that goal.
+
+That is why v7 is the long-term support (LTS) version. For now, I do not
+plan a v8, at least not soon. Fixes and new features go into v7.
+
+## Goal
+
+- The fastest code and the least memory.
+- Always correct, as RFC 6455 and RFC 7692 say.
+- Still easy to learn and use.
+
+## Design concept
+
+I believe development should be free, not locked down by the library.
+Developers should make their own tradeoffs. So wlgows never decides for you.
+You can control almost everything, from low level to high level:
+
+- The raw connection
+- I/O buffers
+- The handshake
+- Each frame
+- Each message
+- Keepalive pings
+- And even more. See [Guides](#guides)
+
+Almost every function is a helper for one step of WebSocket. wlgows itself
+is built from these same helpers, at every level. So you can always do any
+step yourself, the same way wlgows does, and you always know what is going on.
 
 ## Quick Start
 
@@ -193,8 +241,8 @@ func main() {
 	}
 	defer netConn.Close()
 
-	reader := bufio.NewReader(netConn) // 4096 bytes/conn; see READING.md to shrink it
-	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 4096 bytes/conn; see SENDING.md
+	// The reader and the writer take 4096 bytes/conn each; see READING.md and SENDING.md to shrink them.
+	conn, _, err := wlgows.ClientHandShake(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{})
 	if err != nil {
 		panic(err)
 	}
@@ -252,8 +300,8 @@ with all of them. The streaming pair runs on its own.
 | Example | |
 |---|---|
 | [`hijack_http`](./example/hijack_http/main.go) | Echo server behind `net/http`, via `http.Hijacker` |
-| [`hijack_gin`](./example/hijack_gin/main.go) | The same server behind Gin, via `c.Writer.Hijack()`. `GET /ping` keeps answering JSON alongside the WebSocket |
-| [`echo`](./example/echo/main.go) | The same server over raw TCP, with `wlgows.Run` and `Accept`. Adds a timeout on the request, but no size limit. TLS comes from `crypto/tls` |
+| [`hijack_gin`](./example/hijack_gin/main.go) | Echo server behind Gin, via `c.Writer.Hijack()`. `GET /ping` keeps answering JSON alongside the WebSocket |
+| [`echo`](./example/echo/main.go) | Echo server over raw TCP, with `wlgows.Run` and `Accept`. Adds a timeout on the request, but no size limit. TLS comes from `crypto/tls` |
 | [`client`](./example/client/main.go) | Interactive client. Type a line to send it, `exit` to close cleanly |
 | [`stream_server`](./example/stream_server/main.go) | Receives a streamed message frame by frame, straight to disk — the `Data` hook, for a message too large to hold. Inflates a compressed message frame by frame too |
 | [`stream_client`](./example/stream_client/main.go) | Streams a file as one binary message, a chunk at a time |

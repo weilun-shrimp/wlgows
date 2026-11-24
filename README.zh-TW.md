@@ -2,12 +2,12 @@
 
 # WLGOWS
 
-一套簡單易用、功能豐富、效能強大、經過充分測試、文件完善、執行速度快且記憶體使用
-效率高的 Go WebSocket 函式庫。在幾乎所有
+高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲正確性。
+容易上手、功能豐富，經過充分測試，文件完善。在幾乎所有
 [benchmark](./BENCHMARK_COMPARISON.zh-TW.md) 中，表現都優於 gorilla/websocket。
-容易上手，也不隱藏 WebSocket 的運作方式。
+而且不隱藏 WebSocket 的運作方式。
 
-下方的 [Quick Start](#quick-start) 是一個能執行的 echo server。
+下方的[快速開始](#快速開始)是一個能執行的 echo server。
 
 **正確性優先。** wlgows 遵循 RFC 6455 與 RFC 7692，兩端的
 [Autobahn](./example/AUTOBAHN.zh-TW.md#我們的結果) 測試都是 0 失敗。我們追求最快的
@@ -15,7 +15,7 @@
 bounds check。如果你清楚自己在做什麼，你的程式可以更進一步。見
 [更快、更省記憶體](./SENDING.zh-TW.md#更快更省記憶體用-unsafe-送出-string)。
 
-## Features
+## 功能
 
 - **WebSocket Server**：掛在 `net/http` 或 Gin 之下，或在你清楚自己在做什麼時直接用原始 TCP
 - **WebSocket Client**：支援 `ws://` 與 `wss://`
@@ -23,28 +23,31 @@ bounds check。如果你清楚自己在做什麼，你的程式可以更進一�
 - **Subprotocols**：兩端都能提出、選擇或要求一個
 - **HTTP Hijacking**：支援 `http.Server` 與 Gin
 - **Listener**：單一 read loop，依 RFC 6455 驗證每個 frame 後交給你的 hook
-- **Frame-level control**：需要時可自行組出 frame 並送出
+- **Frame 層級控制**：需要時可自行組出 frame 並送出
 - **Streaming**：以一個個 frame 送出或讀取比記憶體還大的 message
-- **Compression**：permessage-deflate（RFC 7692），兩端皆支援。見 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)
-- **Memory in your hands**：每條連線的 write buffer（最小 14 byte，隨時可以更換）與 read buffer（最小 16 byte）都由你決定。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#掌控權在你手上) 與 [READING.zh-TW.md](./READING.zh-TW.md#記憶體連線的-read-buffer)
-- **Memory protection**：用 `MaxFrameSize` 與 `MaxDataFramesSize` 限制對方能送來的 byte，用 `NewSizeLimitReader` 限制解壓縮後的大小。見 [READING.zh-TW.md](./READING.zh-TW.md#限制大小)
+- **壓縮**：permessage-deflate（RFC 7692），兩端皆支援。見 [PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)
+- **記憶體由你掌控**：每條連線的 write buffer（最小 14 byte，隨時可以更換）與 read buffer（最小 16 byte）都由你決定。見 [SENDING.zh-TW.md](./SENDING.zh-TW.md#掌控權在你手上) 與 [READING.zh-TW.md](./READING.zh-TW.md#記憶體連線的-read-buffer)
+- **記憶體保護**：用 `MaxFrameSize` 與 `MaxDataFramesSize` 限制對方能送來的 byte，用 `NewSizeLimitReader` 限制解壓縮後的大小。見 [READING.zh-TW.md](./READING.zh-TW.md#限制大小)
 - **Keepalive**：定期發送 ping，每次的 payload 由你決定
-- **Concurrent sending**：以 lock 保護，且 control frame 不會被卡在大型 message
+- **並行傳送**：以 lock 保護，且 control frame 不會被卡在大型 message
   後面
 
 還有更多，見[說明文件](#說明文件)。
 
-## Contents
+## 目錄
 
-- [Installation](#installation)
-- [Quick Start](#quick-start) — [Server](#server) · [Client](#client)
+- [安裝](#安裝)
+- [緣起與為什麼是 v7](#緣起與為什麼是-v7)
+- [目標](#目標)
+- [設計理念](#設計理念)
+- [快速開始](#快速開始) — [Server](#server) · [Client](#client)
 - [說明文件](#說明文件) — server、client、讀取、Listener、傳送、壓縮、benchmark
-- [Examples](#examples) — 三個 echo server、一個 client，以及一組 streaming 範例
-- [Testing](#testing)
-- [License](#license)
+- [範例](#範例) — 三個 echo server、一個 client，以及一組 streaming 範例
+- [測試](#測試)
+- [授權](#授權)
 - [從 v6 升級](#從-v6-升級)
 
-## Installation
+## 安裝
 
 ```bash
 go get github.com/weilun-shrimp/wlgows/v7
@@ -53,7 +56,48 @@ go get github.com/weilun-shrimp/wlgows/v7
 依照 Go 對 major version 2 以上的規定，import path 需要加上 `/v7` 後綴；package
 名稱仍然是 `wlgows`，所以程式中的寫法依然是 `wlgows.DialContext(...)`。
 
-## Quick Start
+### v7 是長期支援（LTS）版本
+
+見[緣起與為什麼是 v7](#緣起與為什麼是-v7)。
+
+## 緣起與為什麼是 v7
+
+很多函式庫把細節藏起來，替你做決定。這樣很難知道底下發生了什麼事，有時甚至沒辦法
+客製。我不喜歡這樣，所以開始了 wlgows 這個練習專案。唯一的使用者是我自己，只用在
+我私人的專案裡。每個版本都依那些專案的需要修改 API，所以常常出現不相容的改動。
+這就是版本號這麼大的原因。
+
+到了 v6，我發現 wlgows 幾乎已經符合 RFC 6455 的所有規範。我也發現它還能更進一步：
+和其他熱門的 Go WebSocket 函式庫相比，它有機會成為最快、最省記憶體、最正確的，
+也更容易使用和理解。所以 v7 是目前最後一次重新打造，目標就是這個。
+
+這也是 v7 成為長期支援（LTS）版本的原因。目前我沒有 v8 的計畫，至少短期內
+不會。修正與新功能都會放進 v7。
+
+## 目標
+
+- 最快的程式、最少的記憶體。
+- 永遠正確，遵循 RFC 6455 與 RFC 7692。
+- 依然容易學、容易用。
+
+## 設計理念
+
+我認為開發應該是自由的，而不是被函式庫限制住。開發者應該要能自己做取捨。所以
+wlgows 從不替你做決定。從低階到高階，幾乎所有東西你都可以控制：
+
+- 原始連線
+- I/O buffer
+- handshake
+- 每一個 frame
+- 每一則 message
+- keepalive ping
+- 還有更多，見[說明文件](#說明文件)
+
+幾乎每個函式都是 helper，幫你完成 WebSocket 的其中一個步驟。wlgows 自己內部也是用
+這些 helper 組成的，每一層都是。所以每個步驟你都可以自己來，做法和 wlgows 一樣，
+你也永遠知道發生了什麼事。
+
+## 快速開始
 
 ### Server
 
@@ -191,8 +235,8 @@ func main() {
 	}
 	defer netConn.Close()
 
-	reader := bufio.NewReader(netConn) // 每條連線 4096 byte；想縮小請見 READING.zh-TW.md
-	conn, _, err := wlgows.ClientHandShake(netConn, reader, bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{}) // 每條連線 4096 byte；見 SENDING.zh-TW.md
+	// reader 與 writer 每條連線各佔 4096 byte；想縮小請見 READING.zh-TW.md 與 SENDING.zh-TW.md。
+	conn, _, err := wlgows.ClientHandShake(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{})
 	if err != nil {
 		panic(err)
 	}
@@ -241,16 +285,16 @@ func main() {
 | **[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)** | 壓縮：每個設定欄位、context takeover、記憶體、自己壓縮大型資料 |
 | **[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)** | 與 gorilla/websocket、gobwas/ws 比較：每個數字，以及每一項落後為何保留 |
 
-## Examples
+## 範例
 
 三個 server 以三種方式執行同一支 echo 程式，client 可以連任何一個。streaming 範例
 自成一組。
 
-| Example | |
+| 範例 | |
 |---|---|
-| [`hijack_http`](./example/hijack_http/main.go) | 掛在 `net/http` 之下的 echo server，使用 `http.Hijacker` |
-| [`hijack_gin`](./example/hijack_gin/main.go) | 同一支 server，改掛在 Gin 之下，使用 `c.Writer.Hijack()`。`GET /ping` 依然正常回傳 JSON，與 WebSocket 並存 |
-| [`echo`](./example/echo/main.go) | 同一支 server，直接用原始 TCP，使用 `wlgows.Run` 與 `Accept`。request 有加上逾時，但沒有大小上限。TLS 由 `crypto/tls` 提供 |
+| [`hijack_http`](./example/hijack_http/main.go) | `net/http` 的 echo server，使用 `http.Hijacker` |
+| [`hijack_gin`](./example/hijack_gin/main.go) | Gin 的 echo server，使用 `c.Writer.Hijack()`。`GET /ping` 依然正常回傳 JSON，與 WebSocket 並存 |
+| [`echo`](./example/echo/main.go) | 原始 TCP 的 echo server，使用 `wlgows.Run` 與 `Accept`。request 有加上逾時，但沒有大小上限。TLS 由 `crypto/tls` 提供 |
 | [`client`](./example/client/main.go) | 互動式 client。輸入一行文字即送出，輸入 `exit` 會正常關閉連線 |
 | [`stream_server`](./example/stream_server/main.go) | 逐一接收 streaming message 的 frame 並直接寫入磁碟。使用 `Data` hook，適合大到無法放進記憶體的 message。壓縮過的 message 也一樣逐個 frame 解壓縮 |
 | [`stream_client`](./example/stream_client/main.go) | 將一個檔案當作單一 binary message 串流送出，一次一個 chunk |
@@ -283,7 +327,7 @@ stream client 再拿來和自己送出的內容比對。
 每個範例都使用 [`Listener`](./LISTENER.zh-TW.md)，它會回應 ping 與 close，
 並擋下不合法的 frame。每個檔案剩下的是你自己要寫的部分：hook。
 
-## Testing
+## 測試
 
 statement coverage 97.6%。Autobahn：server 與 client 都是 510 OK、0 失敗。見
 [Autobahn](./example/AUTOBAHN.zh-TW.md#我們的結果)。
@@ -292,7 +336,7 @@ statement coverage 97.6%。Autobahn：server 與 client 都是 510 OK、0 失敗
 go test -race ./...
 ```
 
-## License
+## 授權
 
 MIT
 
@@ -368,7 +412,7 @@ v7 新增：壓縮（permessage-deflate）、subprotocol、`DialContext`、`Read
   送出那個 frame，請像 streaming 範例那樣先檢查長度。
 - **`NewStandardListener` 現在會設定上限。** 每個 message 與每個 frame 4 KB、16 個
   frame、60 秒讀取逾時。更大的 message 會讓 `Listen` 回傳
-  `ErrFrameByteLengthExceeded`（1009），閒置的對方會逾時。請像 [Quick Start](#quick-start) 那樣調高，
+  `ErrFrameByteLengthExceeded`（1009），閒置的對方會逾時。請像[快速開始](#快速開始)那樣調高，
   並以 30 秒以內的間隔送 ping。在 v6 中它不設任何上限。
 - **`RFC6455UnknownHook` 會以 `ErrReservedOpcode` 停止 `Listen`。** 在 v6 中它以
   `nil` 暫停。

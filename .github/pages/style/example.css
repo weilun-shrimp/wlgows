@@ -1,0 +1,74 @@
+/* Example card: the whole card is a link to its main.go, like a guide card.
+   A kind label, the folder name, its file, and one or two lines.
+   .example-grid lays them out in 3 columns, then 2, then 1. */
+
+.example-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 960px) {
+  .example-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .example-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.example {
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 200ms ease-out;
+}
+
+.example:hover {
+  border-color: var(--accent);
+}
+
+.example-kind {
+  align-self: flex-start;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.example-name {
+  margin: 12px 0 0;
+  font-family: var(--font-mono);
+  font-size: 17px;
+  line-height: 1.3;
+}
+
+.example-file {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.example p {
+  margin: 10px 0 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.example code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 4px;
+  background: var(--code-bg);
+  border-radius: 4px;
+}

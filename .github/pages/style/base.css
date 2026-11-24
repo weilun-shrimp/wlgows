@@ -1,0 +1,124 @@
+/* Colors for light and dark, the reset, and .container. The other files
+   use these colors, so index.css loads this file first. */
+
+:root {
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --border: #e4e4e0;
+  --text: #1c1c1a;
+  --muted: #5c5c57;
+  --accent: #0a7d68;
+  --accent-text: #ffffff;
+  --accent-2: #0b6fb8;
+  --accent-3: #7c3aed;
+  --code-bg: #f1f1ee;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+
+  --glass-bg: rgb(255 255 255 / 0.55);
+  --glass-border: rgb(255 255 255 / 0.7);
+  --glass-shadow: 0 4px 24px rgb(0 0 0 / 0.06);
+  --glass-blur: 6px;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", "PingFang TC", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --max-width: 1080px;
+  --gutter: 16px;
+  --radius: 8px;
+  --header-height: 56px;
+}
+
+/* Dark: the system setting, unless the toggle picked light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1110;
+    --surface: #161a19;
+    --border: #2a302e;
+    --text: #e8ebe9;
+    --muted: #9aa29f;
+    --accent: #3ccfac;
+    --accent-text: #06201a;
+    --accent-2: #5ab8ff;
+    --accent-3: #b48cff;
+    --code-bg: #1b201f;
+    --shadow: none;
+
+    --glass-bg: rgb(22 26 25 / 0.55);
+    --glass-border: rgb(255 255 255 / 0.08);
+    --glass-shadow: 0 4px 24px rgb(0 0 0 / 0.4);
+  }
+}
+
+/* Dark: the toggle picked it. */
+:root[data-theme="dark"] {
+  --bg: #0e1110;
+  --surface: #161a19;
+  --border: #2a302e;
+  --text: #e8ebe9;
+  --muted: #9aa29f;
+  --accent: #3ccfac;
+  --accent-text: #06201a;
+  --accent-2: #5ab8ff;
+  --accent-3: #b48cff;
+  --code-bg: #1b201f;
+  --shadow: none;
+
+  --glass-bg: rgb(22 26 25 / 0.55);
+  --glass-border: rgb(255 255 255 / 0.08);
+  --glass-shadow: 0 4px 24px rgb(0 0 0 / 0.4);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  /* An anchor jump stops below the fixed header. */
+  scroll-padding-top: var(--header-height);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Headings and short lines split into lines of even length. Paragraphs
+   avoid a last line with a single word or character. */
+h1, h2, h3,
+.section-subtitle,
+.hero .subline,
+.site-footer-tagline {
+  text-wrap: balance;
+}
+
+p, li {
+  text-wrap: pretty;
+}
+
+/* Chinese breaks between any two characters, even inside a word. On short
+   centered lines, break only at punctuation and spaces instead. */
+:lang(zh-TW) :is(.hero .headline, .hero .subline, .section-subtitle, .section-title-sub) {
+  word-break: keep-all;
+}
+
+/* A name that must stay on one line, like 繁體中文. */
+.nowrap {
+  white-space: nowrap;
+}
+
+.container {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+}

@@ -1,8 +1,654 @@
 <!doctype html>
-<meta charset="utf-8">
-<title>wlgows Autobahn reports</title>
-<h1>wlgows Autobahn reports</h1>
-<ul>
-  <li><a href="autobahn_server/index.html">The server</a></li>
-  <li><a href="autobahn_client/index.html">The client</a></li>
-</ul>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WLGOWS · WebSocket library for Go</title>
+  <meta name="description" content="A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up correctness. Simple, well-tested and well-documented.">
+  <link rel="canonical" href="https://weilun-shrimp.github.io/wlgows/">
+  <link rel="alternate" hreflang="en" href="https://weilun-shrimp.github.io/wlgows/">
+  <link rel="alternate" hreflang="zh-TW" href="https://weilun-shrimp.github.io/wlgows/zh-TW/">
+  <link rel="alternate" hreflang="x-default" href="https://weilun-shrimp.github.io/wlgows/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <!-- The preview card when the link is shared (Slack, X, Discord ...). -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="WLGOWS">
+  <meta property="og:title" content="WLGOWS · WebSocket library for Go">
+  <meta property="og:description" content="A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up correctness. Simple, well-tested and well-documented.">
+  <meta property="og:url" content="https://weilun-shrimp.github.io/wlgows/">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="zh_TW">
+  <meta name="twitter:card" content="summary">
+
+  <!-- Tells search engines this page is about a Go library. -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "WLGOWS",
+    "description": "A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up correctness. Simple, well-tested and well-documented.",
+    "url": "https://weilun-shrimp.github.io/wlgows/",
+    "codeRepository": "https://github.com/weilun-shrimp/wlgows",
+    "programmingLanguage": "Go",
+    "runtimePlatform": "Go 1.24 or newer",
+    "version": "7",
+    "license": "https://opensource.org/licenses/MIT",
+    "author": {
+      "@type": "Person",
+      "name": "weilun-shrimp",
+      "url": "https://github.com/weilun-shrimp"
+    },
+    "keywords": "WebSocket library, Go WebSocket, Golang WebSocket, WebSocket server, WebSocket client, open source, RFC 6455, RFC 7692, permessage-deflate",
+    "sameAs": "https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7",
+    "inLanguage": "en"
+  }
+  </script>
+
+  <link rel="stylesheet" href="style/index.css">
+  <script src="script/theme.js"></script>
+  <script type="module" src="script/index.js"></script>
+</head>
+<body>
+  <header class="site-header glass">
+    <div class="container">
+      <a class="brand text-gradient" href="./">WLGOWS</a>
+      <nav class="nav" id="site-nav">
+        <a href="#features">Feature-rich</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="#well-tested">Well-tested</a>
+        <a href="#quick-start">Quick Start</a>
+        <a href="#guides">Guides</a>
+      </nav>
+      <div class="header-actions">
+        <div class="lang-switch">
+          <a href="./" aria-current="page" lang="en">EN</a>
+          <a href="zh-TW/" lang="zh-TW">繁中</a>
+        </div>
+        <button class="icon-button theme-toggle" type="button" aria-label="Switch theme">
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a class="icon-button" href="https://github.com/weilun-shrimp/wlgows" aria-label="GitHub">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.4 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>
+        </a>
+        <button class="icon-button menu-toggle" type="button" aria-label="Menu" aria-controls="site-nav" aria-expanded="false">
+          <svg class="icon-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+          <svg class="icon-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <a class="badge" href="https://github.com/weilun-shrimp/wlgows/blob/master/README.md#why-i-started-and-why-v7"><span class="text-gradient">v7 · LTS</span></a>
+        <h1>
+          <span class="wordmark text-gradient">WLGOWS</span>
+          <span class="headline">A fast open source WebSocket library for Go.</span>
+        </h1>
+        <p class="subline">Built for speed and memory efficiency, without giving up correctness. Unlock your WebSocket app's full potential.</p>
+
+        <div class="install">
+          <code id="install-command">go get github.com/weilun-shrimp/wlgows/v7</code>
+          <button class="copy-button" type="button" data-copy="install-command" data-copied-label="Copied">Copy</button>
+        </div>
+
+        <div class="hero-actions">
+          <a class="button button-primary" href="#quick-start">Start building</a>
+          <a class="button" href="https://github.com/weilun-shrimp/wlgows">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.4 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.9 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg>
+            GitHub
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="why">
+      <div class="container">
+        <h2 class="section-title">Why choose us</h2>
+        <div class="card-grid">
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+            <h3>Correctness first</h3>
+            <p>RFC 6455 and 7692, with 0 Autobahn failures on both sides. No <code>unsafe</code>.</p>
+            <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/AUTOBAHN.md#our-result">Autobahn results →</a>
+          </article>
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            <h3>Fast and lean</h3>
+            <p>Faster than gorilla/websocket in almost every benchmark. Sending never allocates.</p>
+            <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Benchmarks →</a>
+          </article>
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/></svg>
+            <h3>Simple to learn</h3>
+            <p>Learn wlgows, and you learn WebSocket. Each function does one clear step. No magic.</p>
+            <a class="card-link" href="#quick-start">Quick Start →</a>
+          </article>
+          <article class="card">
+            <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 4h7a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H2z"/><path d="M22 4h-7a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h8z"/></svg>
+            <h3>Well-documented</h3>
+            <p>Guides for every part, in English and <span class="nowrap" lang="zh-TW">繁體中文</span>.</p>
+            <a class="card-link" href="#guides">Guides →</a>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="features">
+      <div class="container">
+        <h2 class="section-title">Feature-rich</h2>
+        <p class="section-subtitle">Everything a WebSocket app needs, on both sides.</p>
+        <ul class="feature-grid">
+          <li class="feature">
+            <h3>WebSocket Server</h3>
+            <p>Behind <code>net/http</code> or Gin, or on raw TCP</p>
+          </li>
+          <li class="feature">
+            <h3>WebSocket Client</h3>
+            <p><code>ws://</code> and <code>wss://</code>.</p>
+          </li>
+          <li class="feature">
+            <h3>TLS/SSL</h3>
+            <p>On both sides.</p>
+          </li>
+          <li class="feature">
+            <h3>Subprotocols</h3>
+            <p>Offer, pick or require one, on either side.</p>
+          </li>
+          <li class="feature">
+            <h3>HTTP Hijacking</h3>
+            <p>From <code>http.Server</code> or Gin.</p>
+          </li>
+          <li class="feature">
+            <h3>Listener</h3>
+            <p>A read loop that validates against RFC 6455 and routes frames to your hooks.</p>
+          </li>
+          <li class="feature">
+            <h3>Frame-level control</h3>
+            <p>Build and send your own frames when you need to.</p>
+          </li>
+          <li class="feature">
+            <h3>Streaming</h3>
+            <p>Send or read a message larger than memory, frame by frame.</p>
+          </li>
+          <li class="feature">
+            <h3>Compression</h3>
+            <p>permessage-deflate (RFC 7692), on both sides.</p>
+          </li>
+          <li class="feature">
+            <h3>Memory in your hands</h3>
+            <p>Pick each connection's read and write buffer, as small as you need.</p>
+          </li>
+          <li class="feature">
+            <h3>Memory protection</h3>
+            <p>Cap how much a peer can send, before and after decompressing.</p>
+          </li>
+          <li class="feature">
+            <h3>Keepalive</h3>
+            <p>Ping on an interval, with a payload you choose per ping.</p>
+          </li>
+          <li class="feature">
+            <h3>Concurrent sending</h3>
+            <p>Lock-guarded, and control frames are never stuck behind a long message.</p>
+          </li>
+          <li class="feature feature-more">
+            <a href="#guides">
+              <span class="feature-more-title">And even more</span>
+              <p>See the Guides →</p>
+            </a>
+          </li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="design-concept">
+      <div class="container">
+        <h2 class="section-title">Design concept</h2>
+        <p class="section-subtitle">You control almost everything, from high level to low level.</p>
+        <div class="concept">
+          <div class="concept-text">
+            <p class="concept-lead">wlgows never decides for you.</p>
+            <p>I believe development should be free, not locked down by the library. Developers should make their own tradeoffs.</p>
+            <p>Almost every function is a helper for one step of WebSocket. wlgows itself is built from these same helpers, at every level. So you can always do any step yourself, the same way wlgows does, and you always know what is going on.</p>
+          </div>
+          <div class="concept-stack">
+            <ol class="layer-stack">
+              <li class="layer" data-level="High">Keepalive pings</li>
+              <li class="layer">Each message</li>
+              <li class="layer">Each frame</li>
+              <li class="layer">The handshake</li>
+              <li class="layer">I/O buffers</li>
+              <li class="layer" data-level="Low">The raw connection</li>
+            </ol>
+            <p class="layer-stack-more"><a href="#guides">And even more. See the Guides →</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="benchmarks">
+      <div class="container">
+        <h2 class="section-title">Benchmarks</h2>
+        <p class="section-subtitle">Compared with gorilla/websocket and gobwas/ws</p>
+        <div class="stat-row">
+          <div class="stat">
+            <span class="stat-value text-gradient">0</span>
+            <span class="stat-label">allocs on every send</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value text-gradient">1.3x–3.2x</span>
+            <span class="stat-label">faster large frame reads than gorilla</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value text-gradient">1.9x–2.8x</span>
+            <span class="stat-label">faster small frame reads than gorilla</span>
+          </div>
+        </div>
+        <div class="chart-grid">
+          <figure class="bar-chart">
+            <figcaption>
+              <span class="bar-chart-title">Server send, large frame</span>
+              <span class="bar-chart-unit">ns per op · lower is better</span>
+            </figcaption>
+            <div class="bar-rows">
+              <div class="bar-row bar-row-ours">
+                <span class="bar-name">wlgows</span>
+                <span class="bar-track"><span class="bar" style="--value: 58.9%"></span></span>
+                <span class="bar-value">53 ns</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gorilla</span>
+                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                <span class="bar-value">90 ns</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gobwas</span>
+                <span class="bar-track"><span class="bar" style="--value: 65.6%"></span></span>
+                <span class="bar-value">59 ns</span>
+              </div>
+            </div>
+          </figure>
+          <figure class="bar-chart">
+            <figcaption>
+              <span class="bar-chart-title">Server send, 64 frames batched</span>
+              <span class="bar-chart-unit">ns per op · lower is better</span>
+            </figcaption>
+            <div class="bar-rows">
+              <div class="bar-row bar-row-ours">
+                <span class="bar-name">wlgows</span>
+                <span class="bar-track"><span class="bar" style="--value: 45.4%"></span></span>
+                <span class="bar-value">672 ns</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gorilla</span>
+                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                <span class="bar-value">1480 ns</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gobwas</span>
+                <span class="bar-track"><span class="bar" style="--value: 54.8%"></span></span>
+                <span class="bar-value">811 ns</span>
+              </div>
+            </div>
+          </figure>
+          <figure class="bar-chart">
+            <figcaption>
+              <span class="bar-chart-title">Server send, small frame</span>
+              <span class="bar-chart-unit">ns per op · lower is better</span>
+            </figcaption>
+            <div class="bar-rows">
+              <div class="bar-row bar-row-ours">
+                <span class="bar-name">wlgows</span>
+                <span class="bar-track"><span class="bar" style="--value: 77.4%"></span></span>
+                <span class="bar-value">17.8 ns</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gorilla</span>
+                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                <span class="bar-value">23 ns</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gobwas</span>
+                <span class="bar-track"><span class="bar" style="--value: 65.2%"></span></span>
+                <span class="bar-value">15 ns</span>
+              </div>
+            </div>
+            <p class="bar-chart-note">wlgows: 0 allocs. gobwas: 1 alloc per frame.</p>
+          </figure>
+          <figure class="bar-chart">
+            <figcaption>
+              <span class="bar-chart-title">Read memory, one 1 MB frame</span>
+              <span class="bar-chart-unit">MB per op · lower is better</span>
+            </figcaption>
+            <div class="bar-rows">
+              <div class="bar-row bar-row-ours">
+                <span class="bar-name">wlgows</span>
+                <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
+                <span class="bar-value">1.05 MB</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gorilla</span>
+                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                <span class="bar-value">2.23 MB</span>
+              </div>
+              <div class="bar-row">
+                <span class="bar-name">gobwas</span>
+                <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
+                <span class="bar-value">1.05 MB</span>
+              </div>
+            </div>
+          </figure>
+        </div>
+        <div class="callout">
+          <p><strong>Client sends are slower, on purpose.</strong> wlgows uses a stronger masking key, and never writes to your buffer. Each faster path was measured and turned down, because <span class="callout-highlight text-gradient">correctness and safety come first</span>.</p>
+        </div>
+        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · median of 5 runs</p>
+        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Every number, and why each loss stays →</a></p>
+      </div>
+    </section>
+    <section class="section" id="well-tested">
+      <div class="container">
+        <h2 class="section-title">Well-tested</h2>
+        <div class="stat-row">
+          <div class="stat">
+            <span class="stat-value text-gradient">97.6%</span>
+            <span class="stat-label">statement coverage</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value text-gradient">0</span>
+            <span class="stat-label">Autobahn failures as a server</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value text-gradient">0</span>
+            <span class="stat-label">Autobahn failures as a client</span>
+          </div>
+        </div>
+        <div class="table-card">
+          <table class="data-table">
+            <caption>Autobahn TestSuite: wlgows v7, <code>wstest</code> 25.10.1, all 517 cases on each side</caption>
+            <thead>
+              <tr>
+                <th scope="col">Side</th>
+                <th scope="col">OK</th>
+                <th scope="col">Non-Strict</th>
+                <th scope="col">Informational</th>
+                <th scope="col">Unimplemented</th>
+                <th scope="col">Failed</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">Server</th>
+                <td class="data-good">510</td>
+                <td>4</td>
+                <td>3</td>
+                <td>0</td>
+                <td class="data-good">0</td>
+              </tr>
+              <tr>
+                <th scope="row">Client</th>
+                <td class="data-good">510</td>
+                <td>4</td>
+                <td>3</td>
+                <td>0</td>
+                <td class="data-good">0</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tested-actions">
+          <a class="button" href="autobahn_server/index.html">Server report →</a>
+          <a class="button" href="autobahn_client/index.html">Client report →</a>
+        </div>
+        <div class="tested-command">
+          <div class="install">
+            <code id="test-command">go test -race ./...</code>
+            <button class="copy-button" type="button" data-copy="test-command" data-copied-label="Copied">Copy</button>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="quick-start">
+      <div class="container">
+        <h2 class="section-title">Quick Start</h2>
+        <p class="section-subtitle">A working echo server, and a client to talk to it.</p>
+        <div class="code-tabs" data-tabs>
+          <div class="code-tabs-bar">
+            <div class="code-tabs-list" role="tablist" aria-label="Quick Start code">
+              <button class="code-tab" type="button" role="tab" id="tab-server" aria-controls="panel-server" aria-selected="true">Server</button>
+              <button class="code-tab" type="button" role="tab" id="tab-client" aria-controls="panel-client" aria-selected="false">Client</button>
+            </div>
+          </div>
+          <div class="code-panel" role="tabpanel" id="panel-server" aria-labelledby="tab-server">
+            <div class="code-block">
+              <span class="code-block-name">main.go</span>
+              <button class="copy-button" type="button" data-copy="code-server" data-copied-label="Copied">Copy</button>
+              <pre><code id="code-server">package main
+
+import (
+	"io"
+	"log"
+	"net/http"
+
+	"github.com/weilun-shrimp/wlgows/v7"
+)
+
+// readMessage returns the bytes of one message. It decompresses a compressed
+// message and checks text as UTF-8. See READING.md.
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close() // always close it
+	return io.ReadAll(reader)
+}
+
+func main() {
+	log.Fatal(http.ListenAndServe(":8001", http.HandlerFunc(handle)))
+}
+
+func handle(w http.ResponseWriter, r *http.Request) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
+		return
+	}
+	netConn, bufRW, err := hijacker.Hijack()
+	if err != nil {
+		http.Error(w, "could not hijack connection", http.StatusInternalServerError)
+		return
+	}
+	defer netConn.Close()
+
+	// Pass bufRW.Reader: net/http may have read the start of the first frame into it.
+	conn, _, err := wlgows.ServerHandShake(netConn, bufRW.Reader, bufRW.Writer, r, wlgows.ServerHandShakeConfig{})
+	if err != nil {
+		return
+	}
+
+	// Ping, pong, close and reserved opcodes already answered.
+	listener := conn.NewStandardListener()
+
+	// SetConfig replaces all of it, so start from what the standard hooks left.
+	config := listener.GetConfig()
+	config.Text = func(frames wlgows.DataFrames) {
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		conn.SendText(message, wlgows.SendDataConfig{}) // echo
+	}
+	listener.SetConfig(config)
+
+	log.Println("closing:", listener.Listen())
+}</code></pre>
+            </div>
+            <p class="code-note">A short, runnable server. For production, follow the <a href="#guides">docs</a> to pick your own limits and settings. <a href="https://github.com/weilun-shrimp/wlgows/blob/master/README.md#quick-start">The full server →</a></p>
+          </div>
+          <div class="code-panel" role="tabpanel" id="panel-client" aria-labelledby="tab-client">
+            <div class="code-block">
+              <span class="code-block-name">main.go</span>
+              <button class="copy-button" type="button" data-copy="code-client" data-copied-label="Copied">Copy</button>
+              <pre><code id="code-client">package main
+
+import (
+	"bufio"
+	"io"
+	"log"
+
+	"github.com/weilun-shrimp/wlgows/v7"
+)
+
+// readMessage returns the bytes of one message. It decompresses a compressed
+// message and checks text as UTF-8. See READING.md.
+func readMessage(conn *wlgows.Conn, frames wlgows.DataFrames) ([]byte, error) {
+	reader, err := conn.DataFramesReader(frames)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close() // always close it
+	return io.ReadAll(reader)
+}
+
+func main() {
+	// Dial only connects and builds the request. You run the handshake
+	// yourself, so you can still add headers to `request` before it is sent.
+	netConn, request, err := wlgows.Dial("ws://localhost:8001", nil)
+	if err != nil {
+		panic(err)
+	}
+	defer netConn.Close()
+
+	// The reader and the writer take 4096 bytes/conn each; see READING.md and SENDING.md to shrink them.
+	conn, _, err := wlgows.ClientHandShake(netConn, bufio.NewReader(netConn), bufio.NewWriter(netConn), request, wlgows.ClientHandShakeConfig{})
+	if err != nil {
+		panic(err)
+	}
+
+	listener := conn.NewStandardListener()
+
+	config := listener.GetConfig() // what the standard hooks left
+	config.Text = func(frames wlgows.DataFrames) {
+		message, err := readMessage(conn, frames)
+		if err != nil {
+			listener.PauseListen(err) // Listen returns err
+			return
+		}
+		log.Printf("received: %s", message)
+	}
+	listener.SetConfig(config)
+
+	conn.SendText([]byte("Hello, WebSocket!"), wlgows.SendDataConfig{})
+
+	log.Println("closing:", listener.Listen())
+}</code></pre>
+            </div>
+            <p class="code-note">A short, runnable client. For production, follow the <a href="#guides">docs</a> to pick your own limits and settings. <a href="https://github.com/weilun-shrimp/wlgows/blob/master/README.md#quick-start">The full client →</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="examples">
+      <div class="container">
+        <h2 class="section-title">Examples</h2>
+        <p class="section-subtitle">Full programs, with the production setup. Pick the one closest to your app, and make it yours.</p>
+        <div class="example-grid">
+          <a class="example" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/hijack_http/main.go">
+            <span class="example-kind">Server</span>
+            <h3 class="example-name">hijack_http</h3>
+            <span class="example-file">example/hijack_http/main.go</span>
+            <p>Echo server behind <code>net/http</code>, via <code>http.Hijacker</code>.</p>
+          </a>
+          <a class="example" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/hijack_gin/main.go">
+            <span class="example-kind">Server</span>
+            <h3 class="example-name">hijack_gin</h3>
+            <span class="example-file">example/hijack_gin/main.go</span>
+            <p>Echo server behind Gin, via <code>c.Writer.Hijack()</code>. <code>GET /ping</code> keeps answering JSON alongside the WebSocket.</p>
+          </a>
+          <a class="example" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/echo/main.go">
+            <span class="example-kind">Server</span>
+            <h3 class="example-name">echo</h3>
+            <span class="example-file">example/echo/main.go</span>
+            <p>Echo server over raw TCP, with <code>wlgows.Run</code> and <code>Accept</code>. TLS comes from <code>crypto/tls</code>.</p>
+          </a>
+          <a class="example" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/client/main.go">
+            <span class="example-kind">Client</span>
+            <h3 class="example-name">client</h3>
+            <span class="example-file">example/client/main.go</span>
+            <p>Interactive client. Type a line to send it, <code>exit</code> to close cleanly. Works with all three servers.</p>
+          </a>
+          <a class="example" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/stream_server/main.go">
+            <span class="example-kind">Streaming</span>
+            <h3 class="example-name">stream_server</h3>
+            <span class="example-file">example/stream_server/main.go</span>
+            <p>Receives a streamed message frame by frame, straight to disk.</p>
+          </a>
+          <a class="example" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/stream_client/main.go">
+            <span class="example-kind">Streaming</span>
+            <h3 class="example-name">stream_client</h3>
+            <span class="example-file">example/stream_client/main.go</span>
+            <p>Streams a file as one binary message, a chunk at a time.</p>
+          </a>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="guides">
+      <div class="container">
+        <h2 class="section-title">
+          Guides
+          <span class="section-title-sub">Well-documented, in English and <span class="nowrap" lang="zh-TW">繁體中文</span></span>
+        </h2>
+        <div class="guide-grid">
+          <a class="guide" href="https://github.com/weilun-shrimp/wlgows/blob/master/SERVER.md">
+            <h3 class="guide-title">Server</h3>
+            <span class="guide-file">SERVER.md</span>
+            <p>Accepting a connection, the handshake and its refusals, hijacking from <code>net/http</code> or Gin, TLS, subprotocols, compression.</p>
+          </a>
+          <a class="guide" href="https://github.com/weilun-shrimp/wlgows/blob/master/CLIENT.md">
+            <h3 class="guide-title">Client</h3>
+            <span class="guide-file">CLIENT.md</span>
+            <p>Dialing, TLS, the handshake, adding headers, subprotocols, compression.</p>
+          </a>
+          <a class="guide" href="https://github.com/weilun-shrimp/wlgows/blob/master/READING.md">
+            <h3 class="guide-title">Reading</h3>
+            <span class="guide-file">READING.md</span>
+            <p>Size limits, errors and close codes, compressed messages, large messages, the read buffer.</p>
+          </a>
+          <a class="guide" href="https://github.com/weilun-shrimp/wlgows/blob/master/LISTENER.md">
+            <h3 class="guide-title">Listener</h3>
+            <span class="guide-file">LISTENER.md</span>
+            <p>The standard Listener, hooks, limits, errors, noticing a dead peer, pausing.</p>
+          </a>
+          <a class="guide" href="https://github.com/weilun-shrimp/wlgows/blob/master/SENDING.md">
+            <h3 class="guide-title">Sending</h3>
+            <span class="guide-file">SENDING.md</span>
+            <p>Whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks.</p>
+          </a>
+          <a class="guide" href="https://github.com/weilun-shrimp/wlgows/blob/master/PERMESSAGE_DEFLATE.md">
+            <h3 class="guide-title">Compression</h3>
+            <span class="guide-file">PERMESSAGE_DEFLATE.md</span>
+            <p>Each config field, context takeover, memory, compressing large data yourself.</p>
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="container site-footer-inner">
+      <a class="site-footer-brand text-gradient" href="./">WLGOWS</a>
+      <p class="site-footer-tagline">A fast open source WebSocket library for Go.</p>
+      <nav class="site-footer-links" aria-label="Footer">
+        <a href="https://github.com/weilun-shrimp/wlgows">GitHub</a>
+        <a href="https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7">pkg.go.dev</a>
+        <a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Benchmarks</a>
+        <a href="autobahn_server/index.html">Autobahn server</a>
+        <a href="autobahn_client/index.html">Autobahn client</a>
+        <a href="zh-TW/" hreflang="zh-TW" lang="zh-TW">繁體中文</a>
+      </nav>
+      <p class="site-footer-license"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/LICENSE.txt">MIT licensed</a> · © 2022 weilun-shrimp</p>
+    </div>
+  </footer>
+</body>
+</html>

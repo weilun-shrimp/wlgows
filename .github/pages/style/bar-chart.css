@@ -1,0 +1,76 @@
+/* Bar chart: one row per library, with its name, a bar and its value. Each
+   bar's length is --value, its share of the largest value in the chart.
+   wlgows (.bar-row-ours) is drawn in the gradient, the others in gray, and
+   every row is labeled, so color is never the only way to tell them apart. */
+
+.bar-chart {
+  margin: 0;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.bar-chart figcaption {
+  margin-bottom: 16px;
+}
+
+.bar-chart-title {
+  display: block;
+  font-weight: 700;
+}
+
+.bar-chart-unit {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 64px 1fr 72px;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.bar-name {
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.bar-track {
+  display: block;
+  height: 12px;
+}
+
+.bar {
+  display: block;
+  width: var(--value);
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+.bar-value {
+  font-family: var(--font-mono);
+  text-align: right;
+  color: var(--muted);
+}
+
+.bar-row-ours .bar-name,
+.bar-row-ours .bar-value {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.bar-row-ours .bar {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+}
+
+.bar-chart-note {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}

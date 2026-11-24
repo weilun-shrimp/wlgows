@@ -1,0 +1,56 @@
+/* Badge: a pill with a gradient border. Its text wears .text-gradient in the
+   HTML. The border is a gradient background behind a page-colored inner
+   background, so it shows only in the transparent border. */
+
+.badge {
+  display: inline-block;
+  padding: 6px 16px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(var(--bg), var(--bg)) padding-box,
+    linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3)) border-box;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* A badge that is a link fills with the gradient on hover, and its text turns
+   white. A gradient can't transition, so the fill is a layer under the text
+   that fades in. isolate keeps that layer above the badge's own background. */
+a.badge {
+  position: relative;
+  isolation: isolate;
+}
+
+a.badge::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+  opacity: 0;
+  transition: opacity 300ms ease-out;
+}
+
+a.badge .text-gradient {
+  transition: color 300ms ease-out;
+}
+
+a.badge:hover::before,
+a.badge:focus-visible::before {
+  opacity: 1;
+}
+
+a.badge:hover .text-gradient,
+a.badge:focus-visible .text-gradient {
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  a.badge::before,
+  a.badge .text-gradient {
+    transition: none;
+  }
+}

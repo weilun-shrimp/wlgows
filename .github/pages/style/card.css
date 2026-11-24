@@ -1,0 +1,52 @@
+/* Card: an icon, a title, a short text and a link at the bottom. */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.card-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+
+.card h3 {
+  margin: 16px 0 8px;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.card p {
+  margin: 0 0 16px;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.card code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  background: var(--code-bg);
+  border-radius: 4px;
+}
+
+.card-link {
+  margin-top: auto;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 200ms ease-out;
+}
+
+.card-link:hover {
+  text-decoration-color: currentColor;
+}

@@ -1,0 +1,41 @@
+/* Install: a command line with a copy button. */
+
+.install {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100%;
+  padding: 10px 10px 10px 16px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.install code {
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.install code::before {
+  content: "$ ";
+  color: var(--muted);
+}
+
+.copy-button {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 200ms ease-out;
+}
+
+.copy-button:hover {
+  color: var(--text);
+}

@@ -71,9 +71,11 @@ jobs:
           name: autobahn-client
           path: site/autobahn_client
 
-      # The site's home page, with a link to each report.
-      - name: Copy the index page
-        run: cp .github/pages/index.html site/
+      # The site itself: everything in .github/pages/. The English page, the
+      # zh-TW page, their CSS, JS and icon. The English page links to each
+      # report. pages/. copies what is inside the folder, not the folder.
+      - name: Copy the site
+        run: cp -r .github/pages/. site/
 
       # GitHub's own step. It packs the whole site/ folder into one file,
       # artifact.tar, and uploads it as an artifact named github-pages: to the

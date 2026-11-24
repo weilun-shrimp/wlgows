@@ -1,0 +1,56 @@
+/* Guide card: the whole card is a link to one guide. A title, its file name,
+   and what is in it. .guide-grid fits as many columns as the width allows,
+   each at least 300px. */
+
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 360px) {
+  .guide-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.guide {
+  display: block;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 200ms ease-out;
+}
+
+.guide:hover {
+  border-color: var(--accent);
+}
+
+.guide-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.guide-file {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.guide p {
+  margin: 10px 0 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.guide code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 4px;
+  background: var(--code-bg);
+  border-radius: 4px;
+}

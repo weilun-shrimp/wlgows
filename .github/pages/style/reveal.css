@@ -1,0 +1,32 @@
+/* Reveal: script/reveal.js adds .reveal to each section, then .revealed
+   when it scrolls into view. The section slides up 32px and fades in. Then
+   its items (cards, features) do the same, one after another: each starts
+   70ms after the one before it. */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(32px);
+  transition: opacity 800ms ease-out, transform 800ms ease-out;
+}
+
+.reveal.revealed {
+  opacity: 1;
+  transform: none;
+}
+
+/* --reveal-index is the item's place in its list: 0, 1, 2 ... This
+   transition replaces the item's own, so it also keeps a hover border
+   transition: 200ms, with no delay, so a hover answers at once. */
+.reveal-item {
+  opacity: 0;
+  transform: translateY(20px);
+  transition-property: opacity, transform, border-color;
+  transition-duration: 600ms, 600ms, 200ms;
+  transition-timing-function: ease-out;
+  transition-delay: calc(150ms + var(--reveal-index, 0) * 70ms), calc(150ms + var(--reveal-index, 0) * 70ms), 0s;
+}
+
+.revealed .reveal-item {
+  opacity: 1;
+  transform: none;
+}

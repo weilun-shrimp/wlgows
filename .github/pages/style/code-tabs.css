@@ -1,0 +1,113 @@
+/* Code tabs: tab buttons above one code panel at a time. script/tabs.js
+   hides the panels that are not selected; without it, every panel shows,
+   one under the other. */
+
+.code-tabs-bar {
+  display: flex;
+  margin-bottom: 12px;
+}
+
+.code-tabs-list {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.code-tab {
+  padding: 6px 16px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 200ms ease-out, background-color 200ms ease-out;
+}
+
+.code-tab:hover {
+  color: var(--text);
+}
+
+.code-tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+/* A gap between two shown panels, which happens only without JS. A hidden
+   panel before it does not count, so a tab never shifts its panel down. */
+.code-panel:not([hidden]) + .code-panel:not([hidden]) {
+  margin-top: 24px;
+}
+
+.code-panel[hidden] {
+  display: none;
+}
+
+/* With JS (.tabs-ready, set by script/tabs.js): every panel sits in the same
+   grid cell, and a hidden one is only invisible. The box then always takes
+   the height of the tallest panel, so switching tabs never moves the page
+   below it. */
+.code-tabs.tabs-ready {
+  display: grid;
+}
+
+.code-tabs.tabs-ready .code-tabs-bar {
+  grid-row: 1;
+}
+
+.code-tabs.tabs-ready .code-panel {
+  grid-row: 2;
+  grid-column: 1;
+  opacity: 1;
+  transition: opacity 500ms ease-out, visibility 0s;
+}
+
+/* Switching tabs cross-fades: the old panel fades out (350ms) while the new
+   one fades in (500ms). visibility waits for the fade-out, then takes the
+   hidden panel out of clicks and the keyboard. */
+.code-tabs.tabs-ready .code-panel[hidden] {
+  display: block;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 350ms ease-out, visibility 0s linear 350ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .code-tabs.tabs-ready .code-panel,
+  .code-tabs.tabs-ready .code-panel[hidden] {
+    transition: none;
+  }
+}
+
+.code-note {
+  margin: 12px 0 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.code-note code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 1px 4px;
+  background: var(--code-bg);
+  border-radius: 4px;
+}
+
+.code-note a {
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 200ms ease-out;
+}
+
+.code-note a:hover {
+  text-decoration-color: currentColor;
+}
