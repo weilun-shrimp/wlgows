@@ -2,6 +2,10 @@
 
 # WLGOWS
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/weilun-shrimp/wlgows/v7.svg)](https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7)
+[![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](https://weilun-shrimp.github.io/wlgows/)
+[![Master CI](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml/badge.svg?branch=master)](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml)
+
 A fast open source WebSocket library for Go. Built for speed and memory
 efficiency, without giving up correctness. Simple, well-tested and
 well-documented. It's faster than gorilla/websocket in almost every

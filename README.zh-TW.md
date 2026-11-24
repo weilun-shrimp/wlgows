@@ -2,6 +2,10 @@
 
 # WLGOWS
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/weilun-shrimp/wlgows/v7.svg)](https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7)
+[![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](https://weilun-shrimp.github.io/wlgows/zh-TW/)
+[![Master CI](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml/badge.svg?branch=master)](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml)
+
 高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲正確性。
 容易上手、功能豐富，經過充分測試，文件完善。在幾乎所有
 [benchmark](./BENCHMARK_COMPARISON.zh-TW.md) 中，表現都優於 gorilla/websocket。
