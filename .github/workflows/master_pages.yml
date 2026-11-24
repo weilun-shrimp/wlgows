@@ -1,51 +1,25 @@
-# Publishes the Autobahn reports of this run to GitHub Pages:
+# Publishes the site and the Autobahn reports of this run to GitHub Pages:
 # https://weilun-shrimp.github.io/wlgows/. master_ci.yml calls this file, on a
 # push to master, after the tests and both Autobahn jobs pass.
+#
+# Two jobs: build packs the site and uploads it, then deploy publishes it.
+# deploy-pages looks up the uploaded site by name. Right after an upload in
+# the same job, that lookup can miss it. In a later job, the upload is done
+# and always found.
+# See https://github.com/actions/deploy-pages/issues/451.
 name: Master pages
 
 on:
   workflow_call:
 
 jobs:
-  pages:
+  build:
     # Each job runs on a new virtual machine from GitHub. ubuntu-latest is not a
     # plain Ubuntu: it is GitHub's own image, built on a recent Ubuntu LTS,
     # with Docker, git and python already installed.
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The permissions come from the pages job in master_ci.yml.
-    # The environment: a deploy target on GitHub, listed in Settings →
-    # Environments. Setting Pages to GitHub Actions made one named
-    # github-pages, with a rule that only master may deploy. deploy-pages
-    # works only in a job that names it.
-    #
-    # url is the site's address. GitHub shows it as a link on the run's page
-    # and in the repo's Deployments list.
-    #
-    # ${{ steps.deployment.outputs.page_url }} reads the address from the last
-    # step, deploy-pages. Word by word:
-    # - steps: this job's steps, the list under steps: below.
-    # - deployment: one step in that list, the one with id: deployment. That
-    #   is the deploy-pages step. An id is a name we give a step, so other
-    #   lines can point at it.
-    # - outputs: the values a step gives back when it ends. Each action
-    #   decides its own. deploy-pages gives back one named page_url.
-    # - page_url: that value, the site's address,
-    #   https://weilun-shrimp.github.io/wlgows/.
-    # ${{ }} means GitHub fills it in, after deploy-pages ends.
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    # One deploy at a time.
-    # - group: pages is a group name we choose. GitHub never runs two jobs
-    #   with the same group name at once, even from different runs. So the
-    #   second pages job waits until the first one is done.
-    # - cancel-in-progress: false: the waiting job does not cancel the running
-    #   one, so no deploy is cut off halfway. If more jobs come while one
-    #   waits, only the newest keeps waiting.
-    concurrency:
-      group: pages
-      cancel-in-progress: false
+    # The permissions of both jobs come from the pages job in master_ci.yml.
     steps:
       # GitHub's own step. It copies the repo into the machine, for
       # .github/pages/. See the checkout step in autobahn_server.yml.
@@ -53,7 +27,10 @@ jobs:
 
       # site/ is the folder we publish. It is not in git: the first download
       # step makes it, at /home/runner/work/wlgows/wlgows/site.
-      #   site/index.html             (from .github/pages/)
+      #   site/index.html             (the English page)
+      #   site/zh-TW/                 (the zh-TW page)
+      #   site/style/, site/script/   (the CSS and JS of both pages)
+      #   site/favicon.svg            (the icon)
       #   site/autobahn_server/       (the server report)
       #   site/autobahn_client/       (the client report)
       #
@@ -85,8 +62,46 @@ jobs:
         with:
           path: site
 
+  deploy:
+    # needs: waits for build, and skips this job if build fails.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The environment: a deploy target on GitHub, listed in Settings →
+    # Environments. Setting Pages to GitHub Actions made one named
+    # github-pages, with a rule that only master may deploy. deploy-pages
+    # works only in a job that names it.
+    #
+    # url is the site's address. GitHub shows it as a link on the run's page
+    # and in the repo's Deployments list.
+    #
+    # ${{ steps.deployment.outputs.page_url }} reads the address from the last
+    # step, deploy-pages. Word by word:
+    # - steps: this job's steps, the list under steps: below.
+    # - deployment: one step in that list, the one with id: deployment. That
+    #   is the deploy-pages step. An id is a name we give a step, so other
+    #   lines can point at it.
+    # - outputs: the values a step gives back when it ends. Each action
+    #   decides its own. deploy-pages gives back one named page_url.
+    # - page_url: that value, the site's address,
+    #   https://weilun-shrimp.github.io/wlgows/.
+    # ${{ }} means GitHub fills it in, after deploy-pages ends.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One deploy at a time.
+    # - group: pages is a group name we choose. GitHub never runs two jobs
+    #   with the same group name at once, even from different runs. So the
+    #   second deploy job waits until the first one is done.
+    # - cancel-in-progress: false: the waiting job does not cancel the running
+    #   one, so no deploy is cut off halfway. If more jobs come while one
+    #   waits, only the newest keeps waiting.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
       # GitHub's own step. It tells Pages to publish the github-pages artifact
-      # from the step above. Pages unpacks it and serves it at the site's
-      # address. Now the site is public.
+      # that the build job uploaded. Pages unpacks it and serves it at the
+      # site's address. Now the site is public.
       - id: deployment
         uses: actions/deploy-pages@v5
