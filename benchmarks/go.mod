@@ -3,6 +3,7 @@ module github.com/weilun-shrimp/wlgows/v7/benchmarks
 go 1.24.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/gobwas/ws v1.4.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/weilun-shrimp/wlgows/v7 v7.0.0

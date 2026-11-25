@@ -112,6 +112,17 @@ p, li {
   word-break: keep-all;
 }
 
+/* Read by search engines and screen readers, not shown. For a heading whose
+   name is already on screen, such as a tab's. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* A name that must stay on one line, like 繁體中文. */
 .nowrap {
   white-space: nowrap;

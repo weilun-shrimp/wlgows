@@ -2,15 +2,16 @@
 
 # WLGOWS
 
+[![Website](https://img.shields.io/badge/-Website-blue)](https://weilun-shrimp.github.io/wlgows/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/weilun-shrimp/wlgows/v7.svg)](https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7)
-[![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](https://weilun-shrimp.github.io/wlgows/)
+[![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](./example/AUTOBAHN.md#our-result)
 [![Master CI](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml/badge.svg?branch=master)](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml)
 ![Statement coverage](https://img.shields.io/badge/Statement%20coverage-97.6%25-brightgreen)
 
 A fast open source WebSocket library for Go. Built for speed and memory
 efficiency, without giving up safety or correctness. Simple, well-tested and
-well-documented. It's faster than gorilla/websocket in almost every
-[benchmark](./BENCHMARK_COMPARISON.md).
+well-documented. It's faster than gorilla/websocket, gobwas/ws and
+coder/websocket in almost every [benchmark](./BENCHMARK_COMPARISON.md).
 It is quick to start with, and it does not hide how WebSocket works.
 
 The [Quick Start](#quick-start) below is a working echo server.
@@ -295,7 +296,7 @@ none (RFC 6455 5.1).
 | **[LISTENER.md](./LISTENER.md)** | The read loop: the standard Listener, hooks, limits, errors, noticing a dead peer, pausing |
 | **[SENDING.md](./SENDING.md)** | Sending: whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks |
 | **[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md)** | Compression: each config field, context takeover, memory, compressing large data yourself |
-| **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket and gobwas/ws: every number, and why client sends lose |
+| **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket, gobwas/ws and coder/websocket: every number, and why 16B client sends lose |
 
 ## Examples
 

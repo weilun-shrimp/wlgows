@@ -1,5 +1,45 @@
-/* Benchmarks: the charts in two columns, one on narrow windows, then the
-   test machine and a link to every number. */
+/* Benchmarks: a Speed and a Memory tab (code-tabs.css, script/tabs.js), each
+   with a conclusion, stats and charts. The charts sit in two columns, one on
+   narrow windows. Then the test machine and a link to every number. */
+
+/* The same 24px above and below the tab buttons. */
+.section-subtitle:has(+ .benchmark-tabs) {
+  margin-bottom: 24px;
+}
+
+/* The tab buttons centered, unlike Quick Start's, and a little bigger and
+   bolder, so the switch is easy to see. */
+.benchmark-tabs .code-tabs-bar {
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.benchmark-tabs .code-tab {
+  padding: 8px 24px;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+/* In dark mode the selected tab's background is darker than the bar's and
+   there is no shadow, so it barely shows. The border color, a lighter gray,
+   lifts it. Light mode keeps Quick Start's look. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .benchmark-tabs .code-tab[aria-selected="true"] {
+    background: var(--border);
+  }
+}
+
+:root[data-theme="dark"] .benchmark-tabs .code-tab[aria-selected="true"] {
+  background: var(--border);
+}
+
+/* The conclusion of the selected tab, above its stats. */
+.benchmark-conclusion {
+  margin: 0 0 24px;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--muted);
+}
 
 .chart-grid {
   display: grid;
@@ -37,4 +77,28 @@
 
 .benchmark-more a:hover {
   text-decoration-color: currentColor;
+}
+
+/* Unlike Quick Start, the box takes the height of the selected tab, not the
+   tallest one, so Memory leaves no empty space. The old panel goes at once
+   and the new one fades in, so nothing overlaps while the height changes.
+   The page below moves when the tab changes. */
+.benchmark-tabs.tabs-ready .code-panel[hidden] {
+  display: none;
+}
+
+.benchmark-tabs.tabs-ready .code-panel:not([hidden]) {
+  animation: benchmark-panel-in 700ms ease-out;
+}
+
+@keyframes benchmark-panel-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .benchmark-tabs.tabs-ready .code-panel:not([hidden]) {
+    animation: none;
+  }
 }

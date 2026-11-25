@@ -118,7 +118,7 @@
           <article class="card">
             <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             <h3>Fast and lean</h3>
-            <p>Faster than gorilla/websocket in almost every benchmark. Sending allocates nothing per frame.</p>
+            <p>vs gorilla, gobwas and coder: faster almost everywhere. Under half the memory on reads.</p>
             <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Benchmarks →</a>
           </article>
           <article class="card">
@@ -229,119 +229,192 @@
     <section class="section" id="benchmarks">
       <div class="container">
         <h2 class="section-title">Benchmarks</h2>
-        <p class="section-subtitle">Compared with gorilla/websocket and gobwas/ws</p>
-        <div class="stat-row">
-          <div class="stat">
-            <span class="stat-value text-gradient">0</span>
-            <span class="stat-label">allocs per frame sent</span>
+        <p class="section-subtitle">Compared with gorilla/websocket, gobwas/ws and coder/websocket</p>
+
+        <div class="code-tabs benchmark-tabs" data-tabs>
+          <div class="code-tabs-bar">
+            <div class="code-tabs-list" role="tablist" aria-label="Benchmarks">
+              <button class="code-tab" type="button" role="tab" id="tab-speed" aria-controls="panel-speed" aria-selected="true">Speed</button>
+              <button class="code-tab" type="button" role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false">Memory</button>
+            </div>
           </div>
-          <div class="stat">
-            <span class="stat-value text-gradient">Up to 3.5x</span>
-            <span class="stat-label">faster reads than gorilla</span>
+          <div class="code-panel" role="tabpanel" id="panel-speed" aria-labelledby="tab-speed">
+            <h3 class="visually-hidden">Speed</h3>
+            <p class="benchmark-conclusion">Faster than coder in every case but two ties, and faster than gorilla and gobwas almost everywhere.</p>
+            <div class="stat-row">
+              <div class="stat">
+                <h4 class="stat-title">vs gorilla <span class="stat-title-note">faster by up to</span></h4>
+                <dl class="stat-pairs">
+                  <div class="stat-pair">
+                    <dt>Reads</dt>
+                    <dd class="text-gradient">3.3x</dd>
+                  </div>
+                  <div class="stat-pair">
+                    <dt>Sends</dt>
+                    <dd class="text-gradient">1.8x</dd>
+                  </div>
+                </dl>
+              </div>
+              <div class="stat">
+                <h4 class="stat-title">vs gobwas <span class="stat-title-note">faster by up to</span></h4>
+                <dl class="stat-pairs">
+                  <div class="stat-pair">
+                    <dt>Reads</dt>
+                    <dd class="text-gradient">3.2x</dd>
+                  </div>
+                  <div class="stat-pair">
+                    <dt>Sends</dt>
+                    <dd class="text-gradient">2.7x</dd>
+                  </div>
+                </dl>
+              </div>
+              <div class="stat">
+                <h4 class="stat-title">vs coder <span class="stat-title-note">faster by up to</span></h4>
+                <dl class="stat-pairs">
+                  <div class="stat-pair">
+                    <dt>Reads</dt>
+                    <dd class="text-gradient">4.0x</dd>
+                  </div>
+                  <div class="stat-pair">
+                    <dt>Sends</dt>
+                    <dd class="text-gradient">7.8x</dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+            <div class="chart-grid">
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">Server send, one 1 MB frame</span>
+                  <span class="bar-chart-unit">ns per op · lower is better</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 35.5%"></span></span>
+                    <span class="bar-value">102 ns</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 61.2%"></span></span>
+                    <span class="bar-value">176 ns</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 43.1%"></span></span>
+                    <span class="bar-value">124 ns</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">287 ns</span>
+                  </div>
+                </div>
+              </figure>
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">Client read, one 1 MB frame</span>
+                  <span class="bar-chart-unit">µs per op · lower is better</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 29.9%"></span></span>
+                    <span class="bar-value">72 µs</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">241 µs</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 96.8%"></span></span>
+                    <span class="bar-value">234 µs</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 63.4%"></span></span>
+                    <span class="bar-value">153 µs</span>
+                  </div>
+                </div>
+              </figure>
+            </div>
+            <div class="callout">
+              <p><strong>Only 16B client sends are slower, 1.1x to 1.3x, on purpose.</strong> wlgows takes masking keys from a secure random source, unlike gorilla and gobwas, because <span class="callout-highlight text-gradient">safety and correctness come first</span>.</p>
+            </div>
           </div>
-          <div class="stat">
-            <span class="stat-value text-gradient">Up to 3.4x</span>
-            <span class="stat-label">faster reads than gobwas</span>
+          <div class="code-panel" role="tabpanel" id="panel-memory" aria-labelledby="tab-memory">
+            <h3 class="visually-hidden">Memory</h3>
+            <p class="benchmark-conclusion">Under half the memory on every read, and 0 allocs on most sends.</p>
+            <div class="stat-row">
+              <div class="stat">
+                <span class="stat-value text-gradient">Under half</span>
+                <span class="stat-label">the bytes per read of any of the three</span>
+              </div>
+            </div>
+            <div class="chart-grid">
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">Read memory, one 1 MB frame</span>
+                  <span class="bar-chart-unit">MB per op · lower is better</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
+                    <span class="bar-value">1.05 MB</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">2.23 MB</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">2.23 MB</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">2.23 MB</span>
+                  </div>
+                </div>
+              </figure>
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">Server send allocs, 8 frames of 16 KB</span>
+                  <span class="bar-chart-unit">allocs per op · lower is better</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 0.0%"></span></span>
+                    <span class="bar-value">0</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">16</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 50.0%"></span></span>
+                    <span class="bar-value">8</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 0.0%"></span></span>
+                    <span class="bar-value">0</span>
+                  </div>
+                </div>
+              </figure>
+            </div>
           </div>
         </div>
-        <div class="chart-grid">
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">Server send, one 1 MB frame</span>
-              <span class="bar-chart-unit">ns per op · lower is better</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 58.1%"></span></span>
-                <span class="bar-value">102 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">176 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 70.5%"></span></span>
-                <span class="bar-value">124 ns</span>
-              </div>
-            </div>
-          </figure>
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">Server send, 64 frames of 16 B</span>
-              <span class="bar-chart-unit">ns per op · lower is better</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 59.5%"></span></span>
-                <span class="bar-value">1731 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">2910 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 71.0%"></span></span>
-                <span class="bar-value">2067 ns</span>
-              </div>
-            </div>
-          </figure>
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">Client read, one 1 MB frame</span>
-              <span class="bar-chart-unit">µs per op · lower is better</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 28.5%"></span></span>
-                <span class="bar-value">69 µs</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">241 µs</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 96.8%"></span></span>
-                <span class="bar-value">234 µs</span>
-              </div>
-            </div>
-          </figure>
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">Read memory, one 1 MB frame</span>
-              <span class="bar-chart-unit">MB per op · lower is better</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
-                <span class="bar-value">1.05 MB</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">2.23 MB</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">2.23 MB</span>
-              </div>
-            </div>
-          </figure>
-        </div>
-        <div class="callout">
-          <p><strong>Client sends are about 1.1x slower, on purpose.</strong> wlgows is the only one of the three that takes masking keys from a secure random source, because <span class="callout-highlight text-gradient">safety and correctness come first</span>.</p>
-        </div>
-        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · fastest run of each library</p>
+
+        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · coder/websocket v1.8.15 · optimal run of each library</p>
         <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Every number →</a></p>
       </div>
     </section>

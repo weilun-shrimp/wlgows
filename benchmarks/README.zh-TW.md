@@ -2,8 +2,8 @@
 
 # Benchmarks
 
-這個資料夾用同一組案例測量 wlgows、gorilla/websocket 和 gobwas/ws。
-每個函式庫寫出自己的函式庫檔案，再由 `compare` 把三者並排比較。
+這個資料夾用同一組案例測量 wlgows、gorilla/websocket、gobwas/ws 和
+coder/websocket。每個函式庫寫出自己的函式庫檔案，再由 `compare` 把四者並排比較。
 
 ## 執行
 
@@ -17,8 +17,8 @@ go run ./compare
 
 - `ROUNDS` 是每個案例要跑幾次。沒有設定時，`go test` 只跑單元測試。
 - `-count 1` 讓 `go test` 重新執行，不使用快取的結果。
-- `-timeout 0` 關掉 `go test` 的 10 分鐘限制。設 `ROUNDS=5` 時，三個測試在
-  Apple M5 上共花了大約 11 分鐘。
+- `-timeout 0` 關掉 `go test` 的 10 分鐘限制。設 `ROUNDS=5` 時，四個測試在
+  Apple M5 上共要大約 15 分鐘。
 - 檔案會寫到 `benchmarks/results/`。每個測試會覆寫自己的檔案。
 
 只跑一個函式庫時，指定它的測試名稱：
@@ -27,9 +27,9 @@ go run ./compare
 ROUNDS=5 go test -count 1 -timeout 0 -run '^TestWlgows$' .
 ```
 
-三個測試是 `TestWlgows`、`TestGorilla` 和 `TestGobwas`。`compare` 會讀取
-`results/` 裡所有的函式庫檔案，舊的也會讀。請先在同一台機器上跑完三個測試，
-再執行 `compare`。
+四個測試是 `TestWlgows`、`TestGorilla`、`TestGobwas` 和 `TestCoder`。
+`compare` 會讀取 `results/` 裡所有的函式庫檔案，舊的也會讀。請先在同一台機器上
+跑完四個測試，再執行 `compare`。
 
 ## 案例
 
@@ -48,7 +48,7 @@ ROUNDS=5 go test -count 1 -timeout 0 -run '^TestWlgows$' .
 `Many64` 搭配 16B 和 1KB，`Many8` 搭配 16KB 和 1MB，總共 32 個案例。
 
 - Send 案例寫到一個會丟掉 bytes、並計算 Write 次數的連線。
-- Read 案例讀取 wlgows 事先送出過一次的線路資料。三個函式庫讀的是同樣的 bytes。
+- Read 案例讀取 wlgows 事先送出過一次的線路資料。四個函式庫讀的是同樣的 bytes。
 
 ## 各函式庫的呼叫
 
@@ -57,19 +57,23 @@ ROUNDS=5 go test -count 1 -timeout 0 -run '^TestWlgows$' .
 | wlgows | `One` 用 `SendFrame`。`Many64` 用 `SendData` 加 `ChunkSize`：一個 64 frame 的 message，flush 一次。`Many8` 每個 frame 呼叫一次 `SendFrame`。`SendFrame` 每個 frame 都會 flush。 | `Listener` 加 `Data` hook，每遇到一個 FIN frame 算一個 message |
 | gorilla/websocket | 每個 frame 呼叫一次 `WriteMessage`，在 `sync.Mutex` 保護下呼叫。每個 message 都會 flush。 | 在 `sync.Mutex` 保護下呼叫 `ReadMessage` |
 | gobwas/ws | 每個 frame 呼叫一次 `wsutil.WriteServerMessage`（server）或 `wsutil.WriteClientMessage`（client），在 `sync.Mutex` 保護下呼叫。最後一個 frame 之後 `Flush` 一次。 | 在 `sync.Mutex` 保護下呼叫 `wsutil.ReadClientData`（server）或 `wsutil.ReadServerData`（client） |
+| coder/websocket | 每個 frame 呼叫一次 `Write`。coder 允許多個寫入者同時寫入，所以不上鎖。每個 message 都會 flush。 | 在 `sync.Mutex` 保護下呼叫 `Read` |
 
-每個函式庫用的，都是呼叫端本來就該用的呼叫。這些呼叫符合 RFC 6455，在多個 goroutine
-共用一條連線時也是安全的：
+每個函式庫用的，都是呼叫端本來就該用的呼叫。這些呼叫符合 RFC 6455，在多個
+goroutine 共用一條連線時也是安全的：
 
 - wlgows 在內部自己上鎖。
 - gorilla 同一時間只允許一個寫入者和一個讀取者。
 - gobwas `wsutil` 不上鎖。
-- 所以 gorilla 和 gobwas 的每次呼叫都在 `sync.Mutex` 保護下進行。
+- coder 允許多個寫入者同時寫入，但同一時間只允許一個讀取者。
+- 所以 gorilla 和 gobwas 的每次呼叫，以及 coder 的每次 `Read`，都在
+  `sync.Mutex` 保護下進行。
 
-三個函式庫都遵守同樣的規則：
+四個函式庫都遵守同樣的規則：
 
 - 每個讀取與寫入的緩衝區都是 4 KB。
-- 每個限制都是 0，也就是不限制。
+- 每個限制都是 0，也就是不限制。coder 的讀取限制是 -1，這是它自己表示
+  不限制的方式。
 - 不設定 deadline。
 
 gorilla 當 client 時，會把超過 4 KB 的 payload 拆成 4 KB 的 frame 送出。
@@ -87,7 +91,7 @@ gorilla 當 client 時，會把超過 4 KB 的 payload 拆成 4 KB 的 frame 送
 | `cases` | 每個案例一筆：Server 在 Client 前面，Send 在 Read 前面，大小從 16B 到 1MB，`One` 在 `Many` 前面。 |
 | `cases[].id` | 案例 ID。 |
 | `cases[].call` | 這個案例測量的函式庫呼叫。 |
-| `cases[].runs[]` | 每一輪一筆，依輪的順序排列。 |
+| `cases[].runs[]` | 每一輪一筆，依輪次排列。 |
 | `cases[].runs[].ns_per_op` | 每個 op 花的時間，單位是奈秒。 |
 | `cases[].runs[].bytes_per_op`、`cases[].runs[].allocs_per_op` | 每個 op 配置的記憶體：bytes 數，以及配置次數。 |
 | `cases[].runs[].writes_per_op` | 只有 Send 案例有。每個 op 對連線呼叫幾次 Write。 |
@@ -103,7 +107,7 @@ gorilla 當 client 時，會把超過 4 KB 的 payload 拆成 4 KB 的 frame 送
 
 - `environment.<library>` 是該函式庫的 `version`、`go`、`os`、`arch`、`cpu`
   和 `rounds`。
-- `cases` 列出每個案例一次。
+- `cases` 把每個案例各列一次。
 - `cases[].libraries.<library>` 是該函式庫的 `call`，以及被選中那次執行的欄位。
   這些欄位都來自同一次執行。
 

@@ -84,17 +84,37 @@ func (f *Frame) appendSealedHeader(buffer []byte) []byte {
 // MaskPayload XORs payload in place with maskingKey, starting on maskingKey[0].
 // Masking is its own inverse: the same call unmasks.
 func MaskPayload(payload []byte, maskingKey [4]byte) {
-	// 8 bytes at a time with the key repeated twice, then the tail byte by
-	// byte. Every step is a multiple of 4, so the tail starts on key[0].
+	// The key repeated twice covers 8 bytes. 64 bytes at a time, then 8 at a
+	// time, then the tail byte by byte. Every step is a multiple of 4, so the
+	// tail starts on key[0].
 	key := uint64(binary.LittleEndian.Uint32(maskingKey[:]))
 	key |= key << 32
+	// Written out 8 times, so the slice moves once per 64 bytes, not once per
+	// 8. A loop over the offsets is not unrolled by the compiler.
+	for len(payload) >= 64 {
+		xorFirstEightBytes(payload[0:8], key)
+		xorFirstEightBytes(payload[8:16], key)
+		xorFirstEightBytes(payload[16:24], key)
+		xorFirstEightBytes(payload[24:32], key)
+		xorFirstEightBytes(payload[32:40], key)
+		xorFirstEightBytes(payload[40:48], key)
+		xorFirstEightBytes(payload[48:56], key)
+		xorFirstEightBytes(payload[56:64], key)
+		payload = payload[64:]
+	}
 	for len(payload) >= 8 {
-		binary.LittleEndian.PutUint64(payload, binary.LittleEndian.Uint64(payload)^key)
+		xorFirstEightBytes(payload, key)
 		payload = payload[8:]
 	}
 	for i := range payload {
 		payload[i] ^= maskingKey[i&3]
 	}
+}
+
+// xorFirstEightBytes XORs the first 8 bytes of data with key, the masking key
+// repeated twice.
+func xorFirstEightBytes(data []byte, key uint64) {
+	binary.LittleEndian.PutUint64(data, binary.LittleEndian.Uint64(data)^key)
 }
 
 /*

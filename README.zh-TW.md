@@ -2,14 +2,16 @@
 
 # WLGOWS
 
+[![官方網站](https://img.shields.io/badge/-%E5%AE%98%E6%96%B9%E7%B6%B2%E7%AB%99-blue)](https://weilun-shrimp.github.io/wlgows/zh-TW/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/weilun-shrimp/wlgows/v7.svg)](https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7)
-[![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](https://weilun-shrimp.github.io/wlgows/zh-TW/)
+[![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](./example/AUTOBAHN.zh-TW.md#我們的結果)
 [![Master CI](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml/badge.svg?branch=master)](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml)
 ![Statement coverage](https://img.shields.io/badge/Statement%20coverage-97.6%25-brightgreen)
 
 高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲安全與正確性。
 容易上手、功能豐富，經過充分測試，文件完善。在幾乎所有
-[benchmark](./BENCHMARK_COMPARISON.zh-TW.md) 中，表現都優於 gorilla/websocket。
+[benchmark](./BENCHMARK_COMPARISON.zh-TW.md) 中，表現都優於 gorilla/websocket、gobwas/ws 和
+coder/websocket。
 而且不隱藏 WebSocket 的運作方式。
 
 下方的[快速開始](#快速開始)是一個能執行的 echo server。
@@ -288,7 +290,7 @@ func main() {
 | **[LISTENER.zh-TW.md](./LISTENER.zh-TW.md)** | read loop：標準 Listener、hook、上限、error、偵測已斷線的對方、暫停 |
 | **[SENDING.zh-TW.md](./SENDING.zh-TW.md)** | 傳送：完整 message、streaming、壓縮、control frame、定期送出 ping、write buffer、lock |
 | **[PERMESSAGE_DEFLATE.zh-TW.md](./PERMESSAGE_DEFLATE.zh-TW.md)** | 壓縮：每個設定欄位、context takeover、記憶體、自己壓縮大型資料 |
-| **[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)** | 與 gorilla/websocket、gobwas/ws 比較：每個數字，以及 client 送出為何落後 |
+| **[BENCHMARK_COMPARISON.zh-TW.md](./BENCHMARK_COMPARISON.zh-TW.md)** | 與 gorilla/websocket、gobwas/ws 和 coder/websocket 比較：完整數據，以及 16B 的 client 送出為何落後 |
 
 ## 範例
 

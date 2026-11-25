@@ -118,7 +118,7 @@
           <article class="card">
             <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             <h3>高速又省記憶體</h3>
-            <p>在幾乎所有 benchmark 中都比 gorilla/websocket 快。送出時，每個 frame 都不配置記憶體。</p>
+            <p>與 gorilla、gobwas 和 coder 相比：幾乎處處更快，讀取的記憶體不到一半。</p>
             <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.zh-TW.md">效能比較 →</a>
           </article>
           <article class="card">
@@ -229,120 +229,193 @@
     <section class="section" id="benchmarks">
       <div class="container">
         <h2 class="section-title">效能比較</h2>
-        <p class="section-subtitle">與 gorilla/websocket、gobwas/ws 比較</p>
-        <div class="stat-row">
-          <div class="stat">
-            <span class="stat-value text-gradient">0</span>
-            <span class="stat-label">每送出一個 frame 的記憶體配置次數</span>
+        <p class="section-subtitle">與 gorilla/websocket、gobwas/ws 和 coder/websocket 比較</p>
+
+        <div class="code-tabs benchmark-tabs" data-tabs>
+          <div class="code-tabs-bar">
+            <div class="code-tabs-list" role="tablist" aria-label="效能比較">
+              <button class="code-tab" type="button" role="tab" id="tab-speed" aria-controls="panel-speed" aria-selected="true">速度</button>
+              <button class="code-tab" type="button" role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false">記憶體</button>
+            </div>
           </div>
-          <div class="stat">
-            <span class="stat-value text-gradient">最多 3.5 倍</span>
-            <span class="stat-label">讀取比 gorilla 快</span>
+          <div class="code-panel" role="tabpanel" id="panel-speed" aria-labelledby="tab-speed">
+            <h3 class="visually-hidden">速度</h3>
+            <p class="benchmark-conclusion">除了兩個案例平手，每個案例都比 coder 快，也幾乎處處比 gorilla 和 gobwas 快。</p>
+            <div class="stat-row">
+              <div class="stat">
+                <h4 class="stat-title">vs gorilla <span class="stat-title-note">最多快</span></h4>
+                <dl class="stat-pairs">
+                  <div class="stat-pair">
+                    <dt>讀取</dt>
+                    <dd class="text-gradient">3.3 倍</dd>
+                  </div>
+                  <div class="stat-pair">
+                    <dt>送出</dt>
+                    <dd class="text-gradient">1.8 倍</dd>
+                  </div>
+                </dl>
+              </div>
+              <div class="stat">
+                <h4 class="stat-title">vs gobwas <span class="stat-title-note">最多快</span></h4>
+                <dl class="stat-pairs">
+                  <div class="stat-pair">
+                    <dt>讀取</dt>
+                    <dd class="text-gradient">3.2 倍</dd>
+                  </div>
+                  <div class="stat-pair">
+                    <dt>送出</dt>
+                    <dd class="text-gradient">2.7 倍</dd>
+                  </div>
+                </dl>
+              </div>
+              <div class="stat">
+                <h4 class="stat-title">vs coder <span class="stat-title-note">最多快</span></h4>
+                <dl class="stat-pairs">
+                  <div class="stat-pair">
+                    <dt>讀取</dt>
+                    <dd class="text-gradient">4.0 倍</dd>
+                  </div>
+                  <div class="stat-pair">
+                    <dt>送出</dt>
+                    <dd class="text-gradient">7.8 倍</dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+            <div class="chart-grid">
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">server 送出，單一 1 MB frame</span>
+                  <span class="bar-chart-unit">ns/op · 越低越好</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 35.5%"></span></span>
+                    <span class="bar-value">102 ns</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 61.2%"></span></span>
+                    <span class="bar-value">176 ns</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 43.1%"></span></span>
+                    <span class="bar-value">124 ns</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">287 ns</span>
+                  </div>
+                </div>
+              </figure>
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">client 讀取，單一 1 MB frame</span>
+                  <span class="bar-chart-unit">µs/op · 越低越好</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 29.9%"></span></span>
+                    <span class="bar-value">72 µs</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">241 µs</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 96.8%"></span></span>
+                    <span class="bar-value">234 µs</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 63.4%"></span></span>
+                    <span class="bar-value">153 µs</span>
+                  </div>
+                </div>
+              </figure>
+            </div>
+            <div class="callout">
+              <p><strong>只有 16B 的 client 送出比較慢，慢 1.1 到 1.3 倍，這是刻意的。</strong>wlgows 從安全的亂數來源取得 masking key（gorilla 和 gobwas 不是），因為<span class="callout-highlight text-gradient">安全與正確性優先</span>。</p>
+            </div>
           </div>
-          <div class="stat">
-            <span class="stat-value text-gradient">最多 3.4 倍</span>
-            <span class="stat-label">讀取比 gobwas 快</span>
+          <div class="code-panel" role="tabpanel" id="panel-memory" aria-labelledby="tab-memory">
+            <h3 class="visually-hidden">記憶體</h3>
+            <p class="benchmark-conclusion">每次讀取的記憶體都不到一半，大多數送出也不配置記憶體。</p>
+            <div class="stat-row">
+              <div class="stat">
+                <span class="stat-value text-gradient">不到一半</span>
+                <span class="stat-label">每次讀取的記憶體，與另外三者任一個相比</span>
+              </div>
+            </div>
+            <div class="chart-grid">
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">讀取的記憶體，單一 1 MB frame</span>
+                  <span class="bar-chart-unit">MB/op · 越低越好</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
+                    <span class="bar-value">1.05 MB</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">2.23 MB</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">2.23 MB</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">2.23 MB</span>
+                  </div>
+                </div>
+              </figure>
+              <figure class="bar-chart">
+                <figcaption>
+                  <span class="bar-chart-title">server 送出的記憶體配置次數，8 個 16 KB frame</span>
+                  <span class="bar-chart-unit">配置次數/op · 越低越好</span>
+                </figcaption>
+                <div class="bar-rows">
+                  <div class="bar-row bar-row-ours">
+                    <span class="bar-name">wlgows</span>
+                    <span class="bar-track"><span class="bar" style="--value: 0.0%"></span></span>
+                    <span class="bar-value">0</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gorilla</span>
+                    <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                    <span class="bar-value">16</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">gobwas</span>
+                    <span class="bar-track"><span class="bar" style="--value: 50.0%"></span></span>
+                    <span class="bar-value">8</span>
+                  </div>
+                  <div class="bar-row">
+                    <span class="bar-name">coder</span>
+                    <span class="bar-track"><span class="bar" style="--value: 0.0%"></span></span>
+                    <span class="bar-value">0</span>
+                  </div>
+                </div>
+              </figure>
+            </div>
           </div>
         </div>
-        <div class="chart-grid">
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">server 送出，單一 1 MB frame</span>
-              <span class="bar-chart-unit">ns/op · 越低越好</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 58.1%"></span></span>
-                <span class="bar-value">102 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">176 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 70.5%"></span></span>
-                <span class="bar-value">124 ns</span>
-              </div>
-            </div>
-          </figure>
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">server 送出，64 個 16 B frame</span>
-              <span class="bar-chart-unit">ns/op · 越低越好</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 59.5%"></span></span>
-                <span class="bar-value">1731 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">2910 ns</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 71.0%"></span></span>
-                <span class="bar-value">2067 ns</span>
-              </div>
-            </div>
-          </figure>
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">client 讀取，單一 1 MB frame</span>
-              <span class="bar-chart-unit">µs/op · 越低越好</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 28.5%"></span></span>
-                <span class="bar-value">69 µs</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">241 µs</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 96.8%"></span></span>
-                <span class="bar-value">234 µs</span>
-              </div>
-            </div>
-          </figure>
-          <figure class="bar-chart">
-            <figcaption>
-              <span class="bar-chart-title">讀取的記憶體，單一 1 MB frame</span>
-              <span class="bar-chart-unit">MB/op · 越低越好</span>
-            </figcaption>
-            <div class="bar-rows">
-              <div class="bar-row bar-row-ours">
-                <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
-                <span class="bar-value">1.05 MB</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gorilla</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">2.23 MB</span>
-              </div>
-              <div class="bar-row">
-                <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">2.23 MB</span>
-              </div>
-            </div>
-          </figure>
-        </div>
-        <div class="callout">
-          <p><strong>client 送出約慢 1.1 倍，這是刻意的。</strong>三者之中，只有 wlgows 從安全的亂數來源取得 masking key，因為<span class="callout-highlight text-gradient">安全與正確性優先</span>。</p>
-        </div>
-        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · 各函式庫最快的那次執行</p>
-        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.zh-TW.md">每個數字 →</a></p>
+
+        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · coder/websocket v1.8.15 · 各函式庫的最佳執行</p>
+        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.zh-TW.md">完整數據 →</a></p>
       </div>
     </section>
     <section class="section" id="well-tested">

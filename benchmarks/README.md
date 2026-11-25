@@ -2,9 +2,9 @@
 
 # Benchmarks
 
-This folder measures wlgows, gorilla/websocket and gobwas/ws on the same cases.
-Each library writes its own library file. Then `compare` puts the three side
-by side.
+This folder measures wlgows, gorilla/websocket, gobwas/ws and coder/websocket
+on the same cases. Each library writes its own library file. Then `compare`
+puts the four side by side.
 
 ## Run it
 
@@ -20,7 +20,7 @@ go run ./compare
   the unit tests.
 - `-count 1` makes `go test` run again instead of using a cached result.
 - `-timeout 0` turns off the 10 minute limit of `go test`. With `ROUNDS=5`,
-  all three tests took about 11 minutes on an Apple M5.
+  all four tests take about 15 minutes on an Apple M5.
 - The files go to `benchmarks/results/`. Each test replaces its own file.
 
 To run one library, name its test:
@@ -29,9 +29,9 @@ To run one library, name its test:
 ROUNDS=5 go test -count 1 -timeout 0 -run '^TestWlgows$' .
 ```
 
-The tests are `TestWlgows`, `TestGorilla` and `TestGobwas`. `compare` reads
-every library file in `results/`, old ones too. Run all three tests on the
-same machine first, then `compare`.
+The tests are `TestWlgows`, `TestGorilla`, `TestGobwas` and `TestCoder`.
+`compare` reads every library file in `results/`, old ones too. Run all four
+tests on the same machine first, then `compare`.
 
 ## The cases
 
@@ -52,7 +52,7 @@ cases.
 
 - A Send case writes to a connection that drops the bytes and counts the
   Writes.
-- A Read case reads a wire that wlgows sent once. All three libraries read the
+- A Read case reads a wire that wlgows sent once. All four libraries read the
   same bytes.
 
 ## What each library calls
@@ -62,6 +62,7 @@ cases.
 | wlgows | `SendFrame` for `One`. `SendData` with `ChunkSize` for `Many64`: one message of 64 frames, one flush. `SendFrame` once per frame for `Many8`. `SendFrame` flushes each frame. | `Listener` with a `Data` hook, which counts a message at each FIN frame |
 | gorilla/websocket | `WriteMessage` once per frame, under a `sync.Mutex`. Each message flushes. | `ReadMessage` under a `sync.Mutex` |
 | gobwas/ws | `wsutil.WriteServerMessage` (server) or `wsutil.WriteClientMessage` (client) once per frame, under a `sync.Mutex`. One `Flush` after the last frame. | `wsutil.ReadClientData` (server) or `wsutil.ReadServerData` (client) under a `sync.Mutex` |
+| coder/websocket | `Write` once per frame. coder allows several writers at once, so no lock. Each message flushes. | `Read` under a `sync.Mutex` |
 
 Each library uses the calls a caller should use. They follow RFC 6455 and are
 safe when several goroutines share one connection:
@@ -69,12 +70,15 @@ safe when several goroutines share one connection:
 - wlgows takes its locks inside.
 - gorilla allows one writer and one reader at a time.
 - gobwas `wsutil` takes no lock.
-- So each gorilla and gobwas call runs under a `sync.Mutex`.
+- coder allows several writers at once, but one reader at a time.
+- So each gorilla and gobwas call, and each coder `Read`, runs under a
+  `sync.Mutex`.
 
-The same rules hold for all three:
+The same rules hold for all four:
 
 - Every reader and writer buffer is 4 KB.
-- Every limit is 0, which means no limit.
+- Every limit is 0, which means no limit. coder's read limit is -1, its own
+  way to say no limit.
 - No deadline is set.
 
 As a client, gorilla sends a payload larger than 4 KB as 4 KB frames. Those
