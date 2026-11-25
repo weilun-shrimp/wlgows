@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WLGOWS · WebSocket library for Go</title>
-  <meta name="description" content="A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up correctness. Simple, well-tested and well-documented.">
+  <meta name="description" content="A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up safety or correctness. Well-tested and well-documented.">
   <link rel="canonical" href="https://weilun-shrimp.github.io/wlgows/">
   <link rel="alternate" hreflang="en" href="https://weilun-shrimp.github.io/wlgows/">
   <link rel="alternate" hreflang="zh-TW" href="https://weilun-shrimp.github.io/wlgows/zh-TW/">
@@ -15,7 +15,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="WLGOWS">
   <meta property="og:title" content="WLGOWS · WebSocket library for Go">
-  <meta property="og:description" content="A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up correctness. Simple, well-tested and well-documented.">
+  <meta property="og:description" content="A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up safety or correctness. Well-tested and well-documented.">
   <meta property="og:url" content="https://weilun-shrimp.github.io/wlgows/">
   <meta property="og:locale" content="en_US">
   <meta property="og:locale:alternate" content="zh_TW">
@@ -27,7 +27,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "WLGOWS",
-    "description": "A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up correctness. Simple, well-tested and well-documented.",
+    "description": "A fast open source WebSocket library for Go. Built for speed and memory efficiency, without giving up safety or correctness. Well-tested and well-documented.",
     "url": "https://weilun-shrimp.github.io/wlgows/",
     "codeRepository": "https://github.com/weilun-shrimp/wlgows",
     "programmingLanguage": "Go",
@@ -88,7 +88,7 @@
           <span class="wordmark text-gradient">WLGOWS</span>
           <span class="headline">A fast open source WebSocket library for Go.</span>
         </h1>
-        <p class="subline">Built for speed and memory efficiency, without giving up correctness. Unlock your WebSocket app's full potential.</p>
+        <p class="subline">Built for speed and memory efficiency, without giving up safety or correctness. Unlock your WebSocket app's full potential.</p>
 
         <div class="install">
           <code id="install-command">go get github.com/weilun-shrimp/wlgows/v7</code>
@@ -111,14 +111,14 @@
         <div class="card-grid">
           <article class="card">
             <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-            <h3>Correctness first</h3>
+            <h3>Safety and correctness first</h3>
             <p>RFC 6455 and 7692, with 0 Autobahn failures on both sides. No <code>unsafe</code>.</p>
             <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/AUTOBAHN.md#our-result">Autobahn results →</a>
           </article>
           <article class="card">
             <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             <h3>Fast and lean</h3>
-            <p>Faster than gorilla/websocket in almost every benchmark. Sending never allocates.</p>
+            <p>Faster than gorilla/websocket in almost every benchmark. Sending allocates nothing per frame.</p>
             <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Benchmarks →</a>
           </article>
           <article class="card">
@@ -233,87 +233,86 @@
         <div class="stat-row">
           <div class="stat">
             <span class="stat-value text-gradient">0</span>
-            <span class="stat-label">allocs on every send</span>
+            <span class="stat-label">allocs per frame sent</span>
           </div>
           <div class="stat">
-            <span class="stat-value text-gradient">1.3x–3.2x</span>
-            <span class="stat-label">faster large frame reads than gorilla</span>
+            <span class="stat-value text-gradient">Up to 3.5x</span>
+            <span class="stat-label">faster reads than gorilla</span>
           </div>
           <div class="stat">
-            <span class="stat-value text-gradient">1.9x–2.8x</span>
-            <span class="stat-label">faster small frame reads than gorilla</span>
+            <span class="stat-value text-gradient">Up to 3.4x</span>
+            <span class="stat-label">faster reads than gobwas</span>
           </div>
         </div>
         <div class="chart-grid">
           <figure class="bar-chart">
             <figcaption>
-              <span class="bar-chart-title">Server send, large frame</span>
+              <span class="bar-chart-title">Server send, one 1 MB frame</span>
               <span class="bar-chart-unit">ns per op · lower is better</span>
             </figcaption>
             <div class="bar-rows">
               <div class="bar-row bar-row-ours">
                 <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 58.9%"></span></span>
-                <span class="bar-value">53 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 58.1%"></span></span>
+                <span class="bar-value">102 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gorilla</span>
                 <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">90 ns</span>
+                <span class="bar-value">176 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 65.6%"></span></span>
-                <span class="bar-value">59 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 70.5%"></span></span>
+                <span class="bar-value">124 ns</span>
               </div>
             </div>
           </figure>
           <figure class="bar-chart">
             <figcaption>
-              <span class="bar-chart-title">Server send, 64 frames batched</span>
+              <span class="bar-chart-title">Server send, 64 frames of 16 B</span>
               <span class="bar-chart-unit">ns per op · lower is better</span>
             </figcaption>
             <div class="bar-rows">
               <div class="bar-row bar-row-ours">
                 <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 45.4%"></span></span>
-                <span class="bar-value">672 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 59.5%"></span></span>
+                <span class="bar-value">1731 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gorilla</span>
                 <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">1480 ns</span>
+                <span class="bar-value">2910 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 54.8%"></span></span>
-                <span class="bar-value">811 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 71.0%"></span></span>
+                <span class="bar-value">2067 ns</span>
               </div>
             </div>
           </figure>
           <figure class="bar-chart">
             <figcaption>
-              <span class="bar-chart-title">Server send, small frame</span>
-              <span class="bar-chart-unit">ns per op · lower is better</span>
+              <span class="bar-chart-title">Client read, one 1 MB frame</span>
+              <span class="bar-chart-unit">µs per op · lower is better</span>
             </figcaption>
             <div class="bar-rows">
               <div class="bar-row bar-row-ours">
                 <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 77.4%"></span></span>
-                <span class="bar-value">17.8 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 28.5%"></span></span>
+                <span class="bar-value">69 µs</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gorilla</span>
                 <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">23 ns</span>
+                <span class="bar-value">241 µs</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 65.2%"></span></span>
-                <span class="bar-value">15 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 96.8%"></span></span>
+                <span class="bar-value">234 µs</span>
               </div>
             </div>
-            <p class="bar-chart-note">wlgows: 0 allocs. gobwas: 1 alloc per frame.</p>
           </figure>
           <figure class="bar-chart">
             <figcaption>
@@ -333,17 +332,17 @@
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
-                <span class="bar-value">1.05 MB</span>
+                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                <span class="bar-value">2.23 MB</span>
               </div>
             </div>
           </figure>
         </div>
         <div class="callout">
-          <p><strong>Client sends are slower, on purpose.</strong> wlgows uses a stronger masking key, and never writes to your buffer. Each faster path was measured and turned down, because <span class="callout-highlight text-gradient">correctness and safety come first</span>.</p>
+          <p><strong>Client sends are about 1.1x slower, on purpose.</strong> wlgows is the only one of the three that takes masking keys from a secure random source, because <span class="callout-highlight text-gradient">safety and correctness come first</span>.</p>
         </div>
-        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · median of 5 runs</p>
-        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Every number, and why each loss stays →</a></p>
+        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · fastest run of each library</p>
+        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.md">Every number →</a></p>
       </div>
     </section>
     <section class="section" id="well-tested">

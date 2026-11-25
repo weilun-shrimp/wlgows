@@ -5,19 +5,20 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/weilun-shrimp/wlgows/v7.svg)](https://pkg.go.dev/github.com/weilun-shrimp/wlgows/v7)
 [![Autobahn](https://img.shields.io/badge/Autobahn-0%20failures%2C%20517%20cases-brightgreen)](https://weilun-shrimp.github.io/wlgows/)
 [![Master CI](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml/badge.svg?branch=master)](https://github.com/weilun-shrimp/wlgows/actions/workflows/master_ci.yml)
+![Statement coverage](https://img.shields.io/badge/Statement%20coverage-97.6%25-brightgreen)
 
 A fast open source WebSocket library for Go. Built for speed and memory
-efficiency, without giving up correctness. Simple, well-tested and
+efficiency, without giving up safety or correctness. Simple, well-tested and
 well-documented. It's faster than gorilla/websocket in almost every
 [benchmark](./BENCHMARK_COMPARISON.md).
 It is quick to start with, and it does not hide how WebSocket works.
 
 The [Quick Start](#quick-start) below is a working echo server.
 
-**Correctness first.** wlgows follows RFC 6455 and RFC 7692, with 0
+**Safety and correctness first.** wlgows follows RFC 6455 and RFC 7692, with 0
 [Autobahn](./example/AUTOBAHN.md#our-result) failures on both sides. We want
-the fastest code and the least memory, but only when it stays correct
-and safe: no `unsafe`, and no skipped bounds checks. Your own code may go
+the fastest code and the least memory, but only when it stays safe
+and correct: no `unsafe`, and no skipped bounds checks. Your own code may go
 further if you know what you are doing. See
 [Faster and less memory](./SENDING.md#faster-and-less-memory-sending-a-string-with-unsafe).
 
@@ -294,7 +295,7 @@ none (RFC 6455 5.1).
 | **[LISTENER.md](./LISTENER.md)** | The read loop: the standard Listener, hooks, limits, errors, noticing a dead peer, pausing |
 | **[SENDING.md](./SENDING.md)** | Sending: whole messages, streaming, compression, control frames, pinging on an interval, the write buffer, locks |
 | **[PERMESSAGE_DEFLATE.md](./PERMESSAGE_DEFLATE.md)** | Compression: each config field, context takeover, memory, compressing large data yourself |
-| **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket and gobwas/ws: every number, and why each loss stays |
+| **[BENCHMARK_COMPARISON.md](./BENCHMARK_COMPARISON.md)** | Against gorilla/websocket and gobwas/ws: every number, and why client sends lose |
 
 ## Examples
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WLGOWS · Go WebSocket 函式庫</title>
-  <meta name="description" content="高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲正確性。容易上手、功能豐富，經過充分測試，文件完善。">
+  <meta name="description" content="高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲安全與正確性。容易上手、功能豐富，經過充分測試，文件完善。">
   <link rel="canonical" href="https://weilun-shrimp.github.io/wlgows/zh-TW/">
   <link rel="alternate" hreflang="en" href="https://weilun-shrimp.github.io/wlgows/">
   <link rel="alternate" hreflang="zh-TW" href="https://weilun-shrimp.github.io/wlgows/zh-TW/">
@@ -15,7 +15,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="WLGOWS">
   <meta property="og:title" content="WLGOWS · Go WebSocket 函式庫">
-  <meta property="og:description" content="高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲正確性。容易上手、功能豐富，經過充分測試，文件完善。">
+  <meta property="og:description" content="高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲安全與正確性。容易上手、功能豐富，經過充分測試，文件完善。">
   <meta property="og:url" content="https://weilun-shrimp.github.io/wlgows/zh-TW/">
   <meta property="og:locale" content="zh_TW">
   <meta property="og:locale:alternate" content="en_US">
@@ -27,7 +27,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "WLGOWS",
-    "description": "高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲正確性。容易上手、功能豐富，經過充分測試，文件完善。",
+    "description": "高效能的開源 Go WebSocket 函式庫。為速度與記憶體效率而打造，且不犧牲安全與正確性。容易上手、功能豐富，經過充分測試，文件完善。",
     "url": "https://weilun-shrimp.github.io/wlgows/zh-TW/",
     "codeRepository": "https://github.com/weilun-shrimp/wlgows",
     "programmingLanguage": "Go",
@@ -88,7 +88,7 @@
           <span class="wordmark text-gradient">WLGOWS</span>
           <span class="headline">高效能的開源 Go WebSocket 函式庫</span>
         </h1>
-        <p class="subline">為速度與記憶體效率而打造，且不犧牲正確性。釋放你 WebSocket 應用程式全部潛力。</p>
+        <p class="subline">為速度與記憶體效率而打造，且不犧牲安全與正確性。釋放你 WebSocket 應用程式全部潛力。</p>
 
         <div class="install">
           <code id="install-command">go get github.com/weilun-shrimp/wlgows/v7</code>
@@ -111,14 +111,14 @@
         <div class="card-grid">
           <article class="card">
             <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-            <h3>正確性優先</h3>
+            <h3>安全與正確性優先</h3>
             <p>遵循 RFC 6455 與 7692，兩端的 Autobahn 測試都是 0 失敗。不用 <code>unsafe</code>。</p>
             <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/example/AUTOBAHN.zh-TW.md#我們的結果">Autobahn 結果 →</a>
           </article>
           <article class="card">
             <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             <h3>高速又省記憶體</h3>
-            <p>在幾乎所有 benchmark 中都比 gorilla/websocket 快。送出時從不配置記憶體。</p>
+            <p>在幾乎所有 benchmark 中都比 gorilla/websocket 快。送出時，每個 frame 都不配置記憶體。</p>
             <a class="card-link" href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.zh-TW.md">效能比較 →</a>
           </article>
           <article class="card">
@@ -233,87 +233,86 @@
         <div class="stat-row">
           <div class="stat">
             <span class="stat-value text-gradient">0</span>
-            <span class="stat-label">每次送出的記憶體配置次數</span>
+            <span class="stat-label">每送出一個 frame 的記憶體配置次數</span>
           </div>
           <div class="stat">
-            <span class="stat-value text-gradient">1.3x–3.2x</span>
-            <span class="stat-label">讀取大 frame，比 gorilla 快</span>
+            <span class="stat-value text-gradient">最多 3.5 倍</span>
+            <span class="stat-label">讀取比 gorilla 快</span>
           </div>
           <div class="stat">
-            <span class="stat-value text-gradient">1.9x–2.8x</span>
-            <span class="stat-label">讀取小 frame，比 gorilla 快</span>
+            <span class="stat-value text-gradient">最多 3.4 倍</span>
+            <span class="stat-label">讀取比 gobwas 快</span>
           </div>
         </div>
         <div class="chart-grid">
           <figure class="bar-chart">
             <figcaption>
-              <span class="bar-chart-title">server 送出，大 frame</span>
+              <span class="bar-chart-title">server 送出，單一 1 MB frame</span>
               <span class="bar-chart-unit">ns/op · 越低越好</span>
             </figcaption>
             <div class="bar-rows">
               <div class="bar-row bar-row-ours">
                 <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 58.9%"></span></span>
-                <span class="bar-value">53 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 58.1%"></span></span>
+                <span class="bar-value">102 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gorilla</span>
                 <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">90 ns</span>
+                <span class="bar-value">176 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 65.6%"></span></span>
-                <span class="bar-value">59 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 70.5%"></span></span>
+                <span class="bar-value">124 ns</span>
               </div>
             </div>
           </figure>
           <figure class="bar-chart">
             <figcaption>
-              <span class="bar-chart-title">server 送出，64 個 frame 批次</span>
+              <span class="bar-chart-title">server 送出，64 個 16 B frame</span>
               <span class="bar-chart-unit">ns/op · 越低越好</span>
             </figcaption>
             <div class="bar-rows">
               <div class="bar-row bar-row-ours">
                 <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 45.4%"></span></span>
-                <span class="bar-value">672 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 59.5%"></span></span>
+                <span class="bar-value">1731 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gorilla</span>
                 <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">1480 ns</span>
+                <span class="bar-value">2910 ns</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 54.8%"></span></span>
-                <span class="bar-value">811 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 71.0%"></span></span>
+                <span class="bar-value">2067 ns</span>
               </div>
             </div>
           </figure>
           <figure class="bar-chart">
             <figcaption>
-              <span class="bar-chart-title">server 送出，小 frame</span>
-              <span class="bar-chart-unit">ns/op · 越低越好</span>
+              <span class="bar-chart-title">client 讀取，單一 1 MB frame</span>
+              <span class="bar-chart-unit">µs/op · 越低越好</span>
             </figcaption>
             <div class="bar-rows">
               <div class="bar-row bar-row-ours">
                 <span class="bar-name">wlgows</span>
-                <span class="bar-track"><span class="bar" style="--value: 77.4%"></span></span>
-                <span class="bar-value">17.8 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 28.5%"></span></span>
+                <span class="bar-value">69 µs</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gorilla</span>
                 <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
-                <span class="bar-value">23 ns</span>
+                <span class="bar-value">241 µs</span>
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 65.2%"></span></span>
-                <span class="bar-value">15 ns</span>
+                <span class="bar-track"><span class="bar" style="--value: 96.8%"></span></span>
+                <span class="bar-value">234 µs</span>
               </div>
             </div>
-            <p class="bar-chart-note">wlgows：0 次配置。gobwas：每個 frame 1 次。</p>
           </figure>
           <figure class="bar-chart">
             <figcaption>
@@ -333,17 +332,17 @@
               </div>
               <div class="bar-row">
                 <span class="bar-name">gobwas</span>
-                <span class="bar-track"><span class="bar" style="--value: 47.1%"></span></span>
-                <span class="bar-value">1.05 MB</span>
+                <span class="bar-track"><span class="bar" style="--value: 100.0%"></span></span>
+                <span class="bar-value">2.23 MB</span>
               </div>
             </div>
           </figure>
         </div>
         <div class="callout">
-          <p><strong>client 送出比較慢，這是刻意的。</strong>wlgows 使用較強的 masking key，也從不寫入你的 buffer。每個更快的做法都量測過，但都放棄了，因為<span class="callout-highlight text-gradient">正確性與安全性優先</span>。</p>
+          <p><strong>client 送出約慢 1.1 倍，這是刻意的。</strong>三者之中，只有 wlgows 從安全的亂數來源取得 masking key，因為<span class="callout-highlight text-gradient">安全與正確性優先</span>。</p>
         </div>
-        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · 5 次執行取中位數</p>
-        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.zh-TW.md">每個數字，以及每一項落後為何保留 →</a></p>
+        <p class="benchmark-env">Apple M5 · Go 1.26.6 · gorilla/websocket v1.5.3 · gobwas/ws v1.4.0 · 各函式庫最快的那次執行</p>
+        <p class="benchmark-more"><a href="https://github.com/weilun-shrimp/wlgows/blob/master/BENCHMARK_COMPARISON.zh-TW.md">每個數字 →</a></p>
       </div>
     </section>
     <section class="section" id="well-tested">
